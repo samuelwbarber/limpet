@@ -23,6 +23,32 @@ function syncSize() { fit.fit(); window.winux.resize(term.cols, term.rows); }
 window.addEventListener('resize', syncSize);
 setTimeout(syncSize, 120);
 
+// ---- reels: dock a webpage (default: Instagram reels) on the right ----
+const DEFAULT_REELS = 'https://www.instagram.com/reels/';
+const reelsView = document.getElementById('reels-view');
+
+// The page is tidied by the main process (see REELS_TIDY in main.js), injected
+// via executeJavaScript on the webview after each load.
+
+window.winux.onReels((url) => {
+  const panel = document.getElementById('reels');
+  const view = reelsView;
+  if (url) {
+    // explicit `reels <url>` -> always show and navigate there
+    if (view.getAttribute('src') !== url) view.setAttribute('src', url);
+    panel.classList.add('show');
+  } else {
+    // bare `reels` -> toggle; lazy-load the default feed the first time
+    panel.classList.toggle('show');
+    if (panel.classList.contains('show') && !view.getAttribute('src')) {
+      view.setAttribute('src', DEFAULT_REELS);
+    }
+  }
+  // the terminal's width just changed; re-fit so nothing gets clipped
+  setTimeout(syncSize, 60);
+  term.focus();
+});
+
 // ---- copy / paste ----
 function copySelection() {
   const sel = term.getSelection();

@@ -305,7 +305,7 @@ function xssh {
     }
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
-    if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path>" -ForegroundColor DarkGray }
+    if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path> | reels [url]" -ForegroundColor DarkGray }
     while ($true) {
         $start = Get-Date
         ssh @sshArgs
@@ -397,6 +397,16 @@ function peek {
 
 function peak { peek @args }
 
+# Dock a webpage on the right side of the winux window. No args toggles the
+# Instagram reels feed; pass a URL to open something else. Talks to the app via
+# the same private OSC channel as peek/download (works locally and over ssh).
+function reels {
+    $url = if ($args.Count) { [string]$args[0] } else { '' }
+    $u64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($url))
+    $e = [char]27; $bel = [char]7
+    Write-Host -NoNewline ("{0}]5379;reels;{1}{2}" -f $e, $u64, $bel)
+}
+
 # ---------------------------------------------------------------------------
 # Branding: `winux` prints the logo, version, and the available commands.
 # ---------------------------------------------------------------------------
@@ -410,6 +420,7 @@ function winux {
     Write-Host '  Resilient: xssh user@host   (drop-in for ssh, auto-reconnects)' -ForegroundColor DarkGray
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
+    Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
@@ -436,4 +447,4 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, winux
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, winux

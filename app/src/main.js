@@ -20,6 +20,70 @@ try {
 }
 
 const WINUX_MODULE = path.join(__dirname, '..', '..', 'shell', 'Winux.psd1');
+
+// Injected into the docked reels page to make the reel float on a
+// terminal-matching background with no scrollbars or nav/chat chrome. Instagram's
+// class names are randomized, so we hide by shape/position: a wide, short,
+// fixed/sticky strip of links at the top/bottom edge is the nav bar; a small
+// fixed box in the bottom-right corner is the chat bubble. A centered vertical
+// reel matches neither. A MutationObserver re-applies it across SPA re-renders.
+const REELS_TIDY = `(function () {
+  var BG = '#1e1e2e';
+  if (!document.getElementById('winux-tidy')) {
+    var s = document.createElement('style'); s.id = 'winux-tidy';
+    s.textContent =
+      'html,body,main,[role="main"]{background:' + BG + ' !important}' +
+      '::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important}' +
+      '*{scrollbar-width:none !important}' +
+      'nav,[role="navigation"],header[role="banner"]{display:none !important}';
+    (document.head || document.documentElement).appendChild(s);
+  }
+  // The nav bar is an in-flow <div> grouping the main nav links, so hide it by
+  // finding the tightest ancestor of /reels/ or /explore/ that holds 3+ of them.
+  var NAV = { '/': 1, '/explore/': 1, '/reels/': 1, '/direct/inbox/': 1 };
+  function hideNav() {
+    document.querySelectorAll('a[href="/reels/"],a[href="/explore/"]').forEach(function (a) {
+      var p = a;
+      for (var i = 0; i < 7 && p; i++) {
+        p = p.parentElement; if (!p) break;
+        var links = p.querySelectorAll('a[href]'), n = 0;
+        for (var j = 0; j < links.length; j++) if (NAV[links[j].getAttribute('href')]) n++;
+        if (n >= 3) { p.style.setProperty('display', 'none', 'important'); break; }
+      }
+    });
+  }
+  // Instagram paints its own dark bg on <main> and its wrapper divs, covering the
+  // body color — recolor <main>, its ancestors up to body, and a few descendants.
+  function fixBg() {
+    var m = document.querySelector('main,[role="main"]'); if (!m) return;
+    var els = [document.documentElement, document.body], p = m;
+    while (p && p !== document.body) { els.push(p); p = p.parentElement; }
+    var c = m; for (var k = 0; k < 3 && c; k++) { els.push(c); c = c.firstElementChild; }
+    els.forEach(function (el) { if (el) el.style.setProperty('background-color', BG, 'important'); });
+  }
+  // Also hide a fixed/sticky chat bubble in the bottom-right corner, if present.
+  function hideBubble() {
+    var vw = window.innerWidth, vh = window.innerHeight;
+    document.querySelectorAll('div,section').forEach(function (el) {
+      if (el.dataset.winuxHid) return;
+      var st = getComputedStyle(el);
+      if (st.position !== 'fixed' && st.position !== 'sticky') return;
+      var r = el.getBoundingClientRect();
+      if (r.width > 8 && r.width < vw * 0.5 && r.height > 8 && r.height < 260 &&
+          r.bottom >= vh - 160 && r.right >= vw - 160) {
+        el.style.setProperty('display', 'none', 'important'); el.dataset.winuxHid = '1';
+      }
+    });
+  }
+  function tidy() { hideNav(); fixBg(); hideBubble(); }
+  tidy();
+  if (!window.__winuxObs) {
+    window.__winuxObs = new MutationObserver(function () {
+      clearTimeout(window.__winuxT); window.__winuxT = setTimeout(tidy, 200);
+    });
+    window.__winuxObs.observe(document.documentElement, { childList: true, subtree: true });
+  }
+})();`;
 const MAX_DROP_BYTES = 20 * 1024 * 1024; // pasting more than this through a PTY is impractical
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,7 +103,7 @@ function send(channel, payload) {
 // straight through to xterm.js untouched.
 const WINUX_OSC = '\x1b]5379;';
 const BEL = '\x07';
-const KNOWN_VERBS = ['download', 'upload'];
+const KNOWN_VERBS = ['download', 'upload', 'reels'];
 let outPending = '';
 let flushTimer = null;
 
@@ -114,6 +178,8 @@ function handleWinuxOsc(seq) {
     saveDownload(b64dec(parts[1]).toString('utf8'), b64dec(parts[2]));
   } else if (parts[0] === 'upload') {
     injectFiles([b64dec(parts[1]).toString('utf8')]);
+  } else if (parts[0] === 'reels') {
+    send('reels:toggle', b64dec(parts[1]).toString('utf8'));
   }
 }
 
@@ -223,10 +289,23 @@ async function injectFiles(paths) {
 function createWindow() {
   win = new BrowserWindow({
     width: 1000, height: 660, backgroundColor: '#1e1e2e', title: 'winux',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'index.html'));
+
+  // Inject our preload into the reels <webview> so we can tidy the page from the
+  // inside (the reliable injection point — runs in the guest at document-start).
+  // Tidy the docked page (background, scrollbars, nav/chat chrome) by injecting
+  // from the main process — webview `preload` set via will-attach-webview does
+  // not run reliably here, but executeJavaScript on the guest does. Re-injected
+  // on every load and SPA navigation; a MutationObserver inside keeps it applied.
+  win.webContents.on('did-attach-webview', (_e, wc) => {
+    const tidy = () => wc.executeJavaScript(REELS_TIDY).catch(() => {});
+    wc.on('dom-ready', tidy);
+    wc.on('did-finish-load', tidy);
+    wc.on('did-navigate-in-page', tidy);
+  });
 
   win.webContents.on('did-finish-load', () => { term = startShell(); });
 

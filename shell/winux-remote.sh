@@ -39,3 +39,9 @@ upload() {
       "$(printf '%s' "$p" | _winux_b64)" "$(printf '%s' "$PWD" | _winux_b64)"
   done
 }
+
+# Dock a webpage on the right side of the winux window. No args toggles the
+# Instagram reels feed; pass a URL to open something else.
+reels() {
+  printf '\033]5379;reels;%s\007' "$(printf '%s' "${1:-}" | _winux_b64)"
+}

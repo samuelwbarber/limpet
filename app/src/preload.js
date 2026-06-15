@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('winux', {
   dropFiles: (paths) => ipcRenderer.invoke('term:drop-files', paths),
   clipboardCopy: (text) => ipcRenderer.invoke('clip:write', text),
   clipboardPaste: () => ipcRenderer.invoke('clip:read'),
+  onReels: (cb) => ipcRenderer.on('reels:toggle', (_e, url) => cb(url)),
 });

@@ -5,7 +5,7 @@
     Author            = 'samuelwbarber'
     Description       = 'winux: common Linux/Unix commands inside PowerShell (flags translated to native cmdlets) plus xssh, a drop-in resilient ssh.'
     PowerShellVersion = '5.1'
-    FunctionsToExport = @('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'winux')
+    FunctionsToExport = @('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'reels', 'winux')
     CmdletsToExport   = @()
     AliasesToExport   = @('ls', 'rm', 'cp', 'mv', 'cat')
     VariablesToExport = @()
