@@ -39,10 +39,23 @@ function send(channel, payload) {
 // straight through to xterm.js untouched.
 const WINUX_OSC = '\x1b]5379;';
 const BEL = '\x07';
+const KNOWN_VERBS = ['download', 'upload'];
 let outPending = '';
+let flushTimer = null;
 
-// Longest suffix of `s` that is a (partial) prefix of the OSC marker, so a
-// marker split across two PTY chunks isn't missed or leaked to the screen.
+// A trailing partial-prefix of the marker is held back so a marker split across
+// two PTY chunks isn't leaked to the screen — but it's flushed on a short timer
+// if no more output follows, so a held byte (e.g. a lone trailing ESC, which is
+// extremely common) can never leave the screen frozen at an idle prompt.
+function scheduleFlush() {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (outPending) { send('term:data', outPending); outPending = ''; }
+  }, 30);
+}
+
+// Longest suffix of `s` that is a (partial) prefix of the OSC marker.
 function heldPrefixLen(s) {
   const max = Math.min(s.length, WINUX_OSC.length - 1);
   for (let n = max; n > 0; n--) {
@@ -51,7 +64,17 @@ function heldPrefixLen(s) {
   return 0;
 }
 
+// Is what follows the marker still a plausible winux verb? Lets us bail out fast
+// (emit literally) if a stray `\x1b]5379;` ever shows up in normal output,
+// instead of buffering the rest of the stream forever waiting for a BEL.
+function looksLikeVerb(after) {
+  const semi = after.indexOf(';');
+  if (semi === -1) return KNOWN_VERBS.some((v) => v.startsWith(after));
+  return KNOWN_VERBS.includes(after.slice(0, semi));
+}
+
 function forwardOutput(data) {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   let buf = outPending + data;
   outPending = '';
   let out = '';
@@ -64,12 +87,23 @@ function forwardOutput(data) {
       break;
     }
     out += buf.slice(0, start);
-    const end = buf.indexOf(BEL, start + WINUX_OSC.length);
-    if (end === -1) { outPending = buf.slice(start); break; } // wait for the rest
-    handleWinuxOsc(buf.slice(start + WINUX_OSC.length, end));
+    const afterMark = start + WINUX_OSC.length;
+    const end = buf.indexOf(BEL, afterMark);
+    if (end === -1) {
+      // Real winux sequence still arriving (a download can be large) → wait for
+      // BEL. A false marker is dropped back to the screen right away.
+      if (looksLikeVerb(buf.slice(afterMark))) { outPending = buf.slice(start); }
+      else { out += buf.slice(start, afterMark); buf = buf.slice(afterMark); continue; }
+      break;
+    }
+    handleWinuxOsc(buf.slice(afterMark, end));
     buf = buf.slice(end + 1);
   }
   if (out) send('term:data', out);
+  // A held *partial-prefix* (no full marker yet) must never linger — flush it if
+  // the stream goes quiet. A held full marker (real download in flight) streams
+  // back-to-back, so it isn't on this timer.
+  if (outPending && !outPending.startsWith(WINUX_OSC)) scheduleFlush();
 }
 
 const b64dec = (s) => Buffer.from(s || '', 'base64');
