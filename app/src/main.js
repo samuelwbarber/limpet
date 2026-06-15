@@ -63,14 +63,15 @@ function startShell() {
   };
 }
 
-// A here-doc that decodes base64 into a file in the shell's *current* directory,
-// then prints a one-line confirmation (program output, so it shows even while
-// terminal echo is off). Quoted delimiter => no expansion.
-function buildDropCommand(localPath) {
+// Decode base64 into a file in the shell's *current* directory. We feed the
+// data straight into `base64 -d` reading stdin and end it with EOT (Ctrl+D, the
+// \x04). No here-doc means bash prints no "> " continuation prompts, so with
+// echo off nothing scrolls past — just the confirmation line at the end.
+function buildDropPayload(localPath) {
   const buf = fs.readFileSync(localPath);
   const name = path.basename(localPath).replace(/'/g, `'\\''`);
-  const b64 = buf.toString('base64').replace(/(.{76})/g, '$1\n');
-  return `base64 -d > '${name}' <<'WINUXB64EOF'\n${b64}\nWINUXB64EOF\nprintf '[winux] received %s\\n' '${name}'\n`;
+  const b64 = buf.toString('base64').replace(/(.{120})/g, '$1\n');
+  return `base64 -d > '${name}'\n${b64}\n\x04printf '[winux] received %s\\n' '${name}'\n`;
 }
 
 function createWindow() {
@@ -118,7 +119,7 @@ function createWindow() {
     await sleep(250);
     const sent = [];
     for (const p of files) {
-      term.write(buildDropCommand(p));
+      term.write(buildDropPayload(p));
       sent.push(path.basename(p));
     }
     term.write('stty echo 2>/dev/null\n');
