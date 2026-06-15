@@ -1,0 +1,10 @@
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Logs / scratch
+*.log
+/tmp/
