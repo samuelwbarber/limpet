@@ -275,17 +275,33 @@ function chmod {
 function xssh {
     if (-not $args.Count) { Write-Error 'xssh: usage is the same as ssh, e.g. xssh user@host'; return }
 
-    $sshArgs = @($args)
+    # Pull out our own -Plain switch; everything else passes through to the client.
+    $plain = $false
+    $sshArgs = @()
+    foreach ($a in $args) { if ($a -ieq '-Plain') { $plain = $true } else { $sshArgs += $a } }
+
     # Add keepalives so dropped links are detected promptly, unless the caller
     # already specified them.
     if (-not ($sshArgs -match 'ServerAliveInterval')) {
         $sshArgs = @('-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-o', 'TCPKeepAlive=yes') + $sshArgs
     }
 
+    # Prefer tssh (trzsz) when installed: same ssh-style args, but lets you drag
+    # files onto the window to upload them to the remote cwd. -Plain forces ssh.
+    $client = 'ssh'
+    $transfer = $false
+    if (-not $plain) {
+        $tssh = Get-Command tssh -ErrorAction SilentlyContinue
+        if ($tssh) { $client = $tssh.Source; $transfer = $true }
+    }
+
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
+    if ($transfer) {
+        Write-Host "      trzsz enabled - drag files/folders onto the window to upload to the remote cwd" -ForegroundColor DarkGray
+    }
     while ($true) {
         $start = Get-Date
-        ssh @sshArgs
+        & $client @sshArgs
         $code = $LASTEXITCODE
         $elapsed = ((Get-Date) - $start).TotalSeconds
 
@@ -294,7 +310,7 @@ function xssh {
         # A near-instant non-zero exit means ssh never connected (bad host, auth
         # failure, usage error) -- retrying would loop forever, so stop.
         if ($elapsed -lt 5) {
-            Write-Host "[xssh] ssh exited immediately (code $code): connection/auth error, not a drop. Stopping." -ForegroundColor Red
+            Write-Host "[xssh] connection exited immediately (code $code): host/auth error, not a drop. Stopping." -ForegroundColor Red
             break
         }
 

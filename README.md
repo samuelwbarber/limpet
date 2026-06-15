@@ -103,6 +103,23 @@ Set up key auth with the helper:
 Enabling `ssh-agent` on Windows is a one-time admin step (the helper prints it if
 it can't do it itself). A passphrase-less key works without the agent.
 
+## Drag-and-drop file upload
+
+Drag a file or folder onto the window while connected and it uploads to the
+remote's **current directory**. This rides on **trzsz** — WezTerm has no drop
+event to hook and dropping just pastes the path, so a purpose-built transfer tool
+is what makes it work.
+
+```powershell
+.\install-trzsz.ps1          # installs the client (tssh) into winux\bin
+```
+
+Then install trzsz on the **remote** once (`sudo apt install trzsz` or
+`python3 -m pip install trzsz`). After that, `xssh user@host` automatically routes
+through `tssh`, and dragging files/folders onto the window uploads them to the
+remote cwd. Force the plain client with `xssh -Plain user@host`. Without trzsz,
+`xssh` behaves exactly as before (plain ssh + reconnect).
+
 ## Layer 3 — Rendering
 
 WezTerm renders on the GPU (`front_end = 'WebGpu'`), which is what fixes the
@@ -118,6 +135,7 @@ wezterm/      wezterm.lua host config
 install.ps1   wires everything together (idempotent)
 setup-ssh.ps1 generates an SSH key + loads ssh-agent + installs key on a host
 ssh-resilient.ps1 client-side auto-reconnecting SSH (no server software needed)
+install-trzsz.ps1 installs the trzsz client (tssh) for drag-and-drop upload
 tests/        Test-Winux.ps1 smoke test
 docs/         COMMANDS.md reference
 ```

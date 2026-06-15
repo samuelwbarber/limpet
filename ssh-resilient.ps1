@@ -16,6 +16,7 @@ param(
     [string] $Session       = 'main',
     [string] $KeyPath       = (Join-Path $env:USERPROFILE '.ssh\id_ed25519'),
     [switch] $NoTmux,
+    [switch] $Plain,                # force plain ssh even if tssh (trzsz) is installed
     [int]    $RetryDelaySeconds = 2,
     [int]    $AliveInterval = 15,   # seconds between keepalive probes
     [int]    $AliveCountMax = 3     # missed probes before ssh declares the link dead
@@ -43,12 +44,22 @@ else {
     $sshArgs += @('-t', $Target, $remote)
 }
 
+# Prefer tssh (trzsz) when installed so you can drag files onto the window to
+# upload them to the remote cwd. -Plain forces the built-in ssh client.
+$client = 'ssh'; $transfer = $false
+if (-not $Plain) {
+    $tssh = Get-Command tssh -ErrorAction SilentlyContinue
+    if ($tssh) { $client = $tssh.Source; $transfer = $true }
+}
+
 $label = if ($NoTmux) { "$Target" } else { "$Target (tmux: $Session)" }
 Write-Host "Resilient SSH -> $label" -ForegroundColor Cyan
-Write-Host "Auto-reconnects on drop. Log out or detach (Ctrl+b d) to exit cleanly.`n" -ForegroundColor DarkGray
+Write-Host "Auto-reconnects on drop. Log out or detach (Ctrl+b d) to exit cleanly." -ForegroundColor DarkGray
+if ($transfer) { Write-Host "trzsz enabled - drag files/folders onto the window to upload to the remote cwd." -ForegroundColor DarkGray }
+Write-Host ''
 
 while ($true) {
-    ssh @sshArgs
+    & $client @sshArgs
     $code = $LASTEXITCODE
 
     # 0 = clean logout or tmux detach -> stop. Anything else = dropped link -> retry.
