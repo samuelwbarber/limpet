@@ -361,6 +361,26 @@ function wput {
 }
 
 # ---------------------------------------------------------------------------
+# peek: show an image inline in the terminal. Emits the iTerm2 inline-image
+# escape, which winux's xterm image addon renders. `peak` is an alias.
+#   peek screenshot.png
+# ---------------------------------------------------------------------------
+
+function peek {
+    param([Parameter(Mandatory = $true)] [string] $Path)
+    $rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $rp) { Write-Error "peek: file not found: $Path"; return }
+    $bytes = [IO.File]::ReadAllBytes($rp.Path)
+    $b64 = [Convert]::ToBase64String($bytes)
+    $name64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFileName($rp.Path)))
+    $e = [char]27; $bel = [char]7
+    Write-Host -NoNewline ("{0}]1337;File=name={1};size={2};inline=1;preserveAspectRatio=1:{3}{4}" -f $e, $name64, $bytes.Length, $b64, $bel)
+    Write-Host ''
+}
+
+function peak { peek @args }
+
+# ---------------------------------------------------------------------------
 # Branding: `winux` prints the logo, version, and the available commands.
 # ---------------------------------------------------------------------------
 
@@ -372,6 +392,7 @@ function winux {
     Write-Host '  Commands : ls rm cp mv mkdir touch cat head tail grep find which du df chmod' -ForegroundColor DarkGray
     Write-Host '  Resilient: xssh user@host   (drop-in for ssh, auto-reconnects)' -ForegroundColor DarkGray
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
+    Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
@@ -398,4 +419,4 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, winux
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, winux

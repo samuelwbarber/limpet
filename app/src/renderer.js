@@ -12,6 +12,7 @@ const term = new Terminal({
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open(document.getElementById('term'));
+try { term.loadAddon(new ImageAddon.ImageAddon()); } catch (e) { console.error('[winux] image addon failed:', e); }
 fit.fit();
 term.focus();
 

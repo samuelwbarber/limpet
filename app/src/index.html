@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:" />
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
     html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
@@ -21,6 +21,7 @@
   <div id="drop">drop to paste files into the current session</div>
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../node_modules/@xterm/addon-image/lib/addon-image.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
