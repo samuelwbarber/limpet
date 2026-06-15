@@ -6,38 +6,19 @@
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
-    html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden;
-      font: 12px 'Cascadia Mono', Consolas, monospace; color: #cdd6f4; }
-    body { display: flex; flex-direction: column; }
-    #bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px;
-      background: #181825; border-bottom: 1px solid #313244; flex: 0 0 auto; }
-    #bar input { background: #1e1e2e; border: 1px solid #45475a; color: #cdd6f4;
-      border-radius: 4px; padding: 3px 6px; font: inherit; }
-    #host { width: 200px; } #port { width: 56px; }
-    #bar button { background: #585b70; border: 0; color: #cdd6f4; border-radius: 4px;
-      padding: 3px 10px; font: inherit; cursor: pointer; }
-    #bar button:hover { background: #6c7086; }
-    #status { margin-left: auto; color: #a6adc8; white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis; }
-    #wrap { position: relative; flex: 1 1 auto; }
+    html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
     #term { position: absolute; inset: 0; padding: 6px; }
-    #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    #drop {
+      position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
       background: rgba(137,180,250,0.12); border: 2px dashed #89b4fa; z-index: 5;
-      color: #89b4fa; font-size: 16px; pointer-events: none; }
+      color: #89b4fa; font: 16px 'Cascadia Mono', Consolas, monospace; pointer-events: none;
+    }
     #drop.show { display: flex; }
   </style>
 </head>
 <body>
-  <div id="bar">
-    <input id="host" placeholder="user@host" spellcheck="false" />
-    <input id="port" placeholder="22" spellcheck="false" />
-    <button id="connect">Connect</button>
-    <span id="status">winux</span>
-  </div>
-  <div id="wrap">
-    <div id="term"></div>
-    <div id="drop">drop files to upload</div>
-  </div>
+  <div id="term"></div>
+  <div id="drop">drop to paste files into the current session</div>
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="renderer.js"></script>
