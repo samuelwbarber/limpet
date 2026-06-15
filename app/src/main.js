@@ -20,6 +20,7 @@ try {
 
 const WINUX_MODULE = path.join(__dirname, '..', '..', 'shell', 'Winux.psd1');
 const MAX_DROP_BYTES = 20 * 1024 * 1024; // pasting more than this through a PTY is impractical
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let win = null;
 let term = null;
@@ -62,13 +63,14 @@ function startShell() {
   };
 }
 
-// A here-doc that decodes base64 into a file in the shell's *current* directory.
-// Quoted delimiter => no expansion; base64 -d tolerates the wrapped newlines.
+// A here-doc that decodes base64 into a file in the shell's *current* directory,
+// then prints a one-line confirmation (program output, so it shows even while
+// terminal echo is off). Quoted delimiter => no expansion.
 function buildDropCommand(localPath) {
   const buf = fs.readFileSync(localPath);
   const name = path.basename(localPath).replace(/'/g, `'\\''`);
   const b64 = buf.toString('base64').replace(/(.{76})/g, '$1\n');
-  return `base64 -d > '${name}' <<'WINUXB64EOF'\n${b64}\nWINUXB64EOF\n`;
+  return `base64 -d > '${name}' <<'WINUXB64EOF'\n${b64}\nWINUXB64EOF\nprintf '[winux] received %s\\n' '${name}'\n`;
 }
 
 function createWindow() {
@@ -86,7 +88,9 @@ function createWindow() {
 
   ipcMain.handle('term:drop-files', async (_e, paths) => {
     if (!term) return { ok: false };
-    const sent = [];
+
+    // Validate up front.
+    const files = [];
     for (const p of paths) {
       let st;
       try { st = fs.statSync(p); } catch (_) { continue; }
@@ -99,9 +103,22 @@ function createWindow() {
         send('term:data', `\r\n\x1b[31m[winux] ${base} is ${(st.size / 1048576).toFixed(0)} MB — too big to paste; use scp/wput.\x1b[0m\r\n`);
         continue;
       }
-      term.write(buildDropCommand(p));
-      sent.push(base);
+      files.push(p);
     }
+    if (!files.length) return { ok: true, sent: [] };
+
+    // Silence the remote terminal's echo so the base64 doesn't flood the screen,
+    // and erase the command line it was typed on. stty echo is restored after.
+    // The base64 echo is done by the remote tty, so wait for stty to take effect
+    // before streaming the data.
+    term.write("stty -echo 2>/dev/null; printf '\\033[1A\\r\\033[2K'\n");
+    await sleep(250);
+    const sent = [];
+    for (const p of files) {
+      term.write(buildDropCommand(p));
+      sent.push(path.basename(p));
+    }
+    term.write('stty echo 2>/dev/null\n');
     return { ok: true, sent };
   });
 
