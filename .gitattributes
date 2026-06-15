@@ -1,0 +1,3 @@
+# winux-remote.sh is base64-encoded and run by bash on the remote host; CRLF
+# would break it. Keep all shell scripts LF regardless of platform.
+*.sh text eol=lf
