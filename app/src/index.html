@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
+    #term { position: absolute; inset: 0; padding: 6px; }
+    #badge {
+      position: absolute; right: 10px; bottom: 6px; z-index: 2;
+      font: 11px 'Cascadia Mono', Consolas, monospace; color: #6c7086;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+  <div id="badge">winux</div>
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

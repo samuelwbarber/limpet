@@ -1,0 +1,18 @@
+{
+  "name": "winux",
+  "productName": "winux",
+  "version": "0.1.0",
+  "description": "winux - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.0"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  }
+}

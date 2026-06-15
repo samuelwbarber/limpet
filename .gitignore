@@ -8,3 +8,8 @@ desktop.ini
 # Logs / scratch
 *.log
 /tmp/
+
+# Electron app
+app/node_modules/
+app/dist/
+app/out/
