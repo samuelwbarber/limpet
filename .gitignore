@@ -8,6 +8,3 @@ desktop.ini
 # Logs / scratch
 *.log
 /tmp/
-
-# Downloaded client binaries (fetched by install-trzsz.ps1)
-/bin/

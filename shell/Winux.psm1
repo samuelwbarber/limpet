@@ -275,33 +275,23 @@ function chmod {
 function xssh {
     if (-not $args.Count) { Write-Error 'xssh: usage is the same as ssh, e.g. xssh user@host'; return }
 
-    # Pull out our own -Plain switch; everything else passes through to the client.
-    $plain = $false
-    $sshArgs = @()
-    foreach ($a in $args) { if ($a -ieq '-Plain') { $plain = $true } else { $sshArgs += $a } }
-
+    $sshArgs = @($args)
     # Add keepalives so dropped links are detected promptly, unless the caller
     # already specified them.
     if (-not ($sshArgs -match 'ServerAliveInterval')) {
         $sshArgs = @('-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-o', 'TCPKeepAlive=yes') + $sshArgs
     }
 
-    # Prefer tssh (trzsz) when installed: same ssh-style args, but lets you drag
-    # files onto the window to upload them to the remote cwd. -Plain forces ssh.
-    $client = 'ssh'
-    $transfer = $false
-    if (-not $plain) {
-        $tssh = Get-Command tssh -ErrorAction SilentlyContinue
-        if ($tssh) { $client = $tssh.Source; $transfer = $true }
-    }
+    # Remember the host so `wput` can default to it for client-side uploads.
+    $hostTok = $args | Where-Object { $_ -like '*@*' -and $_ -notlike '-*' } | Select-Object -First 1
+    if (-not $hostTok) { $hostTok = $args | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
+    if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'winux-last-ssh.txt') -Value $hostTok -Encoding ascii }
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
-    if ($transfer) {
-        Write-Host "      trzsz enabled - drag files/folders onto the window to upload to the remote cwd" -ForegroundColor DarkGray
-    }
+    if ($hostTok) { Write-Host "      upload files with:  wput <files>   (client-side scp -> $hostTok)" -ForegroundColor DarkGray }
     while ($true) {
         $start = Get-Date
-        & $client @sshArgs
+        ssh @sshArgs
         $code = $LASTEXITCODE
         $elapsed = ((Get-Date) - $start).TotalSeconds
 
@@ -320,6 +310,57 @@ function xssh {
 }
 
 # ---------------------------------------------------------------------------
+# wput: client-side-only upload. scp's local files/folders to a remote dir,
+# passwordless via your SSH key, needing nothing on the server but sshd.
+# Pairs with WezTerm's drag-drop (which pastes the path): at a LOCAL prompt,
+# type `wput `, drag the files, Enter.
+#     wput report.pdf                       -> last xssh host, remote home (~)
+#     wput .\build -Dest /var/www           -> a specific remote dir
+#     wput a.txt b.txt -To me@host -Port 2222
+# Note: "current remote dir" can't be detected client-side without the remote
+# advertising it; pass -Dest for a specific directory.
+# ---------------------------------------------------------------------------
+
+function wput {
+    $files = @(); $to = $null; $dest = ''; $port = 22
+    $key = (Join-Path $env:USERPROFILE '.ssh\id_ed25519')
+
+    $a = @($args); $i = 0
+    while ($i -lt $a.Count) {
+        switch -Regex ($a[$i]) {
+            '^-To$'   { $to   = $a[++$i] }
+            '^-Dest$' { $dest = $a[++$i] }
+            '^-Port$' { $port = $a[++$i] }
+            '^-Key$'  { $key  = $a[++$i] }
+            default   { $files += $a[$i] }
+        }
+        $i++
+    }
+
+    if (-not $files.Count) { Write-Error 'wput: no files. Usage: wput <files> [-To user@host] [-Dest /remote/dir] [-Port N] [-Key path]'; return }
+
+    if (-not $to) {
+        $state = Join-Path $env:TEMP 'winux-last-ssh.txt'
+        if (Test-Path $state) { $to = (Get-Content $state -Raw).Trim() }
+    }
+    if (-not $to) { Write-Error 'wput: no target. Pass -To user@host, or connect with xssh first so wput can reuse that host.'; return }
+
+    foreach ($f in $files) {
+        if (-not (Test-Path -LiteralPath $f)) { Write-Error "wput: local path not found: $f"; return }
+    }
+
+    $scpArgs = @('-r', '-P', "$port")
+    if (Test-Path $key) { $scpArgs += @('-i', $key) }
+    $scpArgs += $files
+    $scpArgs += ('{0}:{1}' -f $to, $dest)
+
+    Write-Host ("wput -> {0}:{1}" -f $to, $(if ($dest) { $dest } else { '~' })) -ForegroundColor Cyan
+    scp @scpArgs
+    if ($LASTEXITCODE -eq 0) { Write-Host "Uploaded $($files.Count) item(s)." -ForegroundColor Green }
+    else { Write-Host "wput: scp exited with code $LASTEXITCODE" -ForegroundColor Red }
+}
+
+# ---------------------------------------------------------------------------
 # Branding: `winux` prints the logo, version, and the available commands.
 # ---------------------------------------------------------------------------
 
@@ -330,6 +371,7 @@ function winux {
     Write-Host '  PowerShell + Linux commands, with SSH that does not drop.' -ForegroundColor Gray
     Write-Host '  Commands : ls rm cp mv mkdir touch cat head tail grep find which du df chmod' -ForegroundColor DarkGray
     Write-Host '  Resilient: xssh user@host   (drop-in for ssh, auto-reconnects)' -ForegroundColor DarkGray
+    Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
@@ -356,4 +398,4 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, winux
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, winux

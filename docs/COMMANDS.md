@@ -48,6 +48,22 @@ failure (a near-instant ssh failure is treated as fatal, not a drop). Reconnect
 is fully client-side; surviving a drop with your programs intact needs `tmux` (or
 similar) on the remote — see the `-t` example.
 
+## Uploading files: `wput`
+
+Client-side-only upload over `scp` (passwordless via your key; needs only `sshd`
+on the server). Defaults `-To` to your last `xssh` host.
+
+```powershell
+wput report.pdf                 # -> last xssh host, remote home (~)
+wput .\build -Dest /var/www     # specific remote directory
+wput a.txt b.txt -To me@host -Port 2222 -Key C:\path\id_ed25519
+```
+
+Drag-and-drop: at a **local** prompt type `wput `, drag the files (WezTerm pastes
+the paths), Enter. The drop must land in a local pane (WezTerm has no drop event,
+and a drop on a live SSH pane goes to the remote shell). The remote *current*
+directory can't be detected client-side — pass `-Dest` for a specific folder.
+
 ## Restoring the original aliases
 
 `Remove-Module Winux` restores the built-in `ls/cp/mv/rm/cat` aliases for the

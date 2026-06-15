@@ -103,22 +103,29 @@ Set up key auth with the helper:
 Enabling `ssh-agent` on Windows is a one-time admin step (the helper prints it if
 it can't do it itself). A passphrase-less key works without the agent.
 
-## Drag-and-drop file upload
+## Uploading files (client-side only)
 
-Drag a file or folder onto the window while connected and it uploads to the
-remote's **current directory**. This rides on **trzsz** — WezTerm has no drop
-event to hook and dropping just pastes the path, so a purpose-built transfer tool
-is what makes it work.
+`wput` uploads local files/folders to a remote host over **scp** — passwordless
+via your SSH key, needing **nothing on the server but sshd** (no rsync, no trzsz).
 
 ```powershell
-.\install-trzsz.ps1          # installs the client (tssh) into winux\bin
+wput report.pdf                 # -> your last xssh host, remote home (~)
+wput .\build -Dest /var/www     # a specific remote directory
+wput a.txt b.txt -To me@host -Port 2222
 ```
 
-Then install trzsz on the **remote** once (`sudo apt install trzsz` or
-`python3 -m pip install trzsz`). After that, `xssh user@host` automatically routes
-through `tssh`, and dragging files/folders onto the window uploads them to the
-remote cwd. Force the plain client with `xssh -Plain user@host`. Without trzsz,
-`xssh` behaves exactly as before (plain ssh + reconnect).
+It defaults `-To` to the host of your most recent `xssh` connection, so the
+common case is just `wput <files>`.
+
+**Drag-and-drop:** at a **local** prompt, type `wput `, drag the file(s) onto the
+window (WezTerm pastes their paths), and press Enter. Two honest limitations,
+both from WezTerm, not winux:
+
+- WezTerm has no drop event and a drop on a live SSH pane goes to the *remote*
+  shell, so the drop must land in a **local** pane (e.g. a split) — there's no
+  fully-automatic "drop on the session" without a remote helper like trzsz.
+- The remote **current directory** can't be detected client-side, so uploads go
+  to home unless you pass `-Dest`.
 
 ## Layer 3 — Rendering
 
@@ -135,7 +142,6 @@ wezterm/      wezterm.lua host config
 install.ps1   wires everything together (idempotent)
 setup-ssh.ps1 generates an SSH key + loads ssh-agent + installs key on a host
 ssh-resilient.ps1 client-side auto-reconnecting SSH (no server software needed)
-install-trzsz.ps1 installs the trzsz client (tssh) for drag-and-drop upload
 tests/        Test-Winux.ps1 smoke test
 docs/         COMMANDS.md reference
 ```
