@@ -6,7 +6,7 @@
 // works inside your SSH session with nothing installed on the remote but
 // coreutils (base64). Real ConPTY via node-pty; pipe fallback if unavailable.
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -82,6 +82,9 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'index.html'));
 
   win.webContents.on('did-finish-load', () => { term = startShell(); });
+
+  ipcMain.handle('clip:write', (_e, text) => { clipboard.writeText(String(text || '')); });
+  ipcMain.handle('clip:read', () => clipboard.readText());
 
   ipcMain.on('term:input', (_e, d) => { if (term) term.write(d); });
   ipcMain.on('term:resize', (_e, { cols, rows }) => { lastCols = cols; lastRows = rows; if (term) term.resize(cols, rows); });

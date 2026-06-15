@@ -6,4 +6,6 @@ contextBridge.exposeInMainWorld('winux', {
   sendInput: (d) => ipcRenderer.send('term:input', d),
   resize: (cols, rows) => ipcRenderer.send('term:resize', { cols, rows }),
   dropFiles: (paths) => ipcRenderer.invoke('term:drop-files', paths),
+  clipboardCopy: (text) => ipcRenderer.invoke('clip:write', text),
+  clipboardPaste: () => ipcRenderer.invoke('clip:read'),
 });

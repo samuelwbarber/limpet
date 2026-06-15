@@ -22,6 +22,33 @@ function syncSize() { fit.fit(); window.winux.resize(term.cols, term.rows); }
 window.addEventListener('resize', syncSize);
 setTimeout(syncSize, 120);
 
+// ---- copy / paste ----
+function copySelection() {
+  const sel = term.getSelection();
+  if (sel) { window.winux.clipboardCopy(sel); term.clearSelection(); }
+}
+function pasteClipboard() {
+  window.winux.clipboardPaste().then((t) => { if (t) window.winux.sendInput(t); });
+}
+
+// Ctrl+Shift+C / Ctrl+Shift+V, and Ctrl+C copies when there's a selection
+// (otherwise it falls through as the usual interrupt).
+term.attachCustomKeyEventHandler((e) => {
+  if (e.type !== 'keydown') return true;
+  const k = e.key.toLowerCase();
+  if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(); return false; }
+  if (e.ctrlKey && e.shiftKey && k === 'v') { pasteClipboard(); return false; }
+  if (e.ctrlKey && !e.shiftKey && k === 'c' && term.hasSelection()) { copySelection(); return false; }
+  return true;
+});
+
+// Right-click: copy if there's a selection, else paste.
+document.getElementById('term').addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (term.hasSelection()) copySelection();
+  else pasteClipboard();
+});
+
 // ---- drag-drop: paste files into the current session ----
 const dropEl = document.getElementById('drop');
 let dragDepth = 0;
