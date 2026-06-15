@@ -28,40 +28,76 @@ const WINUX_MODULE = path.join(__dirname, '..', '..', 'shell', 'Winux.psd1');
 // fixed box in the bottom-right corner is the chat bubble. A centered vertical
 // reel matches neither. A MutationObserver re-applies it across SPA re-renders.
 const REELS_TIDY = `(function () {
-  var BG = '#1e1e2e';
   if (!document.getElementById('winux-tidy')) {
     var s = document.createElement('style'); s.id = 'winux-tidy';
     s.textContent =
-      'html,body,main,[role="main"]{background:' + BG + ' !important}' +
+      // Make EVERYTHING transparent so the host page's #reels div (same CSS
+      // context as the terminal) provides the background — guarantees match.
+      '*{background:transparent !important;background-color:transparent !important;' +
+        'scrollbar-width:none !important}' +
       '::-webkit-scrollbar{width:0 !important;height:0 !important;background:transparent !important}' +
-      '*{scrollbar-width:none !important}' +
-      'nav,[role="navigation"],header[role="banner"]{display:none !important}';
+      'nav,[role="navigation"],header[role="banner"]{display:none !important}' +
+      'main,[role="main"]{width:100% !important;max-width:100% !important;' +
+        'min-width:0 !important;margin:0 auto !important;padding:0 !important;flex:1 1 100% !important}';
     (document.head || document.documentElement).appendChild(s);
   }
-  // The nav bar is an in-flow <div> grouping the main nav links, so hide it by
-  // finding the tightest ancestor of /reels/ or /explore/ that holds 3+ of them.
   var NAV = { '/': 1, '/explore/': 1, '/reels/': 1, '/direct/inbox/': 1 };
+  var mainEl = null;
+  function getMain() {
+    if (!mainEl || !mainEl.isConnected) mainEl = document.querySelector('main,[role="main"]');
+    return mainEl;
+  }
   function hideNav() {
+    var m = getMain();
     document.querySelectorAll('a[href="/reels/"],a[href="/explore/"]').forEach(function (a) {
       var p = a;
       for (var i = 0; i < 7 && p; i++) {
         p = p.parentElement; if (!p) break;
         var links = p.querySelectorAll('a[href]'), n = 0;
         for (var j = 0; j < links.length; j++) if (NAV[links[j].getAttribute('href')]) n++;
-        if (n >= 3) { p.style.setProperty('display', 'none', 'important'); break; }
+        if (n >= 3) {
+          p.style.setProperty('display', 'none', 'important');
+          if (m) {
+            var up = p.parentElement;
+            while (up && up !== document.body && up !== document.documentElement) {
+              if (up.contains(m)) {
+                up.style.setProperty('width', '100%', 'important');
+                up.style.setProperty('max-width', '100%', 'important');
+                break;
+              }
+              up.style.setProperty('display', 'none', 'important');
+              up = up.parentElement;
+            }
+          }
+          break;
+        }
+      }
+    });
+    if (m) {
+      var el = m;
+      while (el && el !== document.body) {
+        el.style.setProperty('width', '100%', 'important');
+        el.style.setProperty('max-width', '100%', 'important');
+        el.style.setProperty('min-width', '0', 'important');
+        el.style.setProperty('flex', '1 1 100%', 'important');
+        el.style.setProperty('padding-left', '0', 'important');
+        el.style.setProperty('padding-right', '0', 'important');
+        el = el.parentElement;
+      }
+    }
+  }
+  // Strip any inline backgrounds Instagram sets so the transparent stylesheet wins.
+  function fixBg() {
+    document.querySelectorAll('*').forEach(function (el) {
+      var tag = el.tagName;
+      if (tag === 'VIDEO' || tag === 'IMG' || tag === 'CANVAS' || tag === 'SVG' ||
+          tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'META') return;
+      if (el.style.background || el.style.backgroundColor || el.style.backgroundImage) {
+        el.style.setProperty('background', 'transparent', 'important');
+        el.style.setProperty('background-color', 'transparent', 'important');
       }
     });
   }
-  // Instagram paints its own dark bg on <main> and its wrapper divs, covering the
-  // body color — recolor <main>, its ancestors up to body, and a few descendants.
-  function fixBg() {
-    var m = document.querySelector('main,[role="main"]'); if (!m) return;
-    var els = [document.documentElement, document.body], p = m;
-    while (p && p !== document.body) { els.push(p); p = p.parentElement; }
-    var c = m; for (var k = 0; k < 3 && c; k++) { els.push(c); c = c.firstElementChild; }
-    els.forEach(function (el) { if (el) el.style.setProperty('background-color', BG, 'important'); });
-  }
-  // Also hide a fixed/sticky chat bubble in the bottom-right corner, if present.
   function hideBubble() {
     var vw = window.innerWidth, vh = window.innerHeight;
     document.querySelectorAll('div,section').forEach(function (el) {
@@ -79,7 +115,7 @@ const REELS_TIDY = `(function () {
   tidy();
   if (!window.__winuxObs) {
     window.__winuxObs = new MutationObserver(function () {
-      clearTimeout(window.__winuxT); window.__winuxT = setTimeout(tidy, 200);
+      clearTimeout(window.__winuxT); window.__winuxT = setTimeout(tidy, 80);
     });
     window.__winuxObs.observe(document.documentElement, { childList: true, subtree: true });
   }
@@ -301,6 +337,9 @@ function createWindow() {
   // not run reliably here, but executeJavaScript on the guest does. Re-injected
   // on every load and SPA navigation; a MutationObserver inside keeps it applied.
   win.webContents.on('did-attach-webview', (_e, wc) => {
+    // Make the webview's native backing store fully transparent so the host
+    // page's #reels div (#1e1e2e, same CSS as the terminal) shows through.
+    try { wc.setBackgroundColor('#00000000'); } catch (_) {}
     const tidy = () => wc.executeJavaScript(REELS_TIDY).catch(() => {});
     wc.on('dom-ready', tidy);
     wc.on('did-finish-load', tidy);
