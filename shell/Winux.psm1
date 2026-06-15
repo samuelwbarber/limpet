@@ -275,7 +275,11 @@ function chmod {
 function xssh {
     if (-not $args.Count) { Write-Error 'xssh: usage is the same as ssh, e.g. xssh user@host'; return }
 
-    $sshArgs = @($args)
+    # -Raw skips the winux shell-integration bootstrap (plain resilient ssh).
+    $raw = $false; $rest = @()
+    foreach ($a in $args) { if ($a -ieq '-Raw') { $raw = $true } else { $rest += $a } }
+
+    $sshArgs = @($rest)
     # Add keepalives so dropped links are detected promptly, unless the caller
     # already specified them.
     if (-not ($sshArgs -match 'ServerAliveInterval')) {
@@ -283,12 +287,25 @@ function xssh {
     }
 
     # Remember the host so `wput` can default to it for client-side uploads.
-    $hostTok = $args | Where-Object { $_ -like '*@*' -and $_ -notlike '-*' } | Select-Object -First 1
-    if (-not $hostTok) { $hostTok = $args | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
+    $hostTok = $rest | Where-Object { $_ -like '*@*' -and $_ -notlike '-*' } | Select-Object -First 1
+    if (-not $hostTok) { $hostTok = $rest | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
     if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'winux-last-ssh.txt') -Value $hostTok -Encoding ascii }
 
+    # Load winux shell integration into the remote session (sent fresh each
+    # connect; nothing persisted on the server). Gives peek/download/upload.
+    $integrated = $false
+    if (-not $raw) {
+        $scriptPath = Join-Path $PSScriptRoot 'winux-remote.sh'
+        if (Test-Path $scriptPath) {
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $scriptPath -Raw)))
+            $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else . $f; exec ${SHELL:-sh} -i; fi; rm -f $f'
+            $sshArgs = @('-t') + $sshArgs + @($tpl.Replace('__B64__', $b64))
+            $integrated = $true
+        }
+    }
+
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
-    if ($hostTok) { Write-Host "      upload files with:  wput <files>   (client-side scp -> $hostTok)" -ForegroundColor DarkGray }
+    if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path>" -ForegroundColor DarkGray }
     while ($true) {
         $start = Get-Date
         ssh @sshArgs

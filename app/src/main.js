@@ -9,6 +9,7 @@
 const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
 
 let ptyLib = null;
@@ -31,6 +32,76 @@ function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
 }
 
+// --- winux shell integration (download/upload from inside an ssh session) ---
+// The remote helpers (shell/winux-remote.sh, loaded by xssh) emit private OSC
+// sequences: ESC ]5379; <verb> ; <args...> BEL. We catch those here and let
+// everything else (normal output, OSC 1337 inline images for `peek`) pass
+// straight through to xterm.js untouched.
+const WINUX_OSC = '\x1b]5379;';
+const BEL = '\x07';
+let outPending = '';
+
+// Longest suffix of `s` that is a (partial) prefix of the OSC marker, so a
+// marker split across two PTY chunks isn't missed or leaked to the screen.
+function heldPrefixLen(s) {
+  const max = Math.min(s.length, WINUX_OSC.length - 1);
+  for (let n = max; n > 0; n--) {
+    if (WINUX_OSC.startsWith(s.slice(s.length - n))) return n;
+  }
+  return 0;
+}
+
+function forwardOutput(data) {
+  let buf = outPending + data;
+  outPending = '';
+  let out = '';
+  while (buf.length) {
+    const start = buf.indexOf(WINUX_OSC);
+    if (start === -1) {
+      const hold = heldPrefixLen(buf);
+      out += buf.slice(0, buf.length - hold);
+      outPending = buf.slice(buf.length - hold);
+      break;
+    }
+    out += buf.slice(0, start);
+    const end = buf.indexOf(BEL, start + WINUX_OSC.length);
+    if (end === -1) { outPending = buf.slice(start); break; } // wait for the rest
+    handleWinuxOsc(buf.slice(start + WINUX_OSC.length, end));
+    buf = buf.slice(end + 1);
+  }
+  if (out) send('term:data', out);
+}
+
+const b64dec = (s) => Buffer.from(s || '', 'base64');
+
+function handleWinuxOsc(seq) {
+  const parts = seq.split(';');
+  if (parts[0] === 'download') {
+    saveDownload(b64dec(parts[1]).toString('utf8'), b64dec(parts[2]));
+  } else if (parts[0] === 'upload') {
+    injectFiles([b64dec(parts[1]).toString('utf8')]);
+  }
+}
+
+function saveDownload(name, buf) {
+  try {
+    const safe = path.basename(name) || 'download';
+    const dir = path.join(os.homedir(), 'Downloads');
+    fs.mkdirSync(dir, { recursive: true });
+    let dest = path.join(dir, safe);
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(safe);
+      const stem = path.basename(safe, ext);
+      let n = 1;
+      do { dest = path.join(dir, `${stem} (${n})${ext}`); n++; } while (fs.existsSync(dest));
+    }
+    fs.writeFileSync(dest, buf);
+    send('term:data', `\r\n\x1b[32m[winux] saved ${path.basename(dest)} to Downloads\x1b[0m\r\n`);
+  } catch (e) {
+    send('term:data', `\r\n\x1b[31m[winux] download failed: ${e.message}\x1b[0m\r\n`);
+  }
+}
+
 function startShell() {
   const args = ['-NoExit', '-NoLogo', '-Command', `Import-Module "${WINUX_MODULE}"`];
 
@@ -40,7 +111,7 @@ function startShell() {
         name: 'xterm-256color', cols: lastCols, rows: lastRows,
         cwd: process.env.USERPROFILE || process.cwd(), env: process.env,
       });
-      p.onData((d) => send('term:data', d));
+      p.onData((d) => forwardOutput(d));
       p.onExit(() => send('term:data', '\r\n\x1b[90m[winux] shell exited.\x1b[0m\r\n'));
       return {
         write: (d) => { try { p.write(d); } catch (_) { /* ignore */ } },
@@ -53,8 +124,8 @@ function startShell() {
   }
 
   const cp = spawn('powershell.exe', args, { windowsHide: true });
-  cp.stdout.on('data', (d) => send('term:data', d.toString()));
-  cp.stderr.on('data', (d) => send('term:data', d.toString()));
+  cp.stdout.on('data', (d) => forwardOutput(d.toString()));
+  cp.stderr.on('data', (d) => forwardOutput(d.toString()));
   cp.on('exit', () => send('term:data', '\r\n\x1b[90m[winux] shell exited.\x1b[0m\r\n'));
   return {
     write: (d) => { try { cp.stdin.write(d); } catch (_) { /* ignore */ } },
@@ -74,6 +145,47 @@ function buildDropPayload(localPath) {
   return `base64 -d > '${name}'\n${b64}\n\x04printf '[winux] received %s\\n' '${name}'\n`;
 }
 
+// "Paste" one or more PC files into the current session by base64-streaming them
+// into the live prompt. Used by drag-drop and by the in-session `upload` command
+// (whose prompt is already in the target remote directory). Folders and oversized
+// files are skipped with a note.
+async function injectFiles(paths) {
+  if (!term) return { ok: false };
+  const files = [];
+  for (const p of paths) {
+    let st;
+    try { st = fs.statSync(p); } catch (_) {
+      send('term:data', `\r\n\x1b[31m[winux] not found: ${p}\x1b[0m\r\n`);
+      continue;
+    }
+    const base = path.basename(p);
+    if (st.isDirectory()) {
+      send('term:data', `\r\n\x1b[33m[winux] skipping folder (files only): ${base}\x1b[0m\r\n`);
+      continue;
+    }
+    if (st.size > MAX_DROP_BYTES) {
+      send('term:data', `\r\n\x1b[31m[winux] ${base} is ${(st.size / 1048576).toFixed(0)} MB — too big to paste; use scp/wput.\x1b[0m\r\n`);
+      continue;
+    }
+    files.push(p);
+  }
+  if (!files.length) return { ok: true, sent: [] };
+
+  // Silence the remote terminal's echo so the base64 doesn't flood the screen,
+  // and erase the command line it was typed on. stty echo is restored after.
+  // The base64 echo is done by the remote tty, so wait for stty to take effect
+  // before streaming the data.
+  term.write("stty -echo 2>/dev/null; printf '\\033[1A\\r\\033[2K'\n");
+  await sleep(250);
+  const sent = [];
+  for (const p of files) {
+    term.write(buildDropPayload(p));
+    sent.push(path.basename(p));
+  }
+  term.write('stty echo 2>/dev/null\n');
+  return { ok: true, sent };
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1000, height: 660, backgroundColor: '#1e1e2e', title: 'winux',
@@ -90,41 +202,7 @@ function createWindow() {
   ipcMain.on('term:input', (_e, d) => { if (term) term.write(d); });
   ipcMain.on('term:resize', (_e, { cols, rows }) => { lastCols = cols; lastRows = rows; if (term) term.resize(cols, rows); });
 
-  ipcMain.handle('term:drop-files', async (_e, paths) => {
-    if (!term) return { ok: false };
-
-    // Validate up front.
-    const files = [];
-    for (const p of paths) {
-      let st;
-      try { st = fs.statSync(p); } catch (_) { continue; }
-      const base = path.basename(p);
-      if (st.isDirectory()) {
-        send('term:data', `\r\n\x1b[33m[winux] skipping folder (files only): ${base}\x1b[0m\r\n`);
-        continue;
-      }
-      if (st.size > MAX_DROP_BYTES) {
-        send('term:data', `\r\n\x1b[31m[winux] ${base} is ${(st.size / 1048576).toFixed(0)} MB — too big to paste; use scp/wput.\x1b[0m\r\n`);
-        continue;
-      }
-      files.push(p);
-    }
-    if (!files.length) return { ok: true, sent: [] };
-
-    // Silence the remote terminal's echo so the base64 doesn't flood the screen,
-    // and erase the command line it was typed on. stty echo is restored after.
-    // The base64 echo is done by the remote tty, so wait for stty to take effect
-    // before streaming the data.
-    term.write("stty -echo 2>/dev/null; printf '\\033[1A\\r\\033[2K'\n");
-    await sleep(250);
-    const sent = [];
-    for (const p of files) {
-      term.write(buildDropPayload(p));
-      sent.push(path.basename(p));
-    }
-    term.write('stty echo 2>/dev/null\n');
-    return { ok: true, sent };
-  });
+  ipcMain.handle('term:drop-files', (_e, paths) => injectFiles(paths));
 
   win.on('closed', () => { if (term) term.kill(); term = null; win = null; });
 }
