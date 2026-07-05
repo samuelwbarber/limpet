@@ -291,6 +291,33 @@ function xssh {
     if (-not $hostTok) { $hostTok = $rest | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
     if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'winux-last-ssh.txt') -Value $hostTok -Encoding ascii }
 
+    # Windows Hello auth: if this host was enrolled (Enable-WinuxHello), unseal the
+    # winux key's passphrase with one Hello prompt and feed it to ssh via an
+    # askpass helper. The passphrase stays cached in this process for the whole
+    # resilient loop (so reconnects don't re-prompt) and is wiped on exit.
+    $helloActive = $false
+    if ($hostTok -and (Get-Command Test-WinuxHelloEnrolled -ErrorAction SilentlyContinue) -and (Test-WinuxHelloEnrolled $hostTok)) {
+        $keyPath = Get-WinuxKeyPath
+        if (Test-Path $keyPath) {
+            try {
+                Write-Host 'xssh: Windows Hello...' -ForegroundColor Cyan
+                $env:WINUX_ASKPASS = Get-WinuxHelloPassphrase
+                $env:SSH_ASKPASS = Get-WinuxAskpass
+                $env:SSH_ASKPASS_REQUIRE = 'force'
+                # accept-new keeps the askpass helper from being handed a host-key
+                # yes/no prompt (it only ever answers the key passphrase).
+                $sshArgs = @('-i', $keyPath, '-o', 'IdentitiesOnly=yes',
+                             '-o', 'PreferredAuthentications=publickey',
+                             '-o', 'StrictHostKeyChecking=accept-new') + $sshArgs
+                $helloActive = $true
+            }
+            catch {
+                $env:WINUX_ASKPASS = $null; $env:SSH_ASKPASS = $null; $env:SSH_ASKPASS_REQUIRE = $null
+                Write-Host "xssh: Hello unlock failed ($($_.Exception.Message)); falling back to normal auth." -ForegroundColor Yellow
+            }
+        }
+    }
+
     # Load winux shell integration into the remote session (sent fresh each
     # connect; nothing persisted on the server). Gives peek/download/upload.
     $integrated = $false
@@ -305,24 +332,35 @@ function xssh {
     }
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
+    if ($helloActive) { Write-Host "      auth: Windows Hello (winux key)" -ForegroundColor DarkGray }
     if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path> | reels [url]" -ForegroundColor DarkGray }
-    while ($true) {
-        $start = Get-Date
-        ssh @sshArgs
-        $code = $LASTEXITCODE
-        $elapsed = ((Get-Date) - $start).TotalSeconds
+    try {
+        while ($true) {
+            $start = Get-Date
+            ssh @sshArgs
+            $code = $LASTEXITCODE
+            $elapsed = ((Get-Date) - $start).TotalSeconds
 
-        if ($code -eq 0) { break }   # clean logout / detach
+            if ($code -eq 0) { break }   # clean logout / detach
 
-        # A near-instant non-zero exit means ssh never connected (bad host, auth
-        # failure, usage error) -- retrying would loop forever, so stop.
-        if ($elapsed -lt 5) {
-            Write-Host "[xssh] connection exited immediately (code $code): host/auth error, not a drop. Stopping." -ForegroundColor Red
-            break
+            # A near-instant non-zero exit means ssh never connected (bad host, auth
+            # failure, usage error) -- retrying would loop forever, so stop.
+            if ($elapsed -lt 5) {
+                Write-Host "[xssh] connection exited immediately (code $code): host/auth error, not a drop. Stopping." -ForegroundColor Red
+                break
+            }
+
+            Write-Host "`n[xssh] link dropped (exit $code) -- reconnecting in 2s... (Ctrl+C to stop)" -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
         }
-
-        Write-Host "`n[xssh] link dropped (exit $code) -- reconnecting in 2s... (Ctrl+C to stop)" -ForegroundColor Yellow
-        Start-Sleep -Seconds 2
+    }
+    finally {
+        # Wipe the cached passphrase and askpass wiring from this process.
+        if ($helloActive) {
+            $env:WINUX_ASKPASS = $null
+            $env:SSH_ASKPASS = $null
+            $env:SSH_ASKPASS_REQUIRE = $null
+        }
     }
 }
 
@@ -379,20 +417,42 @@ function wput {
 
 # ---------------------------------------------------------------------------
 # peek: show an image inline in the terminal. Emits the iTerm2 inline-image
-# escape, which winux's xterm image addon renders. `peak` is an alias.
-#   peek screenshot.png
+# escape tagged with a winux-private rows=N field, then prints N newlines.
+# ConPTY cannot know an image occupies screen rows, so the newlines reserve
+# real blank rows in its model and the winux app draws the image over them —
+# without this, the next prompt overdraws the image. `peak` is an alias.
+#   peek screenshot.png shot*.jpg
 # ---------------------------------------------------------------------------
 
 function peek {
-    param([Parameter(Mandatory = $true)] [string] $Path)
-    $rp = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
-    if (-not $rp) { Write-Error "peek: file not found: $Path"; return }
-    $bytes = [IO.File]::ReadAllBytes($rp.Path)
-    $b64 = [Convert]::ToBase64String($bytes)
-    $name64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFileName($rp.Path)))
-    $e = [char]27; $bel = [char]7
-    Write-Host -NoNewline ("{0}]1337;File=name={1};size={2};inline=1;preserveAspectRatio=1:{3}{4}" -f $e, $name64, $bytes.Length, $b64, $bel)
-    Write-Host ''
+    if (-not $args.Count) { Write-Error 'peek: usage: peek <image> [...]'; return }
+    foreach ($arg in $args) {
+        $rps = Resolve-Path -Path $arg -ErrorAction SilentlyContinue
+        if (-not $rps) { Write-Error "peek: file not found: $arg"; continue }
+        foreach ($rp in @($rps)) {
+            if (-not (Test-Path -LiteralPath $rp.Path -PathType Leaf)) { continue }
+            $bytes = [IO.File]::ReadAllBytes($rp.Path)
+
+            # Display height in terminal rows, from the image's pixel height
+            # (~18 px per row in the winux app; the app fits the image into the
+            # reserved rows preserving aspect, so this only sets the scale).
+            $rows = 18
+            try {
+                Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+                $ms = New-Object System.IO.MemoryStream(, $bytes)
+                $img = [System.Drawing.Image]::FromStream($ms, $false, $false)
+                $rows = [int][Math]::Ceiling($img.Height / 18.0)
+                $img.Dispose(); $ms.Dispose()
+            } catch { }
+            $rows = [Math]::Max(2, [Math]::Min(22, $rows))
+
+            $b64 = [Convert]::ToBase64String($bytes)
+            $name64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFileName($rp.Path)))
+            $e = [char]27; $bel = [char]7
+            Write-Host -NoNewline ("{0}]1337;File=name={1};size={2};inline=1;preserveAspectRatio=1;rows={3}:{4}{5}" -f $e, $name64, $bytes.Length, $rows, $b64, $bel)
+            Write-Host -NoNewline ("`n" * $rows)
+        }
+    }
 }
 
 function peak { peek @args }
@@ -418,6 +478,7 @@ function winux {
     Write-Host '  PowerShell + Linux commands, with SSH that does not drop.' -ForegroundColor Gray
     Write-Host '  Commands : ls rm cp mv mkdir touch cat head tail grep find which du df chmod' -ForegroundColor DarkGray
     Write-Host '  Resilient: xssh user@host   (drop-in for ssh, auto-reconnects)' -ForegroundColor DarkGray
+    Write-Host '  Hello SSH: Enable-WinuxHello user@host  (password once, then Windows Hello)' -ForegroundColor DarkGray
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
@@ -447,4 +508,5 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, winux
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, winux,
+    Enable-WinuxHello, Disable-WinuxHello, Get-WinuxHelloStatus, Get-WinuxHelloPassphrase, Test-WinuxHelloEnrolled, Protect-WinuxSecret, Unprotect-WinuxSecret, Get-WinuxAskpass, Get-WinuxKeyPath

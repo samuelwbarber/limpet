@@ -1,0 +1,111 @@
+# Generates the winux app icon (winux.ico, multi-resolution) and a 256px PNG
+# preview. The mark is a terminal prompt — a blue chevron ">" and a green cursor
+# "_" — on the app's own dark background (#1e1e2e), echoing the hybrid
+# PowerShell/Linux terminal. Re-run to regenerate after tweaking.
+#
+#   powershell -ExecutionPolicy Bypass -File app\build\make-icon.ps1
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+
+$outDir = $PSScriptRoot
+$icoPath = Join-Path $outDir 'winux.ico'
+$pngPath = Join-Path $outDir 'winux-256.png'
+
+# Catppuccin Mocha palette (matches the terminal theme in renderer.js).
+$bgTop    = [System.Drawing.Color]::FromArgb(255, 30, 30, 46)   # #1e1e2e
+$bgBottom = [System.Drawing.Color]::FromArgb(255, 24, 24, 37)   # #181825
+$blue     = [System.Drawing.Color]::FromArgb(255, 137, 180, 250) # #89b4fa
+$green    = [System.Drawing.Color]::FromArgb(255, 166, 227, 161) # #a6e3a1
+
+function New-IconBitmap([int]$S) {
+    $bmp = New-Object System.Drawing.Bitmap($S, $S, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.Clear([System.Drawing.Color]::Transparent)
+
+    # Rounded-rectangle "window" background with a vertical gradient.
+    $pad = [float]($S * 0.06)
+    $r   = [float]($S * 0.20)
+    $x0  = $pad; $y0 = $pad
+    $w   = [float]($S - 2 * $pad); $h = $w
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $d = $r * 2
+    $path.AddArc($x0, $y0, $d, $d, 180, 90)
+    $path.AddArc($x0 + $w - $d, $y0, $d, $d, 270, 90)
+    $path.AddArc($x0 + $w - $d, $y0 + $h - $d, $d, $d, 0, 90)
+    $path.AddArc($x0, $y0 + $h - $d, $d, $d, 90, 90)
+    $path.CloseFigure()
+
+    $rect = New-Object System.Drawing.RectangleF($x0, $y0, $w, $h)
+    $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $bgTop, $bgBottom, 90.0)
+    $g.FillPath($grad, $path)
+
+    # Subtle blue rim.
+    $rimPen = New-Object System.Drawing.Pen($blue, [float]($S * 0.012))
+    $rimPen.Color = [System.Drawing.Color]::FromArgb(60, $blue)
+    $g.DrawPath($rimPen, $path)
+
+    # Prompt chevron ">" (blue) and cursor "_" (green), drawn as strokes so they
+    # stay crisp at every size.
+    $stroke = [float]($S * 0.085)
+    $penBlue = New-Object System.Drawing.Pen($blue, $stroke)
+    $penBlue.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $penBlue.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
+    $penBlue.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+
+    $pTop = New-Object System.Drawing.PointF([float]($S * 0.30), [float]($S * 0.34))
+    $pTip = New-Object System.Drawing.PointF([float]($S * 0.52), [float]($S * 0.50))
+    $pBot = New-Object System.Drawing.PointF([float]($S * 0.30), [float]($S * 0.66))
+    $g.DrawLines($penBlue, @($pTop, $pTip, $pBot))
+
+    $penGreen = New-Object System.Drawing.Pen($green, $stroke)
+    $penGreen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $penGreen.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
+    $g.DrawLine($penGreen, [float]($S * 0.58), [float]($S * 0.66), [float]($S * 0.74), [float]($S * 0.66))
+
+    $g.Dispose()
+    $grad.Dispose(); $rimPen.Dispose(); $penBlue.Dispose(); $penGreen.Dispose(); $path.Dispose()
+    return $bmp
+}
+
+# Render each size and PNG-encode it into memory.
+$sizes = 16, 24, 32, 48, 64, 128, 256
+$pngs = @()
+foreach ($s in $sizes) {
+    $bmp = New-IconBitmap $s
+    $ms = New-Object System.IO.MemoryStream
+    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    $pngs += , @{ size = $s; bytes = $ms.ToArray() }
+    if ($s -eq 256) { [System.IO.File]::WriteAllBytes($pngPath, $ms.ToArray()) }
+    $ms.Dispose(); $bmp.Dispose()
+}
+
+# Assemble the .ico (ICONDIR + ICONDIRENTRY[] + PNG payloads). PNG-compressed
+# entries are supported by Windows Vista and later.
+$fs = New-Object System.IO.MemoryStream
+$bw = New-Object System.IO.BinaryWriter($fs)
+$bw.Write([UInt16]0)               # reserved
+$bw.Write([UInt16]1)               # type: icon
+$bw.Write([UInt16]$pngs.Count)     # image count
+
+$offset = 6 + 16 * $pngs.Count
+foreach ($p in $pngs) {
+    $dim = if ($p.size -ge 256) { 0 } else { $p.size }
+    $bw.Write([Byte]$dim)          # width  (0 => 256)
+    $bw.Write([Byte]$dim)          # height (0 => 256)
+    $bw.Write([Byte]0)             # palette
+    $bw.Write([Byte]0)             # reserved
+    $bw.Write([UInt16]1)           # color planes
+    $bw.Write([UInt16]32)          # bits per pixel
+    $bw.Write([UInt32]$p.bytes.Length)
+    $bw.Write([UInt32]$offset)
+    $offset += $p.bytes.Length
+}
+foreach ($p in $pngs) { $bw.Write($p.bytes) }
+$bw.Flush()
+[System.IO.File]::WriteAllBytes($icoPath, $fs.ToArray())
+$bw.Dispose(); $fs.Dispose()
+
+Write-Host "Wrote $icoPath ($($pngs.Count) sizes) and $pngPath"

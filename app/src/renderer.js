@@ -1,6 +1,6 @@
 // Renderer: xterm.js wired to the shell, plus drag-drop that "pastes" files
 // into whatever session is in front (local or an ssh you started with xssh).
-/* global Terminal, FitAddon */
+/* global Terminal, FitAddon, ImageAddon */
 
 const term = new Terminal({
   fontFamily: "'Cascadia Mono', Consolas, monospace",

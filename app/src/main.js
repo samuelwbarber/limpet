@@ -111,7 +111,54 @@ const REELS_TIDY = `(function () {
       }
     });
   }
-  function tidy() { hideNav(); fixBg(); hideBubble(); }
+  // Instagram's reels feed is a vertical scroll-snap list, but each snap item is
+  // only as tall as the reel (~462px) while the panel is taller (~625px) — so the
+  // current reel sits high and the next one's top peeks in at the bottom. Make
+  // each snap item fill the viewport and center its contents, and scale the reel's
+  // media up to use that height so it reads as one full-screen reel at a time.
+  function centerReel() {
+    var vh = window.innerHeight;
+    if (!vh) return;
+    var snaps = [];
+    document.querySelectorAll('div,section,article').forEach(function (el) {
+      var a = getComputedStyle(el).scrollSnapAlign;
+      if (a && a !== 'none') snaps.push(el);
+    });
+    if (!snaps.length) return;
+    var vw = window.innerWidth;
+    snaps.forEach(function (el) {
+      el.style.setProperty('height', vh + 'px', 'important');
+      el.style.setProperty('min-height', vh + 'px', 'important');
+      el.style.setProperty('scroll-snap-align', 'center', 'important');
+      el.style.setProperty('display', 'flex', 'important');
+      el.style.setProperty('flex-direction', 'column', 'important');
+      el.style.setProperty('align-items', 'center', 'important');
+      el.style.setProperty('justify-content', 'center', 'important');
+      // Scale the whole reel as one unit (video AND its overlays: follow button,
+      // creator icon, captions, comment box) so everything stays proportional at
+      // any window size. Scaling just the video clip box left the overlays at
+      // Instagram's native size, which only looked right at one window size.
+      var content = el.firstElementChild;
+      if (!content) return;
+      // offsetWidth/Height are the layout box (unaffected by our own transform),
+      // so the scale stays stable across the MutationObserver's re-runs.
+      var natH = content.offsetHeight, natW = content.offsetWidth;
+      if (natH < 8 || natW < 8) return;
+      // Fit within the panel: fill ~96% of the height, capped so it never spills
+      // past the sides.
+      var scale = Math.min((vh * 0.96) / natH, (vw * 0.99) / natW);
+      if (Math.abs(scale - 1) < 0.01) { content.style.removeProperty('transform'); return; }
+      content.style.setProperty('transform', 'scale(' + scale.toFixed(3) + ')', 'important');
+      content.style.setProperty('transform-origin', 'center center', 'important');
+    });
+    var sc = snaps[0].parentElement;
+    if (sc) {
+      sc.style.setProperty('height', vh + 'px', 'important');
+      sc.style.setProperty('scroll-snap-type', 'y mandatory', 'important');
+      sc.style.setProperty('overflow-y', 'scroll', 'important');
+    }
+  }
+  function tidy() { hideNav(); fixBg(); hideBubble(); centerReel(); }
   tidy();
   if (!window.__winuxObs) {
     window.__winuxObs = new MutationObserver(function () {
@@ -134,16 +181,25 @@ function send(channel, payload) {
 
 // --- winux shell integration (download/upload from inside an ssh session) ---
 // The remote helpers (shell/winux-remote.sh, loaded by xssh) emit private OSC
-// sequences: ESC ]5379; <verb> ; <args...> BEL. We catch those here and let
-// everything else (normal output, OSC 1337 inline images for `peek`) pass
-// straight through to xterm.js untouched.
+// sequences: ESC ]5379; <verb> ; <args...> BEL. We catch those here. `peek`
+// emits iTerm2 OSC 1337 File sequences tagged with a winux-private `rows=N`
+// field: those are also intercepted, because ConPTY has no idea an inline image
+// occupies N screen rows — letting xterm's image addon place it at the cursor
+// desyncs ConPTY's model from the screen and later output overdraws the image.
+// Instead peek prints N real newlines after the OSC (advancing ConPTY and xterm
+// identically) and we hand the image to the renderer to draw over those
+// reserved blank rows. Untagged OSC 1337 (e.g. a third-party imgcat) and all
+// other output pass through to xterm.js untouched.
 const WINUX_OSC = '\x1b]5379;';
+const IIP_OSC = '\x1b]1337;';
+const OSC_MARKERS = [WINUX_OSC, IIP_OSC];
 const BEL = '\x07';
 const KNOWN_VERBS = ['download', 'upload', 'reels'];
+const MAX_IIP_HEADER = 2048;
 let outPending = '';
 let flushTimer = null;
 
-// A trailing partial-prefix of the marker is held back so a marker split across
+// A trailing partial-prefix of a marker is held back so a marker split across
 // two PTY chunks isn't leaked to the screen — but it's flushed on a short timer
 // if no more output follows, so a held byte (e.g. a lone trailing ESC, which is
 // extremely common) can never leave the screen frozen at an idle prompt.
@@ -155,13 +211,27 @@ function scheduleFlush() {
   }, 30);
 }
 
-// Longest suffix of `s` that is a (partial) prefix of the OSC marker.
+// Longest suffix of `s` that is a (partial) prefix of any OSC marker.
 function heldPrefixLen(s) {
-  const max = Math.min(s.length, WINUX_OSC.length - 1);
-  for (let n = max; n > 0; n--) {
-    if (WINUX_OSC.startsWith(s.slice(s.length - n))) return n;
+  let best = 0;
+  for (const m of OSC_MARKERS) {
+    const max = Math.min(s.length, m.length - 1);
+    for (let n = max; n > best; n--) {
+      if (m.startsWith(s.slice(s.length - n))) { best = n; break; }
+    }
   }
-  return 0;
+  return best;
+}
+
+// Earliest marker occurrence in the buffer.
+function findMarker(buf) {
+  let idx = -1;
+  let marker = null;
+  for (const m of OSC_MARKERS) {
+    const i = buf.indexOf(m);
+    if (i !== -1 && (idx === -1 || i < idx)) { idx = i; marker = m; }
+  }
+  return { idx, marker };
 }
 
 // Is what follows the marker still a plausible winux verb? Lets us bail out fast
@@ -173,13 +243,28 @@ function looksLikeVerb(after) {
   return KNOWN_VERBS.includes(after.slice(0, semi));
 }
 
+// Classify an OSC 1337 body (may be incomplete): 'ours' = a peek image we must
+// intercept (File= header carrying rows=), 'other' = pass through to xterm,
+// 'maybe' = header not complete yet, keep buffering.
+function classifyIip(after) {
+  const colon = after.indexOf(':');
+  const header = colon === -1 ? after : after.slice(0, colon);
+  if (header.length < 5) {
+    if (!'File='.startsWith(header)) return 'other';
+    return colon === -1 ? 'maybe' : 'other';
+  }
+  if (!header.startsWith('File=')) return 'other';
+  if (colon === -1) return header.length > MAX_IIP_HEADER ? 'other' : 'maybe';
+  return /(^|;)rows=\d+($|;)/.test(header.slice(5)) ? 'ours' : 'other';
+}
+
 function forwardOutput(data) {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   let buf = outPending + data;
   outPending = '';
   let out = '';
   while (buf.length) {
-    const start = buf.indexOf(WINUX_OSC);
+    const { idx: start, marker } = findMarker(buf);
     if (start === -1) {
       const hold = heldPrefixLen(buf);
       out += buf.slice(0, buf.length - hold);
@@ -187,26 +272,71 @@ function forwardOutput(data) {
       break;
     }
     out += buf.slice(0, start);
-    const afterMark = start + WINUX_OSC.length;
+    buf = buf.slice(start);
+    const afterMark = marker.length;
     const end = buf.indexOf(BEL, afterMark);
     if (end === -1) {
-      // Real winux sequence still arriving (a download can be large) → wait for
-      // BEL. A false marker is dropped back to the screen right away.
-      if (looksLikeVerb(buf.slice(afterMark))) { outPending = buf.slice(start); }
-      else { out += buf.slice(start, afterMark); buf = buf.slice(afterMark); continue; }
+      // Real winux sequence still arriving (a download or image can be large) →
+      // wait for BEL. A false marker is dropped back to the screen right away.
+      const after = buf.slice(afterMark);
+      const wait = marker === WINUX_OSC ? looksLikeVerb(after) : classifyIip(after) !== 'other';
+      if (wait) { outPending = buf; }
+      else { out += buf.slice(0, afterMark); buf = buf.slice(afterMark); continue; }
       break;
     }
-    handleWinuxOsc(buf.slice(afterMark, end));
+    const body = buf.slice(afterMark, end);
+    if (marker === WINUX_OSC) {
+      handleWinuxOsc(body);
+    } else if (classifyIip(body) === 'ours') {
+      out += transformPeekImage(body);
+    } else {
+      out += buf.slice(0, end + 1); // untagged OSC 1337: xterm's business
+    }
     buf = buf.slice(end + 1);
   }
   if (out) send('term:data', out);
   // A held *partial-prefix* (no full marker yet) must never linger — flush it if
   // the stream goes quiet. A held full marker (real download in flight) streams
   // back-to-back, so it isn't on this timer.
-  if (outPending && !outPending.startsWith(WINUX_OSC)) scheduleFlush();
+  if (outPending && !OSC_MARKERS.some((m) => outPending.startsWith(m))) scheduleFlush();
 }
 
 const b64dec = (s) => Buffer.from(s || '', 'base64');
+
+// Formats xterm's image addon can decode.
+function sniffImageMime(buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf.length >= 6 && buf.slice(0, 4).toString('ascii') === 'GIF8') return 'image/gif';
+  return null;
+}
+
+// A peek image (OSC 1337 File tagged with rows=N). The shell printed N real
+// newlines right after the sequence, reserving N blank rows in ConPTY's model.
+// Rewrite the sequence so the image addon renders exactly N cell rows (the
+// image lives in buffer cells, so it scrolls — and is overwritten — exactly
+// like text), and append cursor-up + CR to undo the addon's cursor advance.
+// xterm's cursor then stays where ConPTY believes it is, the reserved newlines
+// advance both models identically, and the prompt lands below the image
+// instead of overdrawing it.
+function transformPeekImage(body) {
+  const colon = body.indexOf(':');
+  const fields = {};
+  for (const kv of body.slice(5, colon).split(';')) {
+    const eq = kv.indexOf('=');
+    if (eq > 0) fields[kv.slice(0, eq)] = kv.slice(eq + 1);
+  }
+  const rows = Math.max(1, parseInt(fields.rows, 10) || 1);
+  const b64 = body.slice(colon + 1);
+  const name = fields.name ? b64dec(fields.name).toString('utf8') : 'image';
+  const mime = sniffImageMime(b64dec(b64.slice(0, 44)));
+  if (!mime) {
+    return `\x1b[31m[winux] peek: ${name}: not a supported image (png/jpeg/gif)\x1b[0m`;
+  }
+  const size = parseInt(fields.size, 10) || Math.floor(b64.length * 3 / 4);
+  const up = rows > 1 ? `\x1b[${rows - 1}A` : '';
+  return `\x1b]1337;File=inline=1;size=${size};height=${rows};preserveAspectRatio=1:${b64}\x07${up}\r`;
+}
 
 function handleWinuxOsc(seq) {
   const parts = seq.split(';');
@@ -325,6 +455,7 @@ async function injectFiles(paths) {
 function createWindow() {
   win = new BrowserWindow({
     width: 1000, height: 660, backgroundColor: '#1e1e2e', title: 'winux',
+    icon: path.join(__dirname, '..', 'build', 'winux.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
   win.setMenuBarVisibility(false);
@@ -337,9 +468,10 @@ function createWindow() {
   // not run reliably here, but executeJavaScript on the guest does. Re-injected
   // on every load and SPA navigation; a MutationObserver inside keeps it applied.
   win.webContents.on('did-attach-webview', (_e, wc) => {
-    // Make the webview's native backing store fully transparent so the host
-    // page's #reels div (#1e1e2e, same CSS as the terminal) shows through.
-    try { wc.setBackgroundColor('#00000000'); } catch (_) {}
+    // Paint the webview's native backing store the exact terminal background.
+    // (Going transparent and letting the host div show through composites the
+    // color slightly lighter, so set it solid here instead.)
+    try { wc.setBackgroundColor('#1e1e2e'); } catch (_) {}
     const tidy = () => wc.executeJavaScript(REELS_TIDY).catch(() => {});
     wc.on('dom-ready', tidy);
     wc.on('did-finish-load', tidy);

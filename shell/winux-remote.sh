@@ -6,15 +6,48 @@
 
 _winux_b64() { base64 | tr -d '\n'; }
 
-# Show an image inline in the winux window (iTerm2 inline-image protocol).
+# Display height in terminal rows for an image (~18 px per row). Parses the
+# pixel height from PNG/GIF/BMP headers; other formats fall back to 18 rows.
+# The winux app fits the image into the rows preserving aspect, so this only
+# sets the scale — but the row count itself must be exact (see peek below).
+_winux_img_rows() {
+  h=$(od -An -N32 -tu1 "$1" 2>/dev/null | tr -s ' ' '\n' | grep . | {
+    read -r b0; read -r b1; read -r b2; read -r b3; read -r b4; read -r b5
+    read -r b6; read -r b7; read -r b8; read -r b9; read -r b10; read -r b11
+    read -r b12; read -r b13; read -r b14; read -r b15; read -r b16; read -r b17
+    read -r b18; read -r b19; read -r b20; read -r b21; read -r b22; read -r b23
+    read -r b24; read -r b25; read -r b26; read -r b27; read -r _rest
+    if [ "$b0" = 137 ] && [ "$b1" = 80 ]; then          # PNG: IHDR height, big-endian
+      echo $(( b20*16777216 + b21*65536 + b22*256 + b23 ))
+    elif [ "$b0" = 71 ] && [ "$b1" = 73 ]; then         # GIF: height, little-endian
+      echo $(( b9*256 + b8 ))
+    elif [ "$b0" = 66 ] && [ "$b1" = 77 ]; then         # BMP: height, little-endian
+      echo $(( b23*256 + b22 ))
+    else
+      echo 0
+    fi
+  })
+  rows=18
+  [ -n "$h" ] && [ "$h" -gt 0 ] 2>/dev/null && rows=$(( (h + 17) / 18 ))
+  [ "$rows" -lt 2 ] && rows=2
+  [ "$rows" -gt 22 ] && rows=22
+  echo "$rows"
+}
+
+# Show an image inline in the winux window (iTerm2 inline-image protocol, plus
+# a winux-private rows=N field). ConPTY on the PC can't know an image occupies
+# screen rows, so peek prints N real newlines to reserve blank rows and the
+# winux app draws the image over them — without this the next prompt would
+# overdraw the image.
 peek() {
-  local f
+  local f rows i
   if [ "$#" -eq 0 ]; then echo "usage: peek <image> [...]" >&2; return 1; fi
   for f in "$@"; do
     if [ ! -f "$f" ]; then echo "peek: $f: not found" >&2; continue; fi
-    printf '\033]1337;File=name=%s;size=%s;inline=1;preserveAspectRatio=1:%s\007' \
-      "$(printf '%s' "${f##*/}" | _winux_b64)" "$(wc -c < "$f")" "$(_winux_b64 < "$f")"
-    printf '\n'
+    rows=$(_winux_img_rows "$f")
+    printf '\033]1337;File=name=%s;size=%s;inline=1;preserveAspectRatio=1;rows=%s:%s\007' \
+      "$(printf '%s' "${f##*/}" | _winux_b64)" "$(wc -c < "$f" | tr -d ' ')" "$rows" "$(_winux_b64 < "$f")"
+    i=0; while [ "$i" -lt "$rows" ]; do printf '\n'; i=$((i+1)); done
   done
 }
 

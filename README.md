@@ -1,149 +1,133 @@
+<p align="center">
+  <img src="app/build/winux-256.png" width="90" alt="winux logo" />
+</p>
+
+<h1 align="center">winux</h1>
+
+<p align="center">
+  <b>Full PowerShell + the Linux commands you actually type,<br/>
+  with SSH that doesn't drop and a terminal that can show you things.</b>
+</p>
+
+<p align="center">
+  <code>ls -la</code> · <code>grep</code> · <code>xssh</code> auto-reconnect · <code>peek</code> images inline ·
+  <code>download</code>/<code>upload</code> through the session · drag &amp; drop to any server
+</p>
+
+---
+
+## Linux muscle memory, PowerShell underneath
+
+Type the Unix commands your hands already know — `ls -la`, `rm -rf`, `cp -r`,
+`grep -i`, `head`, `tail -f`, `find`, `du` … — and winux translates the flags to
+native PowerShell cmdlets. It's still real PowerShell: pipelines, objects, and
+every cmdlet keep working.
+
+<p align="center"><img src="docs/media/shell.gif" width="840" alt="winux shell demo: Linux commands inside PowerShell" /></p>
+
+Full command list: [`docs/COMMANDS.md`](docs/COMMANDS.md)
+
+## `xssh` — SSH that refuses to die
+
+A drop-in for `ssh` that auto-reconnects with your key when the link drops —
+bad hotel Wi-Fi, sleeping laptop, flaky VPN. No password re-typing, no dead
+terminal. Pair it with remote `tmux` and your programs survive too.
+
+<p align="center"><img src="docs/media/xssh.gif" width="840" alt="xssh demo: connection dropped and auto-reconnected" /></p>
+
+```powershell
+xssh user@host                                              # use it exactly like ssh
+xssh user@host -t "tmux attach -t main || tmux new -s main" # survive drops with state
 ```
-█   █ ███ █   █ █   █ █   █
-█   █  █  ██  █ █   █  █ █
-█ █ █  █  █ █ █ █   █   █
-██ ██  █  █  ██ █   █  █ █
-█   █ ███ █   █  ███  █   █
+
+The reconnect is fully client-side — nothing to install on the server.
+
+## `peek` — see images without leaving the terminal
+
+`peek <file>` renders the image inline, scrolls away like text, and never
+breaks your prompt. It works at the local prompt **and inside an `xssh`
+session** — the remote just needs `base64`.
+
+<p align="center"><img src="docs/media/peek.gif" width="840" alt="peek demo: image rendered inline in the terminal" /></p>
+
+## `download` — remote file ➜ PC Downloads, one word
+
+Inside any `xssh` session you get `peek`, `download`, and `upload` — no agent,
+no rsync, nothing persisted on the server (the integration is injected fresh
+each connect). `download file` drops it straight into your PC's Downloads
+folder, through the same connection you're typing over.
+
+<p align="center"><img src="docs/media/remote.gif" width="840" alt="remote demo: peek and download inside an ssh session" /></p>
+
+## Drag &amp; drop — files land where your prompt is
+
+Drop a file onto the winux window while you're in an SSH session and it's
+"pasted" into the remote's current directory — reconstructed over the wire via
+`base64`, so it works on any box with coreutils. Folders and big files are
+better served by `wput <files>`, a client-side `scp` that defaults to your last
+`xssh` host.
+
+<p align="center"><img src="docs/media/drop.gif" width="840" alt="drag and drop demo: file dropped onto the window arrives in the remote directory" /></p>
+
+## Windows Hello for SSH
+
+Type a host's password **once**:
+
+```powershell
+Enable-WinuxHello user@host
 ```
 
-# winux
+winux installs a dedicated key whose passphrase is sealed by the TPM behind
+Windows Hello. From then on, `xssh user@host` is just a face/fingerprint/PIN
+prompt — reconnects included, no password ever again.
 
-**PowerShell + the Linux commands you actually type, with SSH that doesn't drop.**
+## …and `reels`
 
-A Windows terminal setup that gives you **full PowerShell plus the common Linux
-commands** (`cp`, `rm`, `ls -la`, `grep`…), **SSH that auto-reconnects without
-re-authenticating when your connection drops**, and **good TUI rendering**
-(Claude Code, vim, etc.).
-
-It is not a from-scratch terminal emulator. It composes three layers, and the
-only new code is the PowerShell module:
-
-| Layer | Job | What provides it |
-|-------|-----|------------------|
-| Emulator | GPU rendering, tabs, splits | **WezTerm** (config in `wezterm/`) |
-| Session  | Survive bad links, no re-auth | **WezTerm mux** / **mosh** / **`xssh`** |
-| Shell    | `cp`, `rm`, `ls -la`, `grep`… | **Winux** module (`shell/`) — *the code* |
+Because sometimes the build takes a while: `reels` docks a vertical feed
+(default: Instagram Reels, or any URL you pass) on the right side of the
+terminal. `reels` again to dismiss.
 
 ## Install
 
 ```powershell
-# from the repo root
-.\install.ps1
+git clone https://github.com/samuelwbarber/winux
+cd winux
+.\install.ps1          # wires the module into your PowerShell profile
+
+cd app                 # the winux terminal app (peek/download/drop live here)
+npm install
+npm start              # or launch "winux" from the Start Menu after install.ps1
 ```
 
-The installer:
-- adds `Import-Module shell/Winux.psd1` to your PowerShell profile,
-- sets `WINUX_HOME` and (if WezTerm is installed) `WEZTERM_CONFIG_FILE`,
-- tells you how to install WezTerm / PowerShell 7 if missing.
+- The **shell module** (`shell/`) works in any terminal — Windows Terminal,
+  WezTerm, VS Code. `install.ps1` adds it to your profile and creates a Start
+  Menu entry for the app.
+- The **winux app** (`app/`) is the Electron terminal that renders inline
+  images and catches `download`/`upload`/drag-drop.
+- SSH keys: `.\setup-ssh.ps1` generates a key, loads `ssh-agent`, and can
+  install it on a host (`-RemoteHost user@host`).
 
-Open a new terminal afterward (or run `. $PROFILE`). Type `winux` any time to see
-the banner and command list.
+## How it fits together
 
-### Installing WezTerm
+| Layer | Job | What provides it |
+|-------|-----|------------------|
+| Terminal | rendering, inline images, drop target | **winux app** (`app/`) or WezTerm (`wezterm/`) |
+| Session | survive bad links without re-auth | **`xssh`** (client-side) + optional remote `tmux` |
+| Shell | `ls -la`, `grep`, `wput`, `peek`… | **Winux module** (`shell/`) — the actual code |
 
-Either via winget (needs admin):
-```powershell
-winget install wez.wezterm
-```
-…or portable (no admin): download the `WezTerm-windows-*.zip` from
-<https://github.com/wezterm/wezterm/releases>, extract it, and add that folder to
-your PATH. Then re-run `.\install.ps1` so it sets `WEZTERM_CONFIG_FILE`.
-
-## Layer 1 — Linux commands (the Winux module)
-
-`Winux` defines flag-aware functions for the most-used Unix tools and routes them
-to native cmdlets. The five that collide with built-in PowerShell aliases
-(`ls cp mv rm cat`) are surfaced via global aliases so they win command
-resolution. See [`docs/COMMANDS.md`](docs/COMMANDS.md) for the full list.
-
-```powershell
-ls -la                 # Get-ChildItem -Force, long format
-rm -rf build           # Remove-Item -Recurse -Force
-cp -r src dst          # Copy-Item -Recurse
-grep -i error log.txt  # Select-String (case-insensitive)
-cat -n file | head -5  # numbered lines, first five
-```
-
-To extend it, add a function in `shell/Winux.psm1` (use `$args` + the
-`ConvertFrom-UnixArgs` helper) and list it in `Export-ModuleMember`.
-
-## Layer 2 — Resilient SSH
-
-The easiest way is **`xssh`** — a drop-in for `ssh` (loaded with the Winux
-module, so it's available in every session). Use it exactly like `ssh`; it just
-auto-reconnects via your key when the link drops:
-
-```powershell
-xssh user@host
-xssh -p 2222 root@1.2.3.4
-xssh user@host -t "tmux attach -t main || tmux new -s main"   # also survive drops
-```
-
-For a more opinionated launcher (tmux session by default, used by the WezTerm
-menu entry), `ssh-resilient.ps1` does the same with structured parameters:
-
-```powershell
-.\ssh-resilient.ps1 -Target root@1.2.3.4          # reconnect + remote tmux session
-.\ssh-resilient.ps1 -Target me@host -Port 2222     # custom port
-.\ssh-resilient.ps1 -Target me@host -NoTmux        # pure reconnect, zero server-side
-```
-
-What's client-side vs not: the **reconnect** is fully client-side. **Surviving a
-drop with your programs intact** needs *something* on the server to hold the
-session — `tmux` works (just a command, usually preinstalled; no daemon/config).
-mosh and the WezTerm mux are *not* client-only — they need server-side software.
-
-Set up key auth with the helper:
-
-```powershell
-.\setup-ssh.ps1                          # generate key (if needed) + load ssh-agent
-.\setup-ssh.ps1 -RemoteHost me@host.com  # also install the key on a host
-```
-
-Enabling `ssh-agent` on Windows is a one-time admin step (the helper prints it if
-it can't do it itself). A passphrase-less key works without the agent.
-
-## Uploading files (client-side only)
-
-`wput` uploads local files/folders to a remote host over **scp** — passwordless
-via your SSH key, needing **nothing on the server but sshd** (no rsync, no trzsz).
-
-```powershell
-wput report.pdf                 # -> your last xssh host, remote home (~)
-wput .\build -Dest /var/www     # a specific remote directory
-wput a.txt b.txt -To me@host -Port 2222
-```
-
-It defaults `-To` to the host of your most recent `xssh` connection, so the
-common case is just `wput <files>`.
-
-**Drag-and-drop:** at a **local** prompt, type `wput `, drag the file(s) onto the
-window (WezTerm pastes their paths), and press Enter. Two honest limitations,
-both from WezTerm, not winux:
-
-- WezTerm has no drop event and a drop on a live SSH pane goes to the *remote*
-  shell, so the drop must land in a **local** pane (e.g. a split) — there's no
-  fully-automatic "drop on the session" without a remote helper like trzsz.
-- The remote **current directory** can't be detected client-side, so uploads go
-  to home unless you pass `-Dest`.
-
-## Layer 3 — Rendering
-
-WezTerm renders on the GPU (`front_end = 'WebGpu'`), which is what fixes the
-flicker/redraw problems you get in the legacy console. The config also sets a
-readable font, color scheme, generous scrollback, and tmux-style splits under a
-`Ctrl+a` leader.
+In-session `peek`/`download`/`upload` talk to the app over private terminal
+escape sequences, so they tunnel through SSH with zero server-side setup.
 
 ## Repo layout
 
 ```
-shell/        Winux module (.psm1 + .psd1) + logo   <- the only real code
-wezterm/      wezterm.lua host config
-install.ps1   wires everything together (idempotent)
-setup-ssh.ps1 generates an SSH key + loads ssh-agent + installs key on a host
-ssh-resilient.ps1 client-side auto-reconnecting SSH (no server software needed)
-tests/        Test-Winux.ps1 smoke test
-docs/         COMMANDS.md reference
+shell/       Winux PowerShell module + winux-remote.sh (in-session helpers) + Hello auth
+app/         Electron terminal (xterm.js + ConPTY)
+wezterm/     alternative WezTerm host config
+install.ps1  idempotent setup (profile, env, Start Menu shortcut)
+setup-ssh.ps1, ssh-resilient.ps1   SSH key + resilient-connection helpers
+tests/       Test-Winux.ps1 smoke test
+docs/        COMMANDS.md reference, demo media
 ```
 
 ## Test

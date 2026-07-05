@@ -43,7 +43,30 @@ else {
     Write-Host "  Install: winget install wez.wezterm  (or grab the portable zip, see README)"
 }
 
-# 4. Optional companions
+# 4. Start Menu shortcut: launch the Electron app by typing 'winux' in Windows search
+$electron = Join-Path $repo 'app\node_modules\electron\dist\electron.exe'
+$appDir   = Join-Path $repo 'app'
+if (Test-Path $electron) {
+    $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    $lnkPath   = Join-Path $startMenu 'winux.lnk'
+    $ws = New-Object -ComObject WScript.Shell
+    $sc = $ws.CreateShortcut($lnkPath)
+    $icoPath = Join-Path $repo 'app\build\winux.ico'
+    $icon    = if (Test-Path $icoPath) { "$icoPath,0" } else { "$electron,0" }
+    $sc.TargetPath       = $electron
+    $sc.Arguments        = "`"$appDir`""
+    $sc.WorkingDirectory = $appDir
+    $sc.IconLocation     = $icon
+    $sc.Description       = 'winux - hybrid PowerShell/Linux terminal'
+    $sc.WindowStyle      = 1
+    $sc.Save()
+    Write-Host "Start Menu shortcut created; search 'winux' to launch the app." -ForegroundColor Green
+}
+else {
+    Write-Host "Electron not installed yet; run 'npm install' in $appDir, then re-run this installer for the 'winux' search shortcut." -ForegroundColor Yellow
+}
+
+# 5. Optional companions
 if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
     Write-Host "PowerShell 7 not installed (optional)." -ForegroundColor Yellow
     Write-Host "  Install: winget install Microsoft.PowerShell"
