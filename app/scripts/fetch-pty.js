@@ -15,7 +15,7 @@ const PKG_VER = '0.12.0';
 
 function download(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'winux' } }, (res) => {
+    https.get(url, { headers: { 'User-Agent': 'limpet' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         resolve(download(res.headers.location));

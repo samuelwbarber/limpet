@@ -1,7 +1,7 @@
-# winux (app)
+# limpet (app)
 
-The winux terminal app — Electron + xterm.js, running local PowerShell with the
-Winux Linux-shim module preloaded. You connect to remotes however you like right
+The limpet terminal app — Electron + xterm.js, running local PowerShell with the
+Limpet Linux-shim module preloaded. You connect to remotes however you like right
 in the shell (e.g. `xssh user@host`); there's no separate connection UI.
 
 ## Setup
@@ -23,7 +23,7 @@ a Windows binary for.
 
 ## Drag-and-drop upload
 
-Drop files onto the window and winux "pastes" them into the current session: it
+Drop files onto the window and limpet "pastes" them into the current session: it
 types a `base64 -d` here-doc that reconstructs each file in the shell's current
 directory. So inside an `xssh`/`ssh` session the file lands in your remote cwd,
 with nothing installed on the remote but coreutils. Limits: files only (folders

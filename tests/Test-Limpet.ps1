@@ -1,8 +1,8 @@
-# Smoke test for winux. Exercises every command in a throwaway temp dir and
-# reports PASS/FAIL. Run: .\tests\Test-Winux.ps1
+# Smoke test for limpet. Exercises every command in a throwaway temp dir and
+# reports PASS/FAIL. Run: .\tests\Test-Limpet.ps1
 $ErrorActionPreference = 'Stop'
 
-$module = Join-Path (Split-Path $PSScriptRoot -Parent) 'shell\Winux.psd1'
+$module = Join-Path (Split-Path $PSScriptRoot -Parent) 'shell\Limpet.psd1'
 Import-Module $module -Force
 
 $pass = 0; $fail = 0
@@ -11,7 +11,7 @@ function Check($name, $cond) {
     else       { Write-Host "FAIL  $name" -ForegroundColor Red;   $script:fail++ }
 }
 
-$d = Join-Path $env:TEMP ("winux_test_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$d = Join-Path $env:TEMP ("limpet_test_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 try {
     mkdir -p "$d/sub" | Out-Null
     Check 'mkdir -p creates nested dir' (Test-Path "$d/sub")

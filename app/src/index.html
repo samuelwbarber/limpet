@@ -7,8 +7,37 @@
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <style>
     html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
-    body { display: flex; }
-    #term { position: relative; flex: 1 1 auto; min-width: 0; padding: 6px; }
+    body { display: flex; flex-direction: column; }
+    #tabbar {
+      flex: 0 0 34px; display: flex; align-items: center; gap: 2px;
+      background: #181825; padding: 0 4px; user-select: none;
+    }
+    #tabstrip { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; height: 100%; }
+    .tab {
+      display: flex; align-items: center; gap: 6px; height: 26px;
+      padding: 0 4px 0 12px; border-radius: 6px; min-width: 0; max-width: 220px;
+      color: #a6adc8; cursor: default;
+      font: 12px 'Cascadia Mono', Consolas, monospace;
+    }
+    .tab:hover:not(.active) { background: #232336; }
+    .tab.active { background: #313244; color: #cdd6f4; }
+    .tab .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tab .close {
+      flex: 0 0 auto; border: 0; background: transparent; color: inherit;
+      font: 13px 'Cascadia Mono', Consolas, monospace; cursor: pointer;
+      border-radius: 4px; padding: 1px 5px;
+    }
+    .tab .close:hover { background: #45475a; color: #f38ba8; }
+    #newtab {
+      flex: 0 0 auto; border: 0; background: transparent; color: #a6adc8;
+      font: 15px 'Cascadia Mono', Consolas, monospace; cursor: pointer;
+      border-radius: 6px; padding: 2px 9px;
+    }
+    #newtab:hover { background: #313244; color: #cdd6f4; }
+    #main { flex: 1 1 auto; display: flex; min-height: 0; }
+    #terms { position: relative; flex: 1 1 auto; min-width: 0; }
+    .term-pane { position: absolute; inset: 0; padding: 6px; display: none; }
+    .term-pane.active { display: block; }
     /* hide xterm's own scrollbar (the thin bar on the terminal's right edge) */
     .xterm-viewport::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
     .xterm-viewport { scrollbar-width: none !important; }
@@ -27,10 +56,16 @@
   </style>
 </head>
 <body>
-  <div id="term"></div>
-  <div id="reels">
-    <webview id="reels-view" partition="persist:instagram" allowpopups
-             useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"></webview>
+  <div id="tabbar">
+    <div id="tabstrip"></div>
+    <button id="newtab" title="New tab (Ctrl+Shift+T)">+</button>
+  </div>
+  <div id="main">
+    <div id="terms"></div>
+    <div id="reels">
+      <webview id="reels-view" partition="persist:instagram" allowpopups
+               useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"></webview>
+    </div>
   </div>
   <div id="drop">drop to paste files into the current session</div>
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>

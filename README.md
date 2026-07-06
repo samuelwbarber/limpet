@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="app/build/winux-256.png" width="90" alt="winux logo" />
+  <img src="app/build/limpet-256.png" width="90" alt="limpet logo" />
 </p>
 
-<h1 align="center">winux</h1>
+<h1 align="center">limpet</h1>
 
 <p align="center">
   <b>Full PowerShell + the Linux commands you actually type,<br/>
@@ -11,21 +11,35 @@
 
 <p align="center">
   <code>ls -la</code> · <code>grep</code> · <code>xssh</code> auto-reconnect · <code>peek</code> images inline ·
-  <code>download</code>/<code>upload</code> through the session · drag &amp; drop to any server
+  <code>download</code>/<code>upload</code> through the session · drag &amp; drop to any server · tabs
 </p>
+
+<p align="center"><i>Named after the little mollusc that clings to its rock no matter
+how hard the waves hit — which is the whole <code>xssh</code> pitch. Type
+<code>limpet</code> in the shell to meet the mascot.</i></p>
 
 ---
 
 ## Linux muscle memory, PowerShell underneath
 
 Type the Unix commands your hands already know — `ls -la`, `rm -rf`, `cp -r`,
-`grep -i`, `head`, `tail -f`, `find`, `du` … — and winux translates the flags to
+`grep -i`, `head`, `tail -f`, `find`, `du` … — and limpet translates the flags to
 native PowerShell cmdlets. It's still real PowerShell: pipelines, objects, and
 every cmdlet keep working.
 
-<p align="center"><img src="docs/media/shell.gif" width="840" alt="winux shell demo: Linux commands inside PowerShell" /></p>
+<p align="center"><img src="docs/media/shell.gif" width="840" alt="limpet shell demo: Linux commands inside PowerShell" /></p>
 
 Full command list: [`docs/COMMANDS.md`](docs/COMMANDS.md)
+
+## Tabs
+
+Multiple shells in one window, like Windows Terminal: `Ctrl+Shift+T` opens a
+tab, `Ctrl+Tab` cycles, `Ctrl+Shift+W` (or `exit`, or middle-click) closes one.
+Each tab is its own ConPTY session — an `xssh` reconnecting in one tab never
+touches the build running in another. Tab titles follow the shell's current
+folder.
+
+<p align="center"><img src="docs/media/tabs.gif" width="840" alt="tabs demo: two shells in one window, switching with Ctrl+Tab" /></p>
 
 ## `xssh` — SSH that refuses to die
 
@@ -61,7 +75,7 @@ folder, through the same connection you're typing over.
 
 ## Drag &amp; drop — files land where your prompt is
 
-Drop a file onto the winux window while you're in an SSH session and it's
+Drop a file onto the limpet window while you're in an SSH session and it's
 "pasted" into the remote's current directory — reconstructed over the wire via
 `base64`, so it works on any box with coreutils. Folders and big files are
 better served by `wput <files>`, a client-side `scp` that defaults to your last
@@ -74,10 +88,10 @@ better served by `wput <files>`, a client-side `scp` that defaults to your last
 Type a host's password **once**:
 
 ```powershell
-Enable-WinuxHello user@host
+Enable-LimpetHello user@host
 ```
 
-winux installs a dedicated key whose passphrase is sealed by the TPM behind
+limpet installs a dedicated key whose passphrase is sealed by the TPM behind
 Windows Hello. From then on, `xssh user@host` is just a face/fingerprint/PIN
 prompt — reconnects included, no password ever again.
 
@@ -90,20 +104,20 @@ terminal. `reels` again to dismiss.
 ## Install
 
 ```powershell
-git clone https://github.com/samuelwbarber/winux
-cd winux
+git clone https://github.com/samuelwbarber/limpet
+cd limpet
 .\install.ps1          # wires the module into your PowerShell profile
 
-cd app                 # the winux terminal app (peek/download/drop live here)
+cd app                 # the limpet terminal app (peek/download/drop live here)
 npm install
-npm start              # or launch "winux" from the Start Menu after install.ps1
+npm start              # or launch "limpet" from the Start Menu after install.ps1
 ```
 
 - The **shell module** (`shell/`) works in any terminal — Windows Terminal,
   WezTerm, VS Code. `install.ps1` adds it to your profile and creates a Start
   Menu entry for the app.
-- The **winux app** (`app/`) is the Electron terminal that renders inline
-  images and catches `download`/`upload`/drag-drop.
+- The **limpet app** (`app/`) is the tabbed Electron terminal that renders
+  inline images and catches `download`/`upload`/drag-drop.
 - SSH keys: `.\setup-ssh.ps1` generates a key, loads `ssh-agent`, and can
   install it on a host (`-RemoteHost user@host`).
 
@@ -111,9 +125,9 @@ npm start              # or launch "winux" from the Start Menu after install.ps1
 
 | Layer | Job | What provides it |
 |-------|-----|------------------|
-| Terminal | rendering, inline images, drop target | **winux app** (`app/`) or WezTerm (`wezterm/`) |
+| Terminal | tabs, rendering, inline images, drop target | **limpet app** (`app/`) or WezTerm (`wezterm/`) |
 | Session | survive bad links without re-auth | **`xssh`** (client-side) + optional remote `tmux` |
-| Shell | `ls -la`, `grep`, `wput`, `peek`… | **Winux module** (`shell/`) — the actual code |
+| Shell | `ls -la`, `grep`, `wput`, `peek`… | **Limpet module** (`shell/`) — the actual code |
 
 In-session `peek`/`download`/`upload` talk to the app over private terminal
 escape sequences, so they tunnel through SSH with zero server-side setup.
@@ -121,17 +135,18 @@ escape sequences, so they tunnel through SSH with zero server-side setup.
 ## Repo layout
 
 ```
-shell/       Winux PowerShell module + winux-remote.sh (in-session helpers) + Hello auth
-app/         Electron terminal (xterm.js + ConPTY)
+shell/       Limpet PowerShell module + limpet-remote.sh (in-session helpers) + Hello auth
+app/         tabbed Electron terminal (xterm.js + ConPTY)
 wezterm/     alternative WezTerm host config
 install.ps1  idempotent setup (profile, env, Start Menu shortcut)
 setup-ssh.ps1, ssh-resilient.ps1   SSH key + resilient-connection helpers
-tests/       Test-Winux.ps1 smoke test
+tests/       Test-Limpet.ps1 smoke test
+tools/demo/  scripts that record the README GIFs
 docs/        COMMANDS.md reference, demo media
 ```
 
 ## Test
 
 ```powershell
-.\tests\Test-Winux.ps1
+.\tests\Test-Limpet.ps1
 ```

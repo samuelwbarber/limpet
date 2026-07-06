@@ -1,4 +1,4 @@
-# winux SSH setup helper.
+# limpet SSH setup helper.
 # Sets up key-based auth so resilient sessions (WezTerm mux / mosh) reconnect
 # without ever prompting for a password.
 #
@@ -33,7 +33,7 @@ if (Test-Path $KeyPath) {
     Write-Host "Using existing key: $KeyPath" -ForegroundColor Yellow
 }
 else {
-    $comment = "$env:USERNAME@$env:COMPUTERNAME winux"
+    $comment = "$env:USERNAME@$env:COMPUTERNAME limpet"
     $kgArgs  = @('-t', $KeyType, '-f', $KeyPath, '-C', $comment, '-q')
     # Empty passphrase must be passed as '""' so PowerShell doesn't drop the
     # argument and make ssh-keygen prompt interactively (which would hang).

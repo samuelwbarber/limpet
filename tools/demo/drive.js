@@ -1,4 +1,4 @@
-// Drive the winux Electron app: launch, run commands in the terminal, screenshot.
+// Drive the limpet Electron app: launch, run commands in the terminal, screenshot.
 // Usage: node drive.js <scenario>
 //   scenario "peek"  : run peek on a test image
 //   scenario "reels" : toggle the reels panel
@@ -6,7 +6,7 @@ const { _electron } = require('playwright-core');
 const path = require('path');
 const fs = require('fs');
 
-const APP = 'C:/Users/sbarb/winux/app';
+const APP = 'C:/Users/sbarb/limpet/app';
 const SHOTS = path.join(__dirname, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const TEST_PNG = path.join(__dirname, 'test.png');
@@ -68,13 +68,13 @@ async function typeCmd(page, text) {
     await sleep(1200);
     await page.screenshot({ path: path.join(SHOTS, 'reels-04-closed.png') });
   } else if (scenario === 'banner') {
-    await typeCmd(page, 'winux');
+    await typeCmd(page, 'limpet');
     await sleep(2000);
     await page.screenshot({ path: path.join(SHOTS, 'banner-02.png') });
   } else if (scenario === 'remote-sim') {
-    // simulate an xssh session: WSL bash with the winux-remote.sh rcfile
+    // simulate an xssh session: WSL bash with the limpet-remote.sh rcfile
     const toWsl = (p) => p.replace(/^([A-Za-z]):\\/, (_, d) => `/mnt/${d.toLowerCase()}/`).replace(/\\/g, '/');
-    await typeCmd(page, `bash --rcfile ${toWsl('C:\\Users\\sbarb\\winux\\shell\\winux-remote.sh')} -i`);
+    await typeCmd(page, `bash --rcfile ${toWsl('C:\\Users\\sbarb\\limpet\\shell\\limpet-remote.sh')} -i`);
     await sleep(3000);
     await typeCmd(page, `cd "${toWsl(path.dirname(TEST_PNG))}"`);
     await sleep(800);

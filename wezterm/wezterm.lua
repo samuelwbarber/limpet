@@ -1,14 +1,14 @@
--- winux WezTerm configuration.
+-- limpet WezTerm configuration.
 -- WezTerm is the host "app": it provides GPU rendering, persistent/auto-
 -- reconnecting sessions (its own multiplexer), and launches PowerShell with
--- the Winux module preloaded so Linux commands work everywhere.
+-- the Limpet module preloaded so Linux commands work everywhere.
 
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder and wezterm.config_builder() or {}
 
--- Locate winux. The installer sets WINUX_HOME; fall back to the default.
-local home = os.getenv('WINUX_HOME') or (os.getenv('USERPROFILE') .. '\\winux')
-local module = home .. '\\shell\\Winux.psd1'
+-- Locate limpet. The installer sets LIMPET_HOME; fall back to the default.
+local home = os.getenv('LIMPET_HOME') or (os.getenv('USERPROFILE') .. '\\limpet')
+local module = home .. '\\shell\\Limpet.psd1'
 
 -- Prefer PowerShell 7 (pwsh) if installed, otherwise Windows PowerShell.
 local function on_path(exe)

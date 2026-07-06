@@ -14,3 +14,10 @@ app/node_modules/
 app/dist/
 app/out/
 app/_run.*
+
+# Demo recorder workdir (see tools/demo/README.md; only the scripts are tracked)
+tools/demo/node_modules/
+tools/demo/vids/
+tools/demo/gifs/
+tools/demo/package.json
+tools/demo/package-lock.json

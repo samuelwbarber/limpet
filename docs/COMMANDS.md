@@ -66,5 +66,5 @@ directory can't be detected client-side — pass `-Dest` for a specific folder.
 
 ## Restoring the original aliases
 
-`Remove-Module Winux` restores the built-in `ls/cp/mv/rm/cat` aliases for the
+`Remove-Module Limpet` restores the built-in `ls/cp/mv/rm/cat` aliases for the
 current session.

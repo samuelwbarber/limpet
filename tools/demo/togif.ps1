@@ -4,7 +4,7 @@ $ff = Join-Path $sp 'node_modules\ffmpeg-static\ffmpeg.exe'
 $out = Join-Path $sp 'gifs'
 New-Item -ItemType Directory -Force $out | Out-Null
 
-foreach ($name in @('shell', 'peek', 'xssh', 'remote', 'drop')) {
+foreach ($name in @('shell', 'tabs', 'peek', 'xssh', 'remote', 'drop')) {
     $src = Join-Path $sp "vids\$name.mp4"
     if (-not (Test-Path $src)) { Write-Host "skip $name (no mp4)"; continue }
     $pal = Join-Path $out "$name-pal.png"

@@ -1,4 +1,4 @@
-# winux - run common Linux/Unix commands inside PowerShell.
+# limpet - run common Linux/Unix commands inside PowerShell.
 # Each Unix command is a thin function that parses the usual flags and
 # forwards to the native PowerShell cmdlet. Works on Windows PowerShell 5.1+
 # and PowerShell 7+.
@@ -275,7 +275,7 @@ function chmod {
 function xssh {
     if (-not $args.Count) { Write-Error 'xssh: usage is the same as ssh, e.g. xssh user@host'; return }
 
-    # -Raw skips the winux shell-integration bootstrap (plain resilient ssh).
+    # -Raw skips the limpet shell-integration bootstrap (plain resilient ssh).
     $raw = $false; $rest = @()
     foreach ($a in $args) { if ($a -ieq '-Raw') { $raw = $true } else { $rest += $a } }
 
@@ -289,20 +289,20 @@ function xssh {
     # Remember the host so `wput` can default to it for client-side uploads.
     $hostTok = $rest | Where-Object { $_ -like '*@*' -and $_ -notlike '-*' } | Select-Object -First 1
     if (-not $hostTok) { $hostTok = $rest | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
-    if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'winux-last-ssh.txt') -Value $hostTok -Encoding ascii }
+    if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'limpet-last-ssh.txt') -Value $hostTok -Encoding ascii }
 
-    # Windows Hello auth: if this host was enrolled (Enable-WinuxHello), unseal the
-    # winux key's passphrase with one Hello prompt and feed it to ssh via an
+    # Windows Hello auth: if this host was enrolled (Enable-LimpetHello), unseal the
+    # limpet key's passphrase with one Hello prompt and feed it to ssh via an
     # askpass helper. The passphrase stays cached in this process for the whole
     # resilient loop (so reconnects don't re-prompt) and is wiped on exit.
     $helloActive = $false
-    if ($hostTok -and (Get-Command Test-WinuxHelloEnrolled -ErrorAction SilentlyContinue) -and (Test-WinuxHelloEnrolled $hostTok)) {
-        $keyPath = Get-WinuxKeyPath
+    if ($hostTok -and (Get-Command Test-LimpetHelloEnrolled -ErrorAction SilentlyContinue) -and (Test-LimpetHelloEnrolled $hostTok)) {
+        $keyPath = Get-LimpetKeyPath
         if (Test-Path $keyPath) {
             try {
                 Write-Host 'xssh: Windows Hello...' -ForegroundColor Cyan
-                $env:WINUX_ASKPASS = Get-WinuxHelloPassphrase
-                $env:SSH_ASKPASS = Get-WinuxAskpass
+                $env:LIMPET_ASKPASS = Get-LimpetHelloPassphrase
+                $env:SSH_ASKPASS = Get-LimpetAskpass
                 $env:SSH_ASKPASS_REQUIRE = 'force'
                 # accept-new keeps the askpass helper from being handed a host-key
                 # yes/no prompt (it only ever answers the key passphrase).
@@ -312,17 +312,17 @@ function xssh {
                 $helloActive = $true
             }
             catch {
-                $env:WINUX_ASKPASS = $null; $env:SSH_ASKPASS = $null; $env:SSH_ASKPASS_REQUIRE = $null
+                $env:LIMPET_ASKPASS = $null; $env:SSH_ASKPASS = $null; $env:SSH_ASKPASS_REQUIRE = $null
                 Write-Host "xssh: Hello unlock failed ($($_.Exception.Message)); falling back to normal auth." -ForegroundColor Yellow
             }
         }
     }
 
-    # Load winux shell integration into the remote session (sent fresh each
+    # Load limpet shell integration into the remote session (sent fresh each
     # connect; nothing persisted on the server). Gives peek/download/upload.
     $integrated = $false
     if (-not $raw) {
-        $scriptPath = Join-Path $PSScriptRoot 'winux-remote.sh'
+        $scriptPath = Join-Path $PSScriptRoot 'limpet-remote.sh'
         if (Test-Path $scriptPath) {
             $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $scriptPath -Raw)))
             $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else . $f; exec ${SHELL:-sh} -i; fi; rm -f $f'
@@ -332,7 +332,7 @@ function xssh {
     }
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
-    if ($helloActive) { Write-Host "      auth: Windows Hello (winux key)" -ForegroundColor DarkGray }
+    if ($helloActive) { Write-Host "      auth: Windows Hello (limpet key)" -ForegroundColor DarkGray }
     if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path> | reels [url]" -ForegroundColor DarkGray }
     try {
         while ($true) {
@@ -357,7 +357,7 @@ function xssh {
     finally {
         # Wipe the cached passphrase and askpass wiring from this process.
         if ($helloActive) {
-            $env:WINUX_ASKPASS = $null
+            $env:LIMPET_ASKPASS = $null
             $env:SSH_ASKPASS = $null
             $env:SSH_ASKPASS_REQUIRE = $null
         }
@@ -395,7 +395,7 @@ function wput {
     if (-not $files.Count) { Write-Error 'wput: no files. Usage: wput <files> [-To user@host] [-Dest /remote/dir] [-Port N] [-Key path]'; return }
 
     if (-not $to) {
-        $state = Join-Path $env:TEMP 'winux-last-ssh.txt'
+        $state = Join-Path $env:TEMP 'limpet-last-ssh.txt'
         if (Test-Path $state) { $to = (Get-Content $state -Raw).Trim() }
     }
     if (-not $to) { Write-Error 'wput: no target. Pass -To user@host, or connect with xssh first so wput can reuse that host.'; return }
@@ -417,9 +417,9 @@ function wput {
 
 # ---------------------------------------------------------------------------
 # peek: show an image inline in the terminal. Emits the iTerm2 inline-image
-# escape tagged with a winux-private rows=N field, then prints N newlines.
+# escape tagged with a limpet-private rows=N field, then prints N newlines.
 # ConPTY cannot know an image occupies screen rows, so the newlines reserve
-# real blank rows in its model and the winux app draws the image over them —
+# real blank rows in its model and the limpet app draws the image over them —
 # without this, the next prompt overdraws the image. `peak` is an alias.
 #   peek screenshot.png shot*.jpg
 # ---------------------------------------------------------------------------
@@ -434,7 +434,7 @@ function peek {
             $bytes = [IO.File]::ReadAllBytes($rp.Path)
 
             # Display height in terminal rows, from the image's pixel height
-            # (~18 px per row in the winux app; the app fits the image into the
+            # (~18 px per row in the limpet app; the app fits the image into the
             # reserved rows preserving aspect, so this only sets the scale).
             $rows = 18
             try {
@@ -457,7 +457,7 @@ function peek {
 
 function peak { peek @args }
 
-# Dock a webpage on the right side of the winux window. No args toggles the
+# Dock a webpage on the right side of the limpet window. No args toggles the
 # Instagram reels feed; pass a URL to open something else. Talks to the app via
 # the same private OSC channel as peek/download (works locally and over ssh).
 function reels {
@@ -468,17 +468,58 @@ function reels {
 }
 
 # ---------------------------------------------------------------------------
-# Branding: `winux` prints the logo, version, and the available commands.
+# Branding: `limpet` prints the logo, version, and the available commands.
 # ---------------------------------------------------------------------------
 
-function winux {
-    $logo = Join-Path $PSScriptRoot 'winux-logo.txt'
-    if (Test-Path $logo) { Get-Content $logo -Encoding UTF8 | ForEach-Object { Write-Host $_ -ForegroundColor Cyan } }
+function limpet {
+    $logoPath = Join-Path $PSScriptRoot 'limpet-logo.txt'
+    $letters = if (Test-Path $logoPath) { @(Get-Content $logoPath -Encoding UTF8) } else { @() }
+
+    # The mascot, as truecolor pixel art (each cell is two full blocks): blue
+    # ribbed shell, peach foot peeking out with a face. Rendered next to the
+    # lettering; hosts without VT support just get the plain letters.
+    $art = @(
+        '.......LL.......'
+        '......BBBB......'
+        '.....BBLLBB.....'
+        '....BBBLLBBB....'
+        '...BBLBLLBLBB...'
+        '..BBLBBLLBBLBB..'
+        '.BBLBBBLLBBBLBB.'
+        '.BBBBBBBBBBBBBB.'
+        '..PRPKPPPPKPRP..'
+        '...PPPPKKPPPP...'
+    )
+    # Catppuccin Mocha: blue, lavender, peach, ink, pink; letters in sky.
+    $rgb = @{ B = '137;180;250'; L = '180;190;254'; P = '250;179;135'; K = '49;50;68'; R = '243;139;168' }
+    $e = [char]27
+    $px2 = [string][char]0x2588 * 2
+    if ($Host.UI.SupportsVirtualTerminal) {
+        Write-Host ''
+        for ($i = 0; $i -lt $art.Count; $i++) {
+            $line = '  '
+            $prev = ''
+            foreach ($c in $art[$i].ToCharArray()) {
+                if ($c -eq '.') { $line += '  '; continue }
+                if ($prev -ne $c) { $line += "$e[38;2;$($rgb[[string]$c])m"; $prev = $c }
+                $line += $px2
+            }
+            $line += "$e[0m"
+            $li = $i - 3   # lettering rides alongside the shell, rows 3..7
+            if ($li -ge 0 -and $li -lt $letters.Count) {
+                $line += "   $e[38;2;137;220;235m$($letters[$li])$e[0m"
+            }
+            Write-Host $line
+        }
+    }
+    else {
+        $letters | ForEach-Object { Write-Host $_ -ForegroundColor Cyan }
+    }
     Write-Host ''
     Write-Host '  PowerShell + Linux commands, with SSH that does not drop.' -ForegroundColor Gray
     Write-Host '  Commands : ls rm cp mv mkdir touch cat head tail grep find which du df chmod' -ForegroundColor DarkGray
     Write-Host '  Resilient: xssh user@host   (drop-in for ssh, auto-reconnects)' -ForegroundColor DarkGray
-    Write-Host '  Hello SSH: Enable-WinuxHello user@host  (password once, then Windows Hello)' -ForegroundColor DarkGray
+    Write-Host '  Hello SSH: Enable-LimpetHello user@host  (password once, then Windows Hello)' -ForegroundColor DarkGray
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
@@ -502,11 +543,22 @@ foreach ($name in $script:NixAliases.Keys) {
     Set-Alias -Name $name -Value $script:NixAliases[$name] -Scope Global -Force -Option AllScope -ErrorAction SilentlyContinue
 }
 
+# Tab-friendly window title: the current folder, not powershell.exe's path
+# (that's what the app's tab labels show). Global so it drives the session's
+# real prompt; the prompt text itself matches PowerShell's default.
+function global:prompt {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    $leaf = Split-Path -Leaf $loc.Path
+    if (-not $leaf) { $leaf = $loc.Path }
+    $Host.UI.RawUI.WindowTitle = $leaf
+    "PS $loc$('>' * ($NestedPromptLevel + 1)) "
+}
+
 $ExecutionContext.SessionState.Module.OnRemove = {
     foreach ($name in $script:OriginalAliases.Keys) {
         Set-Alias -Name $name -Value $script:OriginalAliases[$name] -Scope Global -Force -ErrorAction SilentlyContinue
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, winux,
-    Enable-WinuxHello, Disable-WinuxHello, Get-WinuxHelloStatus, Get-WinuxHelloPassphrase, Test-WinuxHelloEnrolled, Protect-WinuxSecret, Unprotect-WinuxSecret, Get-WinuxAskpass, Get-WinuxKeyPath
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet,
+    Enable-LimpetHello, Disable-LimpetHello, Get-LimpetHelloStatus, Get-LimpetHelloPassphrase, Test-LimpetHelloEnrolled, Protect-LimpetSecret, Unprotect-LimpetSecret, Get-LimpetAskpass, Get-LimpetKeyPath

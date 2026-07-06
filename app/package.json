@@ -1,8 +1,8 @@
 {
-  "name": "winux",
-  "productName": "winux",
+  "name": "limpet",
+  "productName": "limpet",
   "version": "0.1.0",
-  "description": "winux - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
+  "description": "limpet - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
   "main": "src/main.js",
   "scripts": {
     "start": "electron ."

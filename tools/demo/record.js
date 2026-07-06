@@ -1,4 +1,4 @@
-// Record winux demo videos: launch the app with Playwright video recording,
+// Record limpet demo videos: launch the app with Playwright video recording,
 // drive a real flow, save webm per scenario. Usage: node record.js <scenario>
 const { _electron } = require('playwright-core');
 const { execSync, spawn } = require('child_process');
@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const ffmpeg = require('ffmpeg-static');
 
-const APP = 'C:/Users/sbarb/winux/app';
+const APP = path.join(__dirname, '..', '..', 'app');
 const VIDS = path.join(__dirname, 'vids');
 fs.mkdirSync(VIDS, { recursive: true });
 
@@ -35,8 +35,8 @@ async function typeCmd(page, text, delay = 45) {
     timeout: 30000,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('#term .xterm', { timeout: 15000 }).catch(() => {});
-  await sleep(4500); // PowerShell + Winux module load
+  await page.waitForSelector('.term-pane .xterm', { timeout: 15000 }).catch(() => {});
+  await sleep(4500); // PowerShell + Limpet module load
 
   // Capture the desktop region under the window (gdigrab window-capture of a
   // GPU-composited Electron window comes out white). 'q' on stdin stops it.
@@ -55,10 +55,10 @@ async function typeCmd(page, text, delay = 45) {
     '-pix_fmt', 'yuv420p', outFile],
   { stdio: ['pipe', 'ignore', errLog] });
   await sleep(1200);
-  await page.click('#term');
+  await page.click('.term-pane.active');
 
   if (scenario === 'shell') {
-    await typeCmd(page, 'winux');
+    await typeCmd(page, 'limpet');
     await sleep(2600);
     await typeCmd(page, 'ls -la | head -6');
     await sleep(2600);
@@ -95,11 +95,24 @@ async function typeCmd(page, text, delay = 45) {
     await sleep(1400);
     await page.evaluate((p) => {
       window.dispatchEvent(new Event('dragleave'));
-      return window.winux.dropFiles([p]);
+      return window.limpet.dropFiles(1, [p]); // session 1 = the first tab
     }, path.join(__dirname, 'report.pdf'));
     await sleep(3500);
     await typeCmd(page, 'ls -la report.pdf');
     await sleep(2600);
+  } else if (scenario === 'tabs') {
+    await typeCmd(page, 'ping -t localhost');
+    await sleep(2200);
+    await page.keyboard.press('Control+Shift+T');
+    await sleep(4500); // second shell loads
+    await typeCmd(page, 'echo a fresh shell, same window');
+    await sleep(2200);
+    await page.keyboard.press('Control+Tab'); // back to tab 1 — ping kept going
+    await sleep(2600);
+    await page.keyboard.press('Control+C');
+    await sleep(1400);
+    await typeCmd(page, 'exit'); // shell ends -> its tab closes itself
+    await sleep(2400);
   } else {
     console.error('unknown scenario:', scenario);
   }
