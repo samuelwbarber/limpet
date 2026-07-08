@@ -50,11 +50,15 @@ terminal. Pair it with remote `tmux` and your programs survive too.
 <p align="center"><img src="docs/media/xssh.gif" width="840" alt="xssh demo: connection dropped and auto-reconnected" /></p>
 
 ```powershell
-xssh user@host                                              # use it exactly like ssh
-xssh user@host -t "tmux attach -t main || tmux new -s main" # survive drops with state
+xssh user@host             # use it exactly like ssh
+xssh -NoResume user@host   # reconnect to a fresh shell instead of the live one
 ```
 
-The reconnect is fully client-side — nothing to install on the server.
+The reconnect is fully client-side — nothing to install on the server. If the
+machine itself goes offline (lid closed, network change), `xssh` waits for the
+network to come back and reconnects — straight back into the exact shell you
+left, running processes and scrollback intact (the session is kept alive in a
+remote tmux when the host has it; `-NoResume` for a plain shell).
 
 ## `peek` — see images without leaving the terminal
 
@@ -70,6 +74,11 @@ Inside any `xssh` session you get `peek`, `download`, and `upload` — no agent,
 no rsync, nothing persisted on the server (the integration is injected fresh
 each connect). `download file` drops it straight into your PC's Downloads
 folder, through the same connection you're typing over.
+
+The helpers only exist in `xssh` sessions — plain `ssh` won't have them. They
+survive `tmux`, nested `bash`, and `srun`; to reach a second machine (login
+node ➜ compute node), hop with `xssh next-host` instead of `ssh next-host` and
+they come along.
 
 <p align="center"><img src="docs/media/remote.gif" width="840" alt="remote demo: peek and download inside an ssh session" /></p>
 

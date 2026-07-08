@@ -78,3 +78,24 @@ upload() {
 reels() {
   printf '\033]5379;reels;%s\007' "$(printf '%s' "${1:-}" | _limpet_b64)"
 }
+
+# Hop to another host WITH the limpet helpers: `xssh gpu19` from a login node
+# re-injects this script into the next interactive session, so peek/download/
+# upload keep working on multi-hop clusters. Plain `ssh` never carries them.
+xssh() {
+  if [ -z "$LIMPET_SH" ] || [ ! -f "$LIMPET_SH" ]; then
+    echo "xssh: limpet script not available in this session; using plain ssh" >&2
+    command ssh "$@"
+    return
+  fi
+  _b64=$(base64 < "$LIMPET_SH" | tr -d '\n')
+  command ssh -t "$@" "f=\$(mktemp); printf %s '$_b64' | base64 -d > \$f; export LIMPET_SH=\$f; if command -v bash >/dev/null 2>&1; then bash --rcfile \$f -i; else ENV=\$f sh -i; fi; rm -f \$f"
+  unset _b64
+}
+
+# In bash, export the functions so they survive child shells on the same
+# environment: tmux, a nested `bash`, or `srun --pty bash` (slurm forwards the
+# environment, BASH_FUNC_* included, to the compute node).
+if [ -n "$BASH_VERSION" ]; then
+  export -f _limpet_b64 _limpet_img_rows peek download upload reels xssh 2>/dev/null
+fi

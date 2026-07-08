@@ -267,17 +267,27 @@ function chmod {
 # key) when the link drops. Use exactly like ssh:
 #     xssh user@host
 #     xssh -p 2222 root@1.2.3.4
-#     xssh user@host -t "tmux attach -t main || tmux new -s main"   # survive drops
-# Reconnect is fully client-side. For session survival across a drop, run tmux
-# on the remote (the -t example above) -- nothing else needs installing.
+#     xssh -NoResume user@host    # reconnect to a fresh shell instead of tmux
+# Reconnect is fully client-side. By default the remote shell is kept alive in
+# a tmux session named "limpet" (when the remote has tmux), so after a drop --
+# lid closed, wifi change -- you land back exactly where you left off, running
+# processes and all. -NoResume skips the tmux wrap; -Raw skips the whole
+# limpet bootstrap (plain resilient ssh).
 # ---------------------------------------------------------------------------
 
 function xssh {
     if (-not $args.Count) { Write-Error 'xssh: usage is the same as ssh, e.g. xssh user@host'; return }
 
-    # -Raw skips the limpet shell-integration bootstrap (plain resilient ssh).
-    $raw = $false; $rest = @()
-    foreach ($a in $args) { if ($a -ieq '-Raw') { $raw = $true } else { $rest += $a } }
+    $raw = $false; $resume = $true; $resumeExplicit = $false; $rest = @()
+    foreach ($a in $args) {
+        if ($a -ieq '-Raw') { $raw = $true }
+        elseif ($a -ieq '-Resume') { $resume = $true; $resumeExplicit = $true }
+        elseif ($a -ieq '-NoResume') { $resume = $false }
+        else { $rest += $a }
+    }
+    # -Raw alone means fully plain; combine with an explicit -Resume for a
+    # bare tmux attach without the integration.
+    if ($raw -and -not $resumeExplicit) { $resume = $false }
 
     $sshArgs = @($rest)
     # Add keepalives so dropped links are detected promptly, unless the caller
@@ -325,15 +335,34 @@ function xssh {
         $scriptPath = Join-Path $PSScriptRoot 'limpet-remote.sh'
         if (Test-Path $scriptPath) {
             $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $scriptPath -Raw)))
-            $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else . $f; exec ${SHELL:-sh} -i; fi; rm -f $f'
+            # LIMPET_SH points at the (session-lifetime) script so nested shells can
+            # re-source it and the remote xssh function can carry it across hops.
+            if ($resume) {
+                # Source the integration first (its export -f puts the helpers in the
+                # environment the tmux server inherits), then create-or-attach the
+                # "limpet" session; -D detaches the stale client left by a drop.
+                # Caveat: if a tmux server predates this connect, a freshly created
+                # session won't see the helpers (tmux uses the old server's env).
+                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then bash -c ''. $LIMPET_SH; exec tmux new -A -D -s limpet''; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
+            }
+            else {
+                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
+            }
             $sshArgs = @('-t') + $sshArgs + @($tpl.Replace('__B64__', $b64))
             $integrated = $true
         }
     }
+    elseif ($resume) {
+        $sshArgs = @('-t') + $sshArgs + @('if command -v tmux >/dev/null 2>&1; then tmux new -A -D -s limpet; else exec ${SHELL:-sh} -il; fi')
+    }
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
     if ($helloActive) { Write-Host "      auth: Windows Hello (limpet key)" -ForegroundColor DarkGray }
+    if ($resume) { Write-Host "      session: kept alive in remote tmux 'limpet' -- reconnects resume where you left off (-NoResume to skip)" -ForegroundColor DarkGray }
     if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path> | reels [url]" -ForegroundColor DarkGray }
+
+    $dnsHost = if ($hostTok) { ($hostTok -split '@')[-1] } else { $null }
+    $hadSession = $false
     try {
         while ($true) {
             $start = Get-Date
@@ -342,12 +371,28 @@ function xssh {
             $elapsed = ((Get-Date) - $start).TotalSeconds
 
             if ($code -eq 0) { break }   # clean logout / detach
+            if ($elapsed -ge 5) { $hadSession = $true }
 
-            # A near-instant non-zero exit means ssh never connected (bad host, auth
-            # failure, usage error) -- retrying would loop forever, so stop.
+            # A near-instant non-zero exit means ssh never connected at all.
             if ($elapsed -lt 5) {
-                Write-Host "[xssh] connection exited immediately (code $code): host/auth error, not a drop. Stopping." -ForegroundColor Red
-                break
+                # Before any session existed that's a bad host / auth / usage error --
+                # retrying would loop forever, so stop.
+                if (-not $hadSession) {
+                    Write-Host "[xssh] connection exited immediately (code $code): host/auth error, not a drop. Stopping." -ForegroundColor Red
+                    break
+                }
+                # After a live session it almost always means the machine is offline
+                # (lid closed, wifi/VPN still coming up after resume): wait for the
+                # host to become resolvable again, then reconnect.
+                Write-Host "[xssh] can't reach $dnsHost -- waiting for network... (Ctrl+C to stop)" -ForegroundColor Yellow
+                $waited = 0
+                while ($waited -lt 60) {
+                    Start-Sleep -Seconds 3; $waited += 3
+                    if ($dnsHost) {
+                        try { [void][System.Net.Dns]::GetHostEntry($dnsHost); break } catch { }
+                    }
+                }
+                continue
             }
 
             Write-Host "`n[xssh] link dropped (exit $code) -- reconnecting in 2s... (Ctrl+C to stop)" -ForegroundColor Yellow

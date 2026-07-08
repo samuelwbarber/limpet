@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  module:
+    name: PowerShell module (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Module manifest is valid
+        shell: powershell # Windows PowerShell 5.1 -- what the module targets
+        run: Test-ModuleManifest .\shell\Limpet.psd1 | Out-Null
+      - name: Smoke-test every command
+        shell: powershell
+        run: .\tests\Test-Limpet.ps1
+
+  remote-sh:
+    name: Remote helpers (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check (bash + POSIX sh)
+        run: |
+          bash -n shell/limpet-remote.sh
+          sh -n shell/limpet-remote.sh
+      - name: Helpers define, export, and speak the peek protocol
+        shell: bash
+        run: |
+          . shell/limpet-remote.sh
+          for fn in peek download upload reels xssh _limpet_img_rows; do
+            type "$fn" >/dev/null
+          done
+          # export -f must carry the helpers into child shells (tmux/srun/bash)
+          bash -c 'type peek >/dev/null && type download >/dev/null'
+          # minimal PNG header, 1x200 px -> ceil(200/18) = 12 reserved rows
+          printf '\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\xc8\x08\x06\x00\x00\x00' > /tmp/t.png
+          rows=$(_limpet_img_rows /tmp/t.png)
+          test "$rows" = 12
+          peek /tmp/t.png | grep -aq ';rows=12:'
+
+  app:
+    name: Electron app (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies (validates native modules on Windows)
+        run: npm ci --no-audit --no-fund
+      - name: Parse-check sources
+        run: foreach ($f in 'src/main.js', 'src/preload.js', 'src/renderer.js') { node --check $f; if ($LASTEXITCODE) { exit 1 } }

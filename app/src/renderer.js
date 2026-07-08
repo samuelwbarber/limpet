@@ -43,7 +43,8 @@ async function newTab() {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(pane);
-  try { term.loadAddon(new ImageAddon.ImageAddon()); } catch (e) { console.error('[limpet] image addon failed:', e); }
+  let img = null;
+  try { img = new ImageAddon.ImageAddon(); term.loadAddon(img); } catch (e) { console.error('[limpet] image addon failed:', e); }
 
   term.onData((d) => window.limpet.sendInput(id, d));
   term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; } });
@@ -55,7 +56,11 @@ async function newTab() {
     else pasteClipboard(id);
   });
 
-  tabs.set(id, { term, fit, pane, tabEl, titleEl });
+  const tab = { term, fit, pane, tabEl, titleEl, img, peeks: [], splitBusy: false, splitPending: [], peekTimer: null };
+  tabs.set(id, tab);
+  // A resize makes ConPTY repaint the viewport and wipe peek images; redraw
+  // them once the repaint settles.
+  term.onResize(() => schedulePeekRedraw(tab));
   activate(id);
 }
 
@@ -90,9 +95,72 @@ function removeTab(id) {
   if (activeId === id) activate(order[idx + 1] ?? order[idx - 1]);
 }
 
-window.limpet.onData(({ id, data }) => { const t = tabs.get(id); if (t) t.term.write(data); });
+window.limpet.onData(({ id, data }) => { const t = tabs.get(id); if (t) writeData(t, data); });
 // The shell exited on its own (`exit`, crash): the tab goes with it.
 window.limpet.onExit(({ id }) => removeTab(id));
+
+// ---- peek images vs. window resize ----
+// Resizing makes ConPTY repaint the viewport from its own buffer, which holds
+// only the blank rows peek reserved -- the repaint blanks the image cells and
+// the addon drops the image. So remember each peek sequence with a marker at
+// the row it was drawn on, and once a resize's repaint settles, redraw any
+// image whose reserved rows are back to blank.
+const PEEK_PREFIX = '\x1b]1337;File=inline=1;size=';
+const MAX_PEEKS = 8;
+
+function writeData(t, data) {
+  if (t.splitBusy) { t.splitPending.push(data); return; }
+  if (t.peekTimer) schedulePeekRedraw(t); // repaint still streaming: re-arm the timer
+  const i = data.indexOf(PEEK_PREFIX);
+  const end = i === -1 ? -1 : data.indexOf('\x07', i);
+  if (end === -1) { t.term.write(data); return; }
+  // main.js emits a peek sequence whole, so BEL is always in the same chunk.
+  const seq = data.slice(i, end + 1);
+  t.splitBusy = true;
+  t.term.write(data.slice(0, i), () => {
+    const marker = t.term.registerMarker(0);
+    if (marker) {
+      t.peeks.push({ marker, seq, rows: parseInt((/;height=(\d+)/.exec(seq) || [])[1], 10) || 1 });
+      while (t.peeks.length > MAX_PEEKS) t.peeks.shift().marker.dispose();
+    }
+    t.term.write(seq, () => {
+      t.splitBusy = false;
+      const q = t.splitPending.splice(0);
+      const rest = data.slice(end + 1);
+      if (rest) q.unshift(rest);
+      for (const d of q) writeData(t, d);
+    });
+  });
+}
+
+function schedulePeekRedraw(t) {
+  clearTimeout(t.peekTimer);
+  t.peekTimer = setTimeout(() => { t.peekTimer = null; redrawPeeks(t); }, 350);
+}
+
+function redrawPeeks(t) {
+  t.peeks = t.peeks.filter((p) => !p.marker.isDisposed);
+  if (!t.peeks.length || !t.img || t.term.buffer.active.type === 'alternate') return;
+  const buf = t.term.buffer.active;
+  let out = '';
+  for (const p of t.peeks) {
+    const row = p.marker.line - buf.baseY; // 0-based row on the addressable screen
+    if (row < 0 || row + p.rows > t.term.rows) continue; // in scrollback (survived) or no room
+    if (t.img.getImageAtBufferCell(0, p.marker.line) &&
+        t.img.getImageAtBufferCell(0, p.marker.line + p.rows - 1)) continue; // still intact
+    if (!rowsBlank(buf, p.marker.line, p.rows)) continue; // something else drew there
+    out += `\x1b[${row + 1};1H${p.seq}`;
+  }
+  if (out) t.term.write(`\x1b[?25l${out}\x1b[${buf.cursorY + 1};${buf.cursorX + 1}H\x1b[?25h`);
+}
+
+function rowsBlank(buf, line, rows) {
+  for (let i = 0; i < rows; i++) {
+    const l = buf.getLine(line + i);
+    if (!l || l.translateToString(true).trim() !== '') return false;
+  }
+  return true;
+}
 
 function syncSize() {
   const t = tabs.get(activeId);
