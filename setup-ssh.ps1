@@ -1,6 +1,6 @@
 # limpet SSH setup helper.
-# Sets up key-based auth so resilient sessions (WezTerm mux / mosh) reconnect
-# without ever prompting for a password.
+# Sets up key-based auth so resilient sessions (xssh) reconnect without ever
+# prompting for a password.
 #
 #   .\setup-ssh.ps1                          # generate key + load agent (local only)
 #   .\setup-ssh.ps1 -RemoteHost me@host.com  # also install the key on that host
@@ -70,18 +70,6 @@ if ($RemoteHost) {
     }
 }
 
-# 5. Show the public key and the WezTerm snippet to wire it up
+# 5. Show the public key
 Write-Host "`nYour public key ($KeyPath.pub):" -ForegroundColor Cyan
 Get-Content "$KeyPath.pub"
-
-Write-Host "`nAdd a resilient domain to wezterm/wezterm.lua:" -ForegroundColor Cyan
-@"
-config.ssh_domains = {
-  {
-    name = 'myserver',
-    remote_address = 'your.server.com',
-    username = '$env:USERNAME',
-    multiplexing = 'WezTerm',   -- persistent session, auto-reconnect
-  },
-}
-"@ | Write-Host

@@ -422,8 +422,8 @@ function xssh {
 # ---------------------------------------------------------------------------
 # wput: client-side-only upload. scp's local files/folders to a remote dir,
 # passwordless via your SSH key, needing nothing on the server but sshd.
-# Pairs with WezTerm's drag-drop (which pastes the path): at a LOCAL prompt,
-# type `wput `, drag the files, Enter.
+# The app's drag-drop covers small files in-session; wput is for folders,
+# big files, or plain terminals.
 #     wput report.pdf                       -> last xssh host, remote home (~)
 #     wput .\build -Dest /var/www           -> a specific remote dir
 #     wput a.txt b.txt -To me@host -Port 2222

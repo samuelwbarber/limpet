@@ -1,22 +1,16 @@
 # limpet installer.
-# Wires the three layers together without copying anything around:
+# Wires everything up without copying anything around:
 #   * adds the Limpet import to your PowerShell profile (Linux commands)
-#   * points WezTerm at this repo's config (rendering + resilient SSH)
-#   * sets LIMPET_HOME so the WezTerm config can find the module
+#   * creates the Start Menu shortcut for the app
 # Re-running is safe (idempotent).
 
 $ErrorActionPreference = 'Stop'
 $repo   = $PSScriptRoot
 $module = Join-Path $repo 'shell\Limpet.psd1'
-$wezcfg = Join-Path $repo 'wezterm\wezterm.lua'
 
 Write-Host "limpet repo: $repo" -ForegroundColor Cyan
 
-# 1. Environment: where the module lives (read by wezterm.lua)
-[Environment]::SetEnvironmentVariable('LIMPET_HOME', $repo, 'User')
-$env:LIMPET_HOME = $repo
-
-# 2. PowerShell profile: auto-import Limpet in every session (any host)
+# 1. PowerShell profile: auto-import Limpet in every session (any host)
 $profilePath = $PROFILE.CurrentUserAllHosts
 $profileDir  = Split-Path $profilePath
 if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
@@ -33,17 +27,7 @@ else {
     Write-Host "Profile already references limpet; left unchanged." -ForegroundColor Yellow
 }
 
-# 3. WezTerm: point it at this repo's config (no file copy)
-if (Get-Command wezterm -ErrorAction SilentlyContinue) {
-    [Environment]::SetEnvironmentVariable('WEZTERM_CONFIG_FILE', $wezcfg, 'User')
-    Write-Host "WezTerm detected; WEZTERM_CONFIG_FILE -> $wezcfg" -ForegroundColor Green
-}
-else {
-    Write-Host "WezTerm not installed (optional, recommended for rendering)." -ForegroundColor Yellow
-    Write-Host "  Install: winget install wez.wezterm  (or grab the portable zip, see README)"
-}
-
-# 4. Start Menu shortcut: launch the Electron app by typing 'limpet' in Windows search
+# 2. Start Menu shortcut: launch the Electron app by typing 'limpet' in Windows search
 $electron = Join-Path $repo 'app\node_modules\electron\dist\electron.exe'
 $appDir   = Join-Path $repo 'app'
 if (Test-Path $electron) {
@@ -66,7 +50,7 @@ else {
     Write-Host "Electron not installed yet; run 'npm install' in $appDir, then re-run this installer for the 'limpet' search shortcut." -ForegroundColor Yellow
 }
 
-# 5. Optional companions
+# 3. Optional companions
 if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
     Write-Host "PowerShell 7 not installed (optional)." -ForegroundColor Yellow
     Write-Host "  Install: winget install Microsoft.PowerShell"

@@ -129,7 +129,7 @@ npm start              # or launch "limpet" from the Start Menu after install.ps
 
 | Layer | Job | What provides it |
 |-------|-----|------------------|
-| Terminal | tabs, rendering, inline images, drop target | limpet app (`app/`) or WezTerm (`wezterm/`) |
+| Terminal | tabs, rendering, inline images, drop target | limpet app (`app/`) |
 | Session | survive bad links without re-auth | `xssh` (client-side) plus optional remote `tmux` |
 | Shell | `ls -la`, `grep`, `wput`, `peek` | Limpet module (`shell/`) |
 
@@ -142,9 +142,8 @@ setup.
 ```
 shell/       Limpet PowerShell module + limpet-remote.sh (in-session helpers) + Hello auth
 app/         tabbed Electron terminal (xterm.js + ConPTY)
-wezterm/     alternative WezTerm host config
-install.ps1  idempotent setup (profile, env, Start Menu shortcut)
-setup-ssh.ps1, ssh-resilient.ps1   SSH key + resilient-connection helpers
+install.ps1  idempotent setup (profile, Start Menu shortcut)
+setup-ssh.ps1  SSH key setup helper
 tests/       Test-Limpet.ps1 smoke test
 tools/demo/  scripts that record the README GIFs
 docs/        COMMANDS.md reference, demo media

@@ -59,10 +59,10 @@ wput .\build -Dest /var/www     # specific remote directory
 wput a.txt b.txt -To me@host -Port 2222 -Key C:\path\id_ed25519
 ```
 
-Drag-and-drop: at a **local** prompt type `wput `, drag the files (WezTerm pastes
-the paths), Enter. The drop must land in a local pane (WezTerm has no drop event,
-and a drop on a live SSH pane goes to the remote shell). The remote *current*
-directory can't be detected client-side — pass `-Dest` for a specific folder.
+Drag-and-drop: in the limpet app, dropping files onto the window during an
+`xssh` session sends them straight to the remote's current directory, so `wput`
+is mainly for folders, big files, or plain terminals. The remote *current*
+directory can't be detected client-side; pass `-Dest` for a specific folder.
 
 ## Restoring the original aliases
 
