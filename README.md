@@ -38,8 +38,7 @@ folder.
 
 ## xssh
 
-A drop-in for `ssh` that reconnects with your key when the link drops. Bad
-hotel Wi-Fi, a sleeping laptop, a flaky VPN: instead of a dead terminal you
+A drop-in for `ssh` that reconnects with your key when the link drops. British train Wi-Fi, a sleeping laptop, a flaky VPN: instead of a dead terminal you
 get a short pause and then your session back. Pair it with remote `tmux` and
 your programs survive too.
 
