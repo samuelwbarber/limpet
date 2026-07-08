@@ -43,7 +43,8 @@ printf 'not an image' > "$TMP/x.bin"
 [ "$(_limpet_img_rows "$TMP/x.bin")" = 18 ]; check 'unknown format falls back to 18 rows' $?
 
 # ---- peek protocol ----
-out=$(peek "$TMP/p200.png")
+# sentinel X keeps $() from stripping peek's trailing reserved newlines
+out=$(peek "$TMP/p200.png"; printf X); out=${out%X}
 case "$out" in *']1337;File=name='*) check 'peek emits OSC 1337 File' 0;; *) check 'peek emits OSC 1337 File' 1;; esac
 case "$out" in *";rows=12:"*) check 'peek tags rows from pixel height' 0;; *) check 'peek tags rows from pixel height' 1;; esac
 case "$out" in *";size=$(wc -c < "$TMP/p200.png" | tr -d ' ');"*) check 'peek reports the byte size' 0;; *) check 'peek reports the byte size' 1;; esac

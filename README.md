@@ -156,6 +156,14 @@ docs/        COMMANDS.md reference, demo media
 
 ## Test
 
+CI runs all of these on every push (see `.github/workflows/ci.yml`):
+
 ```powershell
-.\tests\Test-Limpet.ps1
+.\tests\Test-Limpet.ps1    # every shell command + peek/reels protocol + Hello helpers
+.\tests\Test-Xssh.ps1      # xssh bootstrap variants + reconnect policy (ssh stubbed)
+bash tests/test-remote-sh.sh   # remote helpers + the real xssh bootstrap templates (Linux/WSL)
+
+cd app
+npm test                   # terminal-protocol unit tests (node --test)
+npm run test:e2e           # launches the real app: peek, resize survival, reels, download
 ```

@@ -2,7 +2,9 @@
 # each connect; nothing is persisted on the server). Defines peek/download/upload
 # which talk back to the limpet app via escape sequences.
 
-[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+# bash --rcfile skips ~/.bashrc, so restore it -- but only under bash: plain
+# sh (the ENV= fallback) would choke on bashisms in it.
+[ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
 
 _limpet_b64() { base64 | tr -d '\n'; }
 
