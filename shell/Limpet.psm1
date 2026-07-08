@@ -296,9 +296,19 @@ function xssh {
         $sshArgs = @('-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-o', 'TCPKeepAlive=yes') + $sshArgs
     }
 
-    # Remember the host so `wput` can default to it for client-side uploads.
-    $hostTok = $rest | Where-Object { $_ -like '*@*' -and $_ -notlike '-*' } | Select-Object -First 1
-    if (-not $hostTok) { $hostTok = $rest | Where-Object { $_ -notlike '-*' } | Select-Object -First 1 }
+    # Remember the destination host so `wput` can default to it. Parse like ssh:
+    # skip options and their values (so -J jump@host is not mistaken for the
+    # destination); the first bare token is the host.
+    $noValueFlags = '-4','-6','-A','-a','-C','-f','-G','-g','-K','-k','-M','-N','-n','-q','-s','-T','-t','-V','-v','-X','-x','-Y','-y'
+    $hostTok = $null
+    for ($hi = 0; $hi -lt $rest.Count; $hi++) {
+        $tok = [string]$rest[$hi]
+        if ($tok.StartsWith('-')) {
+            if ($noValueFlags -notcontains $tok) { $hi++ }  # this flag consumes a value
+            continue
+        }
+        $hostTok = $tok; break
+    }
     if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'limpet-last-ssh.txt') -Value $hostTok -Encoding ascii }
 
     # Windows Hello auth: if this host was enrolled (Enable-LimpetHello), unseal the
@@ -585,7 +595,25 @@ $script:OriginalAliases = @{
     rm = 'Remove-Item';   cat = 'Get-Content'
 }
 foreach ($name in $script:NixAliases.Keys) {
-    Set-Alias -Name $name -Value $script:NixAliases[$name] -Scope Global -Force -Option AllScope -ErrorAction SilentlyContinue
+    $target = $script:NixAliases[$name]
+    Set-Alias -Name $name -Value $target -Scope Global -Force -Option AllScope -ErrorAction SilentlyContinue
+    $cur = Get-Alias -Name $name -ErrorAction SilentlyContinue
+    if ($cur -and $cur.Definition -eq $target) { continue }
+    # Some hosts refuse the one-shot overwrite. Try replacing through the
+    # Alias: drive, then removing the built-in wherever it's visible and
+    # setting ours fresh.
+    Set-Item -Path "Alias:\$name" -Value $target -Force -ErrorAction SilentlyContinue
+    $cur = Get-Alias -Name $name -ErrorAction SilentlyContinue
+    if ($cur -and $cur.Definition -eq $target) { continue }
+    for ($i = 0; $i -lt 10 -and (Test-Path "Alias:\$name"); $i++) {
+        Remove-Item -Path "Alias:\$name" -Force -ErrorAction SilentlyContinue
+    }
+    Set-Alias -Name $name -Value $target -Scope Global -Force -Option AllScope -ErrorAction SilentlyContinue
+    $cur = Get-Alias -Name $name -ErrorAction SilentlyContinue
+    if (-not $cur -or $cur.Definition -ne $target) {
+        Write-Warning ("limpet: could not point '{0}' at {1} (it is {2}); its Linux-style flags won't work in this session." -f `
+            $name, $target, $(if ($cur) { $cur.Definition } else { 'gone' }))
+    }
 }
 
 # Tab-friendly window title: the current folder, not powershell.exe's path

@@ -14,6 +14,11 @@ jobs:
       - name: Module manifest is valid
         shell: powershell # Windows PowerShell 5.1 -- what the module targets
         run: Test-ModuleManifest .\shell\Limpet.psd1 | Out-Null
+      - name: Alias takeover diagnostics
+        shell: powershell
+        run: |
+          Import-Module .\shell\Limpet.psd1 -Force
+          Get-Alias ls, rm, cp, mv, cat -ErrorAction SilentlyContinue | Format-Table Name, Definition, Options
       - name: Smoke-test every command
         shell: powershell
         run: .\tests\Test-Limpet.ps1

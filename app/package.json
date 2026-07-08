@@ -5,11 +5,14 @@
   "description": "limpet - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test tests/protocol.test.js",
+    "test:e2e": "node tests/e2e.js"
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^29.4.6"
+    "electron": "^29.4.6",
+    "playwright-core": "^1.45.0"
   },
   "dependencies": {
     "@homebridge/node-pty-prebuilt-multiarch": "^0.12.0",
