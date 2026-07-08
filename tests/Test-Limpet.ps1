@@ -1,6 +1,12 @@
 # Smoke test for limpet. Exercises every command in a throwaway temp dir and
 # reports PASS/FAIL. Run: .\tests\Test-Limpet.ps1
 $ErrorActionPreference = 'Stop'
+# The module's functions resolve $ErrorActionPreference through THEIR scope
+# chain, which roots at global — a script-scoped Stop doesn't reach them when
+# this file runs as a child scope, and the Check-Throws tests then miss the
+# Write-Error-based failures. Mirror it globally; restored before exit.
+$script:savedGlobalEAP = $global:ErrorActionPreference
+$global:ErrorActionPreference = 'Stop'
 
 $module = Join-Path (Split-Path $PSScriptRoot -Parent) 'shell\Limpet.psd1'
 Import-Module $module -Force
@@ -21,6 +27,7 @@ foreach ($a in @{ ls = 'NixLs'; rm = 'NixRm'; cp = 'NixCp'; mv = 'NixMv'; cat = 
 if ($fail) {
     Get-Alias ls, rm, cp, mv, cat -ErrorAction SilentlyContinue | Format-Table Name, Definition, Options | Out-String | Write-Host
     Write-Host "$pass passed, $fail failed (alias takeover failed; skipping command checks)" -ForegroundColor Red
+    $global:ErrorActionPreference = $script:savedGlobalEAP
     exit 1
 }
 
@@ -177,6 +184,7 @@ finally {
     Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
 }
 
+$global:ErrorActionPreference = $script:savedGlobalEAP
 $color = if ($fail) { 'Red' } else { 'Green' }
 Write-Host "`n$pass passed, $fail failed" -ForegroundColor $color
 if ($fail) { exit 1 }

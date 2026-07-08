@@ -112,6 +112,10 @@ check 'bash-less fallback: ENV= loads helpers in plain sh' $?
 if command -v tmux >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
   tmux kill-session -t limpet 2>/dev/null
   export BOOT="$RESUME"
+  # CI runners have TERM unset or dumb; tmux refuses to attach on those and
+  # script exits early (broken-pipe printfs). Real sessions get a capable
+  # TERM from the app's xterm.js, so force one here too.
+  export TERM=xterm-256color
   { sleep 2; printf 'export M=alive; type peek >/dev/null 2>&1 && echo TMUX-OK\n'; sleep 1; printf 'tmux detach\n'; sleep 1; } \
     | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t1.log" 2>&1
   grep -qa 'TMUX-OK' "$TMP/t1.log"; check 'resume bootstrap: helpers live inside tmux' $?

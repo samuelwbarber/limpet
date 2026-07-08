@@ -585,6 +585,9 @@ function limpet {
 # Load: point global aliases at the Nix* functions, overriding the built-in
 # read-only aliases. Set-Alias -Scope Global -Force reliably wins, where
 # removing the alias from module scope does not. Restore on Remove-Module.
+# Scopes that existed before import hold their own AllScope copies which this
+# cannot reach; limpet-aliases.ps1 (ScriptsToProcess) rewrites those from
+# inside the caller's scope chain.
 # ---------------------------------------------------------------------------
 
 $script:NixAliases = @{
