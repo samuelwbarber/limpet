@@ -115,8 +115,11 @@ try {
     Check 'grep -r searches directories' ((@(grep -r line "$d")).Count -eq 4)
     Check-Throws 'grep with no pattern errors' { grep } '*missing pattern*'
 
+    # Compare by leaf: Get-ChildItem expands 8.3 short prefixes (GHA's TEMP
+    # is C:\Users\RUNNER~1\...) while Join-Path keeps them, so full-path
+    # equality is false on such runners.
     $dirs = @(find "$d" -type d)
-    Check 'find -type d finds directories' ($dirs -contains (Join-Path $d 'sub'))
+    Check 'find -type d finds directories' (($dirs | Split-Path -Leaf) -contains 'sub')
 
     mkdir "$d\m1" "$d\m2"
     Check 'mkdir accepts multiple dirs' ((Test-Path "$d\m1") -and (Test-Path "$d\m2"))
