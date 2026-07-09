@@ -36,19 +36,31 @@ _limpet_img_rows() {
   echo "$rows"
 }
 
-# Show an image inline in the limpet window (iTerm2 inline-image protocol, plus
-# a limpet-private rows=N field). ConPTY on the PC can't know an image occupies
-# screen rows, so peek prints N real newlines to reserve blank rows and the
-# limpet app draws the image over them — without this the next prompt would
+# Show an image inline in the limpet window. The image is streamed over the
+# limpet-private OSC 5379 channel as a header, many small base64 chunks, and a
+# finish marker; the app reassembles them and draws the image. Chunking is not
+# cosmetic: ConPTY buffers an incomplete OSC until its terminator but drops it
+# whole once it grows past an internal limit, and a slow/lossy link delivers a
+# big image in fragments that force that buffering — so a single giant OSC would
+# vanish for large images. Each chunk stays well under the limit. ConPTY still
+# can't know an image occupies screen rows, so peek prints N real newlines to
+# reserve blank rows for the app to draw over; otherwise the next prompt would
 # overdraw the image.
 peek() {
-  local f rows i
+  local f rows i name64 size
   if [ "$#" -eq 0 ]; then echo "usage: peek <image> [...]" >&2; return 1; fi
   for f in "$@"; do
     if [ ! -f "$f" ]; then echo "peek: $f: not found" >&2; continue; fi
     rows=$(_limpet_img_rows "$f")
-    printf '\033]1337;File=name=%s;size=%s;inline=1;preserveAspectRatio=1;rows=%s:%s\007' \
-      "$(printf '%s' "${f##*/}" | _limpet_b64)" "$(wc -c < "$f" | tr -d ' ')" "$rows" "$(_limpet_b64 < "$f")"
+    name64=$(printf '%s' "${f##*/}" | _limpet_b64)
+    size=$(wc -c < "$f" | tr -d ' ')
+    printf '\033]5379;peek;h;%s;%s;%s\007' "$name64" "$size" "$rows"
+    # `|| [ -n "$_chunk" ]` emits fold's final piece, which has no trailing
+    # newline and would otherwise be dropped by read (truncating the image).
+    _limpet_b64 < "$f" | fold -w 16384 | while IFS= read -r _chunk || [ -n "$_chunk" ]; do
+      printf '\033]5379;peek;d;%s\007' "$_chunk"
+    done
+    printf '\033]5379;peek;f\007'
     i=0; while [ "$i" -lt "$rows" ]; do printf '\n'; i=$((i+1)); done
   done
 }

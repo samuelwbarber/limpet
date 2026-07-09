@@ -197,7 +197,7 @@ function sendData(sess, data) {
 // other output pass through to xterm.js untouched.
 const {
   LIMPET_OSC, OSC_MARKERS, BEL,
-  heldPrefixLen, findMarker, looksLikeVerb, classifyIip, b64dec, transformPeekImage,
+  heldPrefixLen, findMarker, looksLikeVerb, classifyIip, b64dec, transformPeekImage, buildPeekOsc,
 } = require('./protocol');
 
 // A trailing partial-prefix of a marker is held back so a marker split across
@@ -240,7 +240,7 @@ function forwardOutput(sess, data) {
     }
     const body = buf.slice(afterMark, end);
     if (marker === LIMPET_OSC) {
-      handleLimpetOsc(sess, body);
+      out += handleLimpetOsc(sess, body);
     } else if (classifyIip(body) === 'ours') {
       out += transformPeekImage(body);
     } else {
@@ -255,6 +255,12 @@ function forwardOutput(sess, data) {
   if (sess.outPending && !OSC_MARKERS.some((m) => sess.outPending.startsWith(m))) scheduleFlush(sess);
 }
 
+// Returns text to emit to the terminal ('' for side-effect-only verbs). `peek`
+// streams an image as many small OSC chunks so no single escape sequence is big
+// enough to overflow ConPTY's OSC buffer when a slow/lossy link delivers it in
+// fragments (a large one-shot OSC gets silently dropped whole). We reassemble
+// the chunks here and hand the complete image to the renderer over IPC, which
+// never passes back through ConPTY.
 function handleLimpetOsc(sess, seq) {
   const parts = seq.split(';');
   if (parts[0] === 'download') {
@@ -263,7 +269,19 @@ function handleLimpetOsc(sess, seq) {
     injectFiles(sess, [b64dec(parts[1]).toString('utf8')]);
   } else if (parts[0] === 'reels') {
     send('reels:toggle', b64dec(parts[1]).toString('utf8'));
+  } else if (parts[0] === 'peek') {
+    const sub = parts[1];
+    if (sub === 'h') {
+      sess.peekImg = { name: b64dec(parts[2]).toString('utf8'), size: parts[3], rows: parts[4], chunks: [] };
+    } else if (sub === 'd') {
+      if (sess.peekImg) sess.peekImg.chunks.push(parts[2] || '');
+    } else if (sub === 'f') {
+      const p = sess.peekImg;
+      sess.peekImg = null;
+      if (p) return buildPeekOsc({ size: p.size, rows: p.rows, name: p.name, b64: p.chunks.join('') });
+    }
   }
+  return '';
 }
 
 function saveDownload(sess, name, buf) {

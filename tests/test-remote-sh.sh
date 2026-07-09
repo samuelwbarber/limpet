@@ -43,18 +43,25 @@ printf 'not an image' > "$TMP/x.bin"
 [ "$(_limpet_img_rows "$TMP/x.bin")" = 18 ]; check 'unknown format falls back to 18 rows' $?
 
 # ---- peek protocol ----
+# peek streams the image over OSC 5379 as: a header (peek;h;name64;size;rows),
+# many small base64 chunks (peek;d;...), a finish (peek;f), then rows newlines.
+# Chunking keeps any single escape sequence small enough to survive ConPTY's OSC
+# buffer when a fragmented link would otherwise get a giant one-shot OSC dropped.
 # sentinel X keeps $() from stripping peek's trailing reserved newlines
 out=$(peek "$TMP/p200.png"; printf X); out=${out%X}
-case "$out" in *']1337;File=name='*) check 'peek emits OSC 1337 File' 0;; *) check 'peek emits OSC 1337 File' 1;; esac
-case "$out" in *";rows=12:"*) check 'peek tags rows from pixel height' 0;; *) check 'peek tags rows from pixel height' 1;; esac
-case "$out" in *";size=$(wc -c < "$TMP/p200.png" | tr -d ' ');"*) check 'peek reports the byte size' 0;; *) check 'peek reports the byte size' 1;; esac
-payload=${out#*:}; payload=${payload%%"$BEL"*}
+name64=$(printf %s p200.png | base64 | tr -d '\n')
+size=$(wc -c < "$TMP/p200.png" | tr -d ' ')
+case "$out" in *"]5379;peek;h;$name64;$size;12$BEL"*) check 'peek emits header with name/size/rows' 0;; *) check 'peek emits header with name/size/rows' 1;; esac
+case "$out" in *"]5379;peek;d;"*) check 'peek emits base64 data chunks' 0;; *) check 'peek emits base64 data chunks' 1;; esac
+case "$out" in *"]5379;peek;f$BEL"*) check 'peek emits the finish marker' 0;; *) check 'peek emits the finish marker' 1;; esac
+# concatenate every chunk payload (between ;peek;d; and the next BEL) and decode
+payload=$(printf %s "$out" | awk 'BEGIN{RS="\007"} /peek;d;/ { sub(/.*peek;d;/,""); printf "%s", $0 }')
 printf %s "$payload" | base64 -d 2>/dev/null | cmp -s - "$TMP/p200.png"
-check 'peek payload base64 round-trips' $?
-tail_nl=${out#*"$BEL"}
+check 'peek chunks reassemble and base64 round-trips' $?
+tail_nl=${out##*"$BEL"}
 [ "$(printf %s "$tail_nl" | wc -l | tr -d ' ')" = 12 ]; check 'peek reserves exactly rows newlines' $?
 out2=$(peek "$TMP/p200.png" "$TMP/p10.png")
-[ "$(printf %s "$out2" | grep -aoc ']1337;')" = 2 ]; check 'peek handles multiple files' $?
+[ "$(printf %s "$out2" | grep -aoc ']5379;peek;h;')" = 2 ]; check 'peek handles multiple files' $?
 peek "$TMP/nope.png" 2> "$TMP/err" >/dev/null
 grep -q 'not found' "$TMP/err"; check 'peek reports missing files' $?
 peek 2>/dev/null; [ $? = 1 ]; check 'peek with no args exits 1' $?

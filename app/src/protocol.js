@@ -7,7 +7,7 @@ const LIMPET_OSC = '\x1b]5379;';
 const IIP_OSC = '\x1b]1337;';
 const OSC_MARKERS = [LIMPET_OSC, IIP_OSC];
 const BEL = '\x07';
-const KNOWN_VERBS = ['download', 'upload', 'reels'];
+const KNOWN_VERBS = ['download', 'upload', 'reels', 'peek'];
 const MAX_IIP_HEADER = 2048;
 
 // Longest suffix of `s` that is a (partial) prefix of any OSC marker.
@@ -75,6 +75,19 @@ function sniffImageMime(buf) {
 // xterm's cursor then stays where ConPTY believes it is, the reserved newlines
 // advance both models identically, and the prompt lands below the image
 // instead of overdrawing it.
+// Build the xterm image sequence from decoded fields. Shared by the legacy
+// single-OSC path (transformPeekImage) and the chunked OSC 5379 path in main.js.
+function buildPeekOsc({ size, rows, name, b64 }) {
+  const r = Math.max(1, parseInt(rows, 10) || 1);
+  const mime = sniffImageMime(b64dec(b64.slice(0, 44)));
+  if (!mime) {
+    return `\x1b[31m[limpet] peek: ${name || 'image'}: not a supported image (png/jpeg/gif)\x1b[0m`;
+  }
+  const sz = parseInt(size, 10) || Math.floor(b64.length * 3 / 4);
+  const up = r > 1 ? `\x1b[${r - 1}A` : '';
+  return `\x1b]1337;File=inline=1;size=${sz};height=${r};preserveAspectRatio=1:${b64}\x07${up}\r`;
+}
+
 function transformPeekImage(body) {
   const colon = body.indexOf(':');
   const fields = {};
@@ -82,20 +95,12 @@ function transformPeekImage(body) {
     const eq = kv.indexOf('=');
     if (eq > 0) fields[kv.slice(0, eq)] = kv.slice(eq + 1);
   }
-  const rows = Math.max(1, parseInt(fields.rows, 10) || 1);
-  const b64 = body.slice(colon + 1);
   const name = fields.name ? b64dec(fields.name).toString('utf8') : 'image';
-  const mime = sniffImageMime(b64dec(b64.slice(0, 44)));
-  if (!mime) {
-    return `\x1b[31m[limpet] peek: ${name}: not a supported image (png/jpeg/gif)\x1b[0m`;
-  }
-  const size = parseInt(fields.size, 10) || Math.floor(b64.length * 3 / 4);
-  const up = rows > 1 ? `\x1b[${rows - 1}A` : '';
-  return `\x1b]1337;File=inline=1;size=${size};height=${rows};preserveAspectRatio=1:${b64}\x07${up}\r`;
+  return buildPeekOsc({ size: fields.size, rows: fields.rows, name, b64: body.slice(colon + 1) });
 }
 
 module.exports = {
   LIMPET_OSC, IIP_OSC, OSC_MARKERS, BEL, KNOWN_VERBS, MAX_IIP_HEADER,
   heldPrefixLen, findMarker, looksLikeVerb, classifyIip, b64dec,
-  sniffImageMime, transformPeekImage,
+  sniffImageMime, transformPeekImage, buildPeekOsc,
 };

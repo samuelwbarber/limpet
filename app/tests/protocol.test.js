@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {
   LIMPET_OSC, IIP_OSC,
   heldPrefixLen, findMarker, looksLikeVerb, classifyIip, b64dec,
-  sniffImageMime, transformPeekImage,
+  sniffImageMime, transformPeekImage, buildPeekOsc,
 } = require('../src/protocol');
 
 const b64 = (s) => Buffer.from(s).toString('base64');
@@ -33,6 +33,7 @@ test('looksLikeVerb accepts limpet verbs and their prefixes only', () => {
   assert.equal(looksLikeVerb('download;name;data'), true);
   assert.equal(looksLikeVerb('upload;p;d'), true);
   assert.equal(looksLikeVerb('reels;'), true);
+  assert.equal(looksLikeVerb('peek;d;AAAA'), true);      // chunked image: must keep buffering
   assert.equal(looksLikeVerb('down'), true);             // incomplete: keep buffering
   assert.equal(looksLikeVerb(''), true);
   assert.equal(looksLikeVerb('notaverb;x'), false);
@@ -85,6 +86,20 @@ test('transformPeekImage: missing size is computed from the payload', () => {
   const png = PNG_HEADER.toString('base64');
   const out = transformPeekImage(`File=rows=2:${png}`);
   assert.ok(out.includes(`size=${Math.floor(png.length * 3 / 4)};`));
+});
+
+test('buildPeekOsc: chunked payload reassembles to the same image sequence', () => {
+  // `peek` streams the base64 as many small OSC chunks (so no single escape
+  // sequence overflows ConPTY's buffer over a fragmented link); main.js joins
+  // the chunks and calls buildPeekOsc. Reassembly must be byte-identical to a
+  // one-shot image and must survive an arbitrary split point.
+  const png = PNG_HEADER.toString('base64');
+  const whole = buildPeekOsc({ size: 12, rows: 4, name: 'graph.png', b64: png });
+  const chunks = [png.slice(0, 5), png.slice(5)];
+  const joined = buildPeekOsc({ size: 12, rows: 4, name: 'graph.png', b64: chunks.join('') });
+  assert.equal(joined, whole);
+  assert.ok(whole.startsWith('\x1b]1337;File=inline=1;size=12;height=4;preserveAspectRatio=1:'));
+  assert.ok(whole.endsWith(`${png}\x07\x1b[3A\r`));
 });
 
 test('b64dec tolerates empty input', () => {
