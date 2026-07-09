@@ -8,6 +8,23 @@
 
 _limpet_b64() { base64 | tr -d '\n'; }
 
+# Emit a raw escape sequence to the terminal. Inside tmux the outer terminal
+# (the limpet app) never sees our OSC sequences -- tmux swallows anything it
+# doesn't recognise -- so wrap them in tmux's passthrough (DCS tmux; ... ST,
+# every ESC doubled) and turn passthrough on for this pane. tmux then forwards
+# the un-escaped bytes straight to the app. Outside tmux it's a plain print.
+_LIMPET_ESC=$(printf '\033')
+_limpet_emit() {
+  if [ -n "${TMUX:-}" ]; then
+    [ -n "${_LIMPET_PT:-}" ] || { tmux set -p allow-passthrough on 2>/dev/null; _LIMPET_PT=1; }
+    printf '\033Ptmux;'
+    printf '%s' "$1" | sed "s/$_LIMPET_ESC/$_LIMPET_ESC$_LIMPET_ESC/g"
+    printf '\033\\'
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # Display height in terminal rows for an image (~18 px per row). Parses the
 # pixel height from PNG/GIF/BMP headers; other formats fall back to 18 rows.
 # The limpet app fits the image into the rows preserving aspect, so this only
@@ -54,13 +71,13 @@ peek() {
     rows=$(_limpet_img_rows "$f")
     name64=$(printf '%s' "${f##*/}" | _limpet_b64)
     size=$(wc -c < "$f" | tr -d ' ')
-    printf '\033]5379;peek;h;%s;%s;%s\007' "$name64" "$size" "$rows"
+    _limpet_emit "$(printf '\033]5379;peek;h;%s;%s;%s\007' "$name64" "$size" "$rows")"
     # `|| [ -n "$_chunk" ]` emits fold's final piece, which has no trailing
     # newline and would otherwise be dropped by read (truncating the image).
     _limpet_b64 < "$f" | fold -w 16384 | while IFS= read -r _chunk || [ -n "$_chunk" ]; do
-      printf '\033]5379;peek;d;%s\007' "$_chunk"
+      _limpet_emit "$(printf '\033]5379;peek;d;%s\007' "$_chunk")"
     done
-    printf '\033]5379;peek;f\007'
+    _limpet_emit "$(printf '\033]5379;peek;f\007')"
     i=0; while [ "$i" -lt "$rows" ]; do printf '\n'; i=$((i+1)); done
   done
 }
@@ -71,8 +88,8 @@ download() {
   if [ "$#" -eq 0 ]; then echo "usage: download <remote-file> [...]" >&2; return 1; fi
   for f in "$@"; do
     if [ ! -f "$f" ]; then echo "download: $f: not found" >&2; continue; fi
-    printf '\033]5379;download;%s;%s\007' \
-      "$(printf '%s' "${f##*/}" | _limpet_b64)" "$(_limpet_b64 < "$f")"
+    _limpet_emit "$(printf '\033]5379;download;%s;%s\007' \
+      "$(printf '%s' "${f##*/}" | _limpet_b64)" "$(_limpet_b64 < "$f")")"
     echo "download: $f -> PC Downloads"
   done
 }
@@ -82,15 +99,15 @@ upload() {
   local p
   if [ "$#" -eq 0 ]; then echo "usage: upload <local-path-on-pc> [...]" >&2; return 1; fi
   for p in "$@"; do
-    printf '\033]5379;upload;%s;%s\007' \
-      "$(printf '%s' "$p" | _limpet_b64)" "$(printf '%s' "$PWD" | _limpet_b64)"
+    _limpet_emit "$(printf '\033]5379;upload;%s;%s\007' \
+      "$(printf '%s' "$p" | _limpet_b64)" "$(printf '%s' "$PWD" | _limpet_b64)")"
   done
 }
 
 # Dock a webpage on the right side of the limpet window. No args toggles the
 # Instagram reels feed; pass a URL to open something else.
 reels() {
-  printf '\033]5379;reels;%s\007' "$(printf '%s' "${1:-}" | _limpet_b64)"
+  _limpet_emit "$(printf '\033]5379;reels;%s\007' "$(printf '%s' "${1:-}" | _limpet_b64)")"
 }
 
 # Hop to another host WITH the limpet helpers: `xssh gpu19` from a login node
@@ -111,5 +128,6 @@ xssh() {
 # environment: tmux, a nested `bash`, or `srun --pty bash` (slurm forwards the
 # environment, BASH_FUNC_* included, to the compute node).
 if [ -n "$BASH_VERSION" ]; then
-  export -f _limpet_b64 _limpet_img_rows peek download upload reels xssh 2>/dev/null
+  export _LIMPET_ESC
+  export -f _limpet_b64 _limpet_emit _limpet_img_rows peek download upload reels xssh 2>/dev/null
 fi

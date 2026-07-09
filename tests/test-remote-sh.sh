@@ -11,6 +11,7 @@ check() { if [ "$2" = 0 ]; then echo "PASS  $1"; pass=$((pass+1)); else echo "FA
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 BEL=$'\007'
+ESC=$'\033'
 
 # ---- syntax ----
 bash -n shell/limpet-remote.sh; check 'bash syntax' $?
@@ -65,6 +66,16 @@ out2=$(peek "$TMP/p200.png" "$TMP/p10.png")
 peek "$TMP/nope.png" 2> "$TMP/err" >/dev/null
 grep -q 'not found' "$TMP/err"; check 'peek reports missing files' $?
 peek 2>/dev/null; [ $? = 1 ]; check 'peek with no args exits 1' $?
+
+# ---- tmux passthrough ----
+# Inside tmux the app never sees a bare OSC (tmux swallows it), so every
+# sequence must be wrapped in the tmux passthrough DCS (ESC P tmux; ... ESC \)
+# with each ESC doubled. Fake a tmux env; the `tmux set` inside is best-effort.
+tout=$(TMUX=/fake,0,0 peek "$TMP/p200.png" 2>/dev/null; printf X); tout=${tout%X}
+case "$tout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;peek;h;"*) check 'tmux: peek wraps sequences in passthrough with doubled ESC' 0;; *) check 'tmux: peek wraps sequences in passthrough with doubled ESC' 1;; esac
+case "$tout" in *"${ESC}\\"*) check 'tmux: passthrough sequences terminated with ST' 0;; *) check 'tmux: passthrough sequences terminated with ST' 1;; esac
+rout=$(TMUX=/fake,0,0 reels https://x 2>/dev/null)
+case "$rout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;reels;"*) check 'tmux: reels is wrapped too' 0;; *) check 'tmux: reels is wrapped too' 1;; esac
 
 # ---- download / upload / reels protocol ----
 printf 'hello limpet' > "$TMP/file.txt"
