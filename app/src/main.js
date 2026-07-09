@@ -263,8 +263,11 @@ function forwardOutput(sess, data) {
 // never passes back through ConPTY.
 function handleLimpetOsc(sess, seq) {
   const parts = seq.split(';');
-  if (parts[0] === 'download') {
-    saveDownload(sess, b64dec(parts[1]).toString('utf8'), b64dec(parts[2]));
+  if (parts[0] === 'dl') {
+    const sub = parts[1];
+    if (sub === 'h') startDownload(sess, b64dec(parts[2]).toString('utf8'), parts[3]);
+    else if (sub === 'd') writeDownloadChunk(sess, parts[2]);
+    else if (sub === 'f') finishDownload(sess);
   } else if (parts[0] === 'upload') {
     injectFiles(sess, [b64dec(parts[1]).toString('utf8')]);
   } else if (parts[0] === 'reels') {
@@ -284,23 +287,90 @@ function handleLimpetOsc(sess, seq) {
   return '';
 }
 
-function saveDownload(sess, name, buf) {
+// A download arrives as many small base64 OSC chunks (dl;h header, dl;d data,
+// dl;f finish) so a large file or folder never builds one giant OSC in memory or
+// overflows ConPTY's buffer. Bytes are written straight to disk as they stream:
+// a file lands in Downloads; a folder arrives as a tar we pipe through `tar -x`,
+// so a 10 GB download costs a couple of buffers of memory, not 10 GB.
+function downloadsDir() {
+  const dir = path.join(os.homedir(), 'Downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function uniqueDest(dir, name) {
+  let dest = path.join(dir, name);
+  if (!fs.existsSync(dest)) return dest;
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  let n = 1;
+  do { dest = path.join(dir, `${stem} (${n})${ext}`); n++; } while (fs.existsSync(dest));
+  return dest;
+}
+
+function fmtBytes(n) {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(1) : n} ${u[i]}`;
+}
+
+function startDownload(sess, name, kind) {
+  endDownload(sess); // drop any half-received one first
   try {
+    const dir = downloadsDir();
     const safe = path.basename(name) || 'download';
-    const dir = path.join(os.homedir(), 'Downloads');
-    fs.mkdirSync(dir, { recursive: true });
-    let dest = path.join(dir, safe);
-    if (fs.existsSync(dest)) {
-      const ext = path.extname(safe);
-      const stem = path.basename(safe, ext);
-      let n = 1;
-      do { dest = path.join(dir, `${stem} (${n})${ext}`); n++; } while (fs.existsSync(dest));
+    if (kind === 'dir') {
+      const proc = spawn('tar', ['-xf', '-', '-C', dir], { windowsHide: true });
+      const dl = { kind, name: safe, bytes: 0, proc, failed: false };
+      proc.on('error', () => { dl.failed = true; sendData(sess, `\r\n\x1b[31m[limpet] download failed: tar not available\x1b[0m\r\n`); });
+      proc.stdin.on('error', () => { /* closed early */ });
+      sess.dl = dl;
+    } else {
+      const dest = uniqueDest(dir, safe);
+      const dl = { kind: 'file', name: path.basename(dest), bytes: 0, failed: false };
+      dl.ws = fs.createWriteStream(dest);
+      dl.ws.on('error', (e) => { dl.failed = true; sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`); });
+      sess.dl = dl;
     }
-    fs.writeFileSync(dest, buf);
-    sendData(sess, `\r\n\x1b[32m[limpet] saved ${path.basename(dest)} to Downloads\x1b[0m\r\n`);
   } catch (e) {
+    sess.dl = null;
     sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`);
   }
+}
+
+function writeDownloadChunk(sess, b64) {
+  const dl = sess.dl;
+  if (!dl || dl.failed) return;
+  const buf = Buffer.from(b64 || '', 'base64');
+  dl.bytes += buf.length;
+  const sink = dl.ws || (dl.proc && dl.proc.stdin);
+  if (sink && sink.writable) { try { sink.write(buf); } catch (_) { /* sink gone */ } }
+}
+
+function finishDownload(sess) {
+  const dl = sess.dl;
+  sess.dl = null;
+  if (!dl || dl.failed) return;
+  const done = (verb) => sendData(sess, `\r\n\x1b[32m[limpet] ${verb} ${dl.name} (${fmtBytes(dl.bytes)}) to Downloads\x1b[0m\r\n`);
+  if (dl.ws) {
+    dl.ws.end(() => done('saved'));
+  } else if (dl.proc) {
+    dl.proc.on('close', (code) => {
+      if (code === 0 || code == null) done('extracted');
+      else sendData(sess, `\r\n\x1b[31m[limpet] download: tar exited ${code}\x1b[0m\r\n`);
+    });
+    try { dl.proc.stdin.end(); } catch (_) { /* already closed */ }
+  }
+}
+
+// Abort a partially-received download (a new one starting, or the session ended).
+function endDownload(sess) {
+  const dl = sess && sess.dl;
+  if (!dl) return;
+  sess.dl = null;
+  try { if (dl.ws) dl.ws.destroy(); } catch (_) { /* ignore */ }
+  try { if (dl.proc) dl.proc.kill(); } catch (_) { /* ignore */ }
 }
 
 // The shell ended on its own (`exit`, crash) — drop the session and tell the
@@ -308,6 +378,7 @@ function saveDownload(sess, name, buf) {
 // so this is a no-op for them.
 function sessionExited(sess) {
   if (!sessions.has(sess.id)) return;
+  endDownload(sess);
   sessions.delete(sess.id);
   send('term:exit', { id: sess.id });
 }

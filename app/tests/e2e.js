@@ -99,14 +99,15 @@ async function type(page, text) {
   await type(page, 'reels');
   check('reels closes', !!(await waitFor(async () => !(await reelsShown()), 8000)));
 
-  // ---- download OSC drops the file into Downloads ----
+  // ---- streamed download (dl;h/dl;d/dl;f) drops the file into Downloads ----
   const dl = path.join(os.homedir(), 'Downloads', 'limpet-ci.txt');
   fs.rmSync(dl, { force: true });
-  // "limpet-ci.txt" / "hello limpet", base64-encoded per the protocol
-  await type(page, 'Write-Host -NoNewline ("$([char]27)]5379;download;bGltcGV0LWNpLnR4dA==;aGVsbG8gbGltcGV0$([char]7)")');
-  const saved = await waitFor(() => fs.existsSync(dl), 8000);
-  check('download OSC saves to Downloads', !!saved);
-  check('download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
+  // header (name "limpet-ci.txt", kind file), one data chunk ("hello limpet"), finish
+  const E = '$([char]27)'; const B = '$([char]7)';
+  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  const saved = await waitFor(() => fs.existsSync(dl) && fs.readFileSync(dl, 'utf8') === 'hello limpet', 8000);
+  check('streamed download saves to Downloads', !!saved);
+  check('streamed download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
   fs.rmSync(dl, { force: true });
 
   check('no renderer page errors', pageErrors.length === 0);

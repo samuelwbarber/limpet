@@ -67,8 +67,11 @@ text and doesn't break your prompt. Works at the local prompt and inside an
 
 Inside any `xssh` session you also get `download` and `upload`. `download
 file` sends the file to your PC's Downloads folder through the connection
-you're already typing over. There's no agent and no rsync, and nothing is
-left on the server; the helpers are injected fresh on each connect.
+you're already typing over; `download folder` sends a whole folder (streamed
+as a tar and unpacked on arrival). It streams in chunks, so a big file or a
+10 GB folder goes through fine without holding anything whole in memory.
+There's no agent and no rsync, and nothing is left on the server; the helpers
+are injected fresh on each connect.
 
 They only exist in `xssh` sessions, plain `ssh` won't have them. They survive
 `tmux`, nested `bash` and `srun`. To reach a second machine (say login node to

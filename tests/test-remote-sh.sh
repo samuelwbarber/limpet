@@ -77,13 +77,26 @@ case "$tout" in *"${ESC}\\"*) check 'tmux: passthrough sequences terminated with
 rout=$(TMUX=/fake,0,0 reels https://x 2>/dev/null)
 case "$rout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;reels;"*) check 'tmux: reels is wrapped too' 0;; *) check 'tmux: reels is wrapped too' 1;; esac
 
-# ---- download / upload / reels protocol ----
+# ---- download protocol (streamed: dl;h header, dl;d chunks, dl;f finish) ----
 printf 'hello limpet' > "$TMP/file.txt"
 out=$(download "$TMP/file.txt")
-case "$out" in *']5379;download;ZmlsZS50eHQ=;aGVsbG8gbGltcGV0'"$BEL"*) check 'download emits name+content b64' 0;; *) check 'download emits name+content b64' 1;; esac
+case "$out" in *']5379;dl;h;ZmlsZS50eHQ=;file'"$BEL"*) check 'download: header marks name + kind=file' 0;; *) check 'download: header marks name + kind=file' 1;; esac
+case "$out" in *']5379;dl;d;'*) check 'download: emits base64 data chunks' 0;; *) check 'download: emits base64 data chunks' 1;; esac
+case "$out" in *']5379;dl;f'"$BEL"*) check 'download: emits the finish marker' 0;; *) check 'download: emits the finish marker' 1;; esac
+dpay=$(printf %s "$out" | awk 'BEGIN{RS="\007"} /dl;d;/ { sub(/.*dl;d;/,""); printf "%s", $0 }')
+[ "$(printf %s "$dpay" | base64 -d 2>/dev/null)" = 'hello limpet' ]; check 'download: chunks reassemble to the file bytes' $?
 case "$out" in *'PC Downloads'*) check 'download confirms on screen' 0;; *) check 'download confirms on screen' 1;; esac
 download "$TMP/nope.txt" 2> "$TMP/err" >/dev/null
 grep -q 'not found' "$TMP/err"; check 'download reports missing files' $?
+# folders stream as an extractable tar
+mkdir -p "$TMP/dl_dir/sub"; printf 'inside' > "$TMP/dl_dir/sub/inner.txt"
+dout=$(download "$TMP/dl_dir")
+case "$dout" in *']5379;dl;h;'*';dir'"$BEL"*) check 'download folder: header marks kind=dir' 0;; *) check 'download folder: header marks kind=dir' 1;; esac
+dtar=$(printf %s "$dout" | awk 'BEGIN{RS="\007"} /dl;d;/ { sub(/.*dl;d;/,""); printf "%s", $0 }')
+printf %s "$dtar" | base64 -d 2>/dev/null | tar -tf - 2>/dev/null | grep -q 'inner.txt'; check 'download folder: streams an extractable tar' $?
+# inside tmux the data chunks are wrapped in passthrough too (awk path)
+tdout=$(TMUX=/fake,0,0 download "$TMP/file.txt" 2>/dev/null)
+case "$tdout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;dl;d;"*) check 'tmux: download data chunks are wrapped' 0;; *) check 'tmux: download data chunks are wrapped' 1;; esac
 
 pwd64=$(printf %s "$TMP" | base64 | tr -d '\n')
 out=$(cd "$TMP" && upload '/pc/path file.txt')

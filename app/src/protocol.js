@@ -7,7 +7,7 @@ const LIMPET_OSC = '\x1b]5379;';
 const IIP_OSC = '\x1b]1337;';
 const OSC_MARKERS = [LIMPET_OSC, IIP_OSC];
 const BEL = '\x07';
-const KNOWN_VERBS = ['download', 'upload', 'reels', 'peek'];
+const KNOWN_VERBS = ['download', 'upload', 'reels', 'peek', 'dl'];
 const MAX_IIP_HEADER = 2048;
 
 // Longest suffix of `s` that is a (partial) prefix of any OSC marker.

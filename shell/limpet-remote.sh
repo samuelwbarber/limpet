@@ -82,15 +82,26 @@ peek() {
   done
 }
 
-# Send a remote file to the PC's Downloads folder (limpet catches OSC 5379).
+# Send a file OR folder to the PC's Downloads folder. The bytes leave as many
+# small base64 OSC chunks (dl;h header, dl;d data, dl;f finish) produced by one
+# streaming awk pass -- nothing is ever held whole in memory (so a 10 GB folder
+# is fine) and no single sequence is large enough to overflow ConPTY. A folder
+# is streamed as a tar the app extracts. awk emits each chunk framed, doubling
+# the ESC and wrapping in tmux passthrough when inside tmux (same as _limpet_emit
+# does for the header/finish). Needs only coreutils + tar on the remote.
 download() {
-  local f
-  if [ "$#" -eq 0 ]; then echo "usage: download <remote-file> [...]" >&2; return 1; fi
-  for f in "$@"; do
-    if [ ! -f "$f" ]; then echo "download: $f: not found" >&2; continue; fi
-    _limpet_emit "$(printf '\033]5379;download;%s;%s\007' \
-      "$(printf '%s' "${f##*/}" | _limpet_b64)" "$(_limpet_b64 < "$f")")"
-    echo "download: $f -> PC Downloads"
+  local p name kind
+  if [ "$#" -eq 0 ]; then echo "usage: download <path> [...]" >&2; return 1; fi
+  for p in "$@"; do
+    if [ ! -e "$p" ]; then echo "download: $p: not found" >&2; continue; fi
+    if [ -d "$p" ]; then kind=dir; else kind=file; fi
+    name=${p%/}; name=${name##*/}
+    _limpet_emit "$(printf '\033]5379;dl;h;%s;%s\007' "$(printf '%s' "$name" | _limpet_b64)" "$kind")"
+    { if [ "$kind" = dir ]; then tar cf - -C "$(dirname "$p")" "$(basename "$p")"; else cat "$p"; fi; } \
+      | base64 | tr -d '\n' | fold -w 262144 \
+      | awk -v tmux="${TMUX:+1}" '{ if (tmux) printf "\033Ptmux;\033\033]5379;dl;d;%s\007\033\\", $0; else printf "\033]5379;dl;d;%s\007", $0 }'
+    _limpet_emit "$(printf '\033]5379;dl;f\007')"
+    echo "download: $p -> PC Downloads"
   done
 }
 
