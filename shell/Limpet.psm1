@@ -589,8 +589,84 @@ function limpet {
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
+    Write-Host '  Claude   : claude1 / claude2 (two signed-in accounts, one synced history)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
+
+# ---------------------------------------------------------------------------
+# Multiple Claude Code accounts, one synced /resume history.
+#
+# `claude1` and `claude2` each launch the Claude Code CLI against their own
+# config directory (~/.claude-1, ~/.claude-2), so each stays logged in to a
+# different account -- e.g. personal and work -- with no re-authenticating.
+# Both configs' `projects` folders are junctioned to one shared store, so
+# `/resume` shows the same session history from either account. Session
+# transcripts are named by unique id, so the two never collide even running
+# side by side. Plain `claude` is untouched and still uses ~/.claude.
+# ---------------------------------------------------------------------------
+
+function Get-LimpetClaudeExe {
+    # Resolve the real Claude Code launcher (npm shim or exe). Our wrappers are
+    # named claude1/claude2, so there's nothing to recurse into here.
+    $cmd = Get-Command claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Sync-LimpetClaudeHistory {
+    # Make $ConfigDir\projects a junction to a single shared store so every
+    # account resumes the same sessions. Migrates a pre-existing solo folder
+    # into the shared store once; never clobbers.
+    param([Parameter(Mandatory)][string]$ConfigDir)
+    $shared = Join-Path $HOME '.claude-shared\projects'
+    New-Item -ItemType Directory -Force -Path $shared | Out-Null
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    $link = Join-Path $ConfigDir 'projects'
+    $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+    if ($item) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }  # already junctioned
+        Get-ChildItem -LiteralPath $link -Force | ForEach-Object {
+            $dest = Join-Path $shared $_.Name
+            if (-not (Test-Path -LiteralPath $dest)) {
+                Move-Item -LiteralPath $_.FullName -Destination $dest -Force
+            }
+        }
+        try { Remove-Item -LiteralPath $link -Recurse -Force -ErrorAction Stop }
+        catch {
+            Write-Warning "limpet: couldn't replace $link with the shared junction; history not synced for this account."
+            return
+        }
+    }
+    New-Item -ItemType Junction -Path $link -Target $shared -ErrorAction SilentlyContinue | Out-Null
+}
+
+function Invoke-LimpetClaude {
+    param(
+        [Parameter(Mandatory)][string]$ConfigDir,
+        [Parameter(ValueFromRemainingArguments)]$Rest
+    )
+    $exe = Get-LimpetClaudeExe
+    if (-not $exe) {
+        Write-Warning 'limpet: the claude CLI is not on PATH. Install Claude Code, then rerun claude1/claude2.'
+        return
+    }
+    Sync-LimpetClaudeHistory -ConfigDir $ConfigDir
+    # CLAUDE_CONFIG_DIR is process-wide; scope it to this launch so plain
+    # `claude` keeps using ~/.claude afterwards.
+    $prev = $env:CLAUDE_CONFIG_DIR
+    try {
+        $env:CLAUDE_CONFIG_DIR = $ConfigDir
+        & $exe @Rest
+    }
+    finally {
+        if ($null -eq $prev) { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+        else { $env:CLAUDE_CONFIG_DIR = $prev }
+    }
+}
+
+function claude1 { Invoke-LimpetClaude -ConfigDir (Join-Path $HOME '.claude-1') @args }
+function claude2 { Invoke-LimpetClaude -ConfigDir (Join-Path $HOME '.claude-2') @args }
 
 # ---------------------------------------------------------------------------
 # Load: point global aliases at the Nix* functions, overriding the built-in
@@ -647,5 +723,5 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet,
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet, claude1, claude2,
     Enable-LimpetHello, Disable-LimpetHello, Get-LimpetHelloStatus, Get-LimpetHelloPassphrase, Test-LimpetHelloEnrolled, Protect-LimpetSecret, Unprotect-LimpetSecret, Get-LimpetAskpass, Get-LimpetKeyPath

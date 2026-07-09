@@ -64,6 +64,25 @@ Drag-and-drop: in the limpet app, dropping files onto the window during an
 is mainly for folders, big files, or plain terminals. The remote *current*
 directory can't be detected client-side; pass `-Dest` for a specific folder.
 
+## Two Claude accounts: `claude1` / `claude2`
+
+Run the [Claude Code](https://www.claude.com/product/claude-code) CLI under two
+separate accounts (e.g. personal and work), each with its own persistent login,
+while sharing one `/resume` history between them.
+
+```powershell
+claude1                 # personal account  (config in ~/.claude-1)
+claude2                 # work account      (config in ~/.claude-2)
+claude1 --resume        # args pass straight through
+```
+
+Each wrapper points `CLAUDE_CONFIG_DIR` at its own directory (scoped to that
+launch, so plain `claude` still uses `~/.claude`) and junctions that config's
+`projects/` folder to a shared `~/.claude-shared/projects`, so both accounts
+list the same sessions in `/resume`. Session files are named by unique id and
+never collide; the junction is set up automatically on first run and folds any
+existing `projects/` folder into the shared store without overwriting it.
+
 ## Restoring the original aliases
 
 `Remove-Module Limpet` restores the built-in `ls/cp/mv/rm/cat` aliases for the

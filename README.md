@@ -107,6 +107,34 @@ Because sometimes the build takes a while. `reels` docks a vertical feed
 (Instagram Reels by default, or any URL you pass) on the right side of the
 terminal. `reels` again to dismiss.
 
+## Two Claude accounts, one history
+
+Keep a personal and a work [Claude Code](https://www.claude.com/product/claude-code)
+account both signed in at once, and share your session history across them.
+
+```powershell
+claude1        # personal account
+claude2        # work account
+```
+
+Each command runs Claude against its own config directory (`~/.claude-1`,
+`~/.claude-2`), so they hold separate logins — `/login` once in each and both
+stay authenticated; `claude1` is always personal, `claude2` always work. Plain
+`claude` is left alone and keeps using `~/.claude`.
+
+Both accounts' session transcripts live in one shared store (limpet junctions
+each config's `projects/` folder to `~/.claude-shared/projects`), so **`/resume`
+lists the same conversations whichever account you're in**. Start something on
+your personal account, pick it up on work, and back again. Transcripts are named
+by a unique id, so the two accounts can run side by side without ever colliding,
+and the wiring is created automatically the first time you run `claude1` or
+`claude2` — a pre-existing `projects/` folder is folded into the shared store,
+never overwritten.
+
+Any arguments pass straight through (`claude1 --resume`, `claude2 -p "..."`).
+To rename them or add a third, copy the `claude1`/`claude2` functions in
+`shell/Limpet.psm1` and point them at a different config directory.
+
 ## Install
 
 ```powershell
