@@ -360,7 +360,11 @@ function xssh {
                 # get a stale peek). Each session is stamped with the helper version;
                 # a reconnect resumes a matching session but recreates a stale one, so
                 # a helper update always takes effect. -d detaches the dropped client.
-                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); [ "${v#*=}" = "__VER__" ] || tmux kill-session -t limpet 2>/dev/null; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet "exec bash --rcfile $f -i"; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
+                # NOTE: this whole string is one ssh.exe argument, and Windows mangles
+                # embedded double quotes on the way to the remote -- so it uses NO
+                # double quotes (case, not [ = ]; the tmux command is a bare unquoted
+                # `bash --rcfile $f -i`, which tmux execs directly, so no `exec`).
+                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); case ${v#*=} in __VER__) ;; *) tmux kill-session -t limpet 2>/dev/null ;; esac; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet bash --rcfile $f -i; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
             }
             else {
                 $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
