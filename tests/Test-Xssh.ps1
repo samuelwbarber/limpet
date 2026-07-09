@@ -28,7 +28,9 @@ try {
 
     $c = Invoke-Combo @()
     Check 'default: injects the integration'    ($c -like '*base64 -d*')
-    Check 'default: resumes via tmux "limpet"'  ($c -like '*tmux new -A -D -s limpet*')
+    Check 'default: resumes the tmux "limpet" session' ($c -like '*-s limpet*' -and $c -like '*tmux attach -d -t limpet*')
+    Check 'default: session sources the fresh script'  ($c -like '*bash --rcfile $f -i*')
+    Check 'default: version-stamps the session'        ($c -like '*_LIMPET_VER*')
     Check 'default: adds keepalive options'     ($c -like '*ServerAliveInterval=15*')
     Check 'default: forces a tty (-t)'          ($c -like '*-t *')
 

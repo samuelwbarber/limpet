@@ -344,21 +344,28 @@ function xssh {
     if (-not $raw) {
         $scriptPath = Join-Path $PSScriptRoot 'limpet-remote.sh'
         if (Test-Path $scriptPath) {
-            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content $scriptPath -Raw)))
+            $scriptRaw = Get-Content $scriptPath -Raw
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($scriptRaw))
+            # A short content hash stamps the tmux session so a reconnect can tell a
+            # session running THIS helper version from a stale one.
+            $ver = -join (([Security.Cryptography.SHA1]::Create().ComputeHash(
+                        [Text.Encoding]::UTF8.GetBytes($scriptRaw)))[0..5] | ForEach-Object { $_.ToString('x2') })
             # LIMPET_SH points at the (session-lifetime) script so nested shells can
             # re-source it and the remote xssh function can carry it across hops.
             if ($resume) {
-                # Source the integration first (its export -f puts the helpers in the
-                # environment the tmux server inherits), then create-or-attach the
-                # "limpet" session; -D detaches the stale client left by a drop.
-                # Caveat: if a tmux server predates this connect, a freshly created
-                # session won't see the helpers (tmux uses the old server's env).
-                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then bash -c ''. $LIMPET_SH; exec tmux new -A -D -s limpet''; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
+                # The tmux session's shell sources the freshly-injected script itself
+                # (bash --rcfile $f), exactly like the -NoResume path -- NOT via
+                # `export -f` env inheritance, which a pre-existing tmux server
+                # ignores (it keeps its own start-time env, so a new session would
+                # get a stale peek). Each session is stamped with the helper version;
+                # a reconnect resumes a matching session but recreates a stale one, so
+                # a helper update always takes effect. -d detaches the dropped client.
+                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); [ "${v#*=}" = "__VER__" ] || tmux kill-session -t limpet 2>/dev/null; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet "exec bash --rcfile $f -i"; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
             }
             else {
                 $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
             }
-            $sshArgs = @('-t') + $sshArgs + @($tpl.Replace('__B64__', $b64))
+            $sshArgs = @('-t') + $sshArgs + @($tpl.Replace('__B64__', $b64).Replace('__VER__', $ver))
             $integrated = $true
         }
     }
