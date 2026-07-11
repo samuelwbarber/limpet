@@ -28,3 +28,16 @@ types a `base64 -d` here-doc that reconstructs each file in the shell's current
 directory. So inside an `xssh`/`ssh` session the file lands in your remote cwd,
 with nothing installed on the remote but coreutils. Limits: files only (folders
 skipped) and up to 20 MB per file — use `scp`/`wput` for anything larger.
+
+## Predictive echo (laggy links)
+
+On a slow ssh link, every keystroke normally has to round-trip to the server
+before you see it. limpet predicts printable characters locally and draws them
+**in red** the instant you type, then hands each one off to the terminal's real
+(normal-coloured) text once the server's echo confirms it — the Mosh trick, done
+client-side in `predict.js`. Predictions are a DOM overlay *on top of* xterm and
+never touch its buffer, so a wrong guess is just a cleared overlay, never
+corruption. It's adaptive (invisible on a fast link, because the echo beats the
+reveal) and self-gating (a no-echo prompt like a password is never shown, and
+Enter forgets the echo context so a following `sudo` prompt stays dark). Only
+plain typing is predicted; Enter/Tab/arrows/escapes/pastes clear predictions.

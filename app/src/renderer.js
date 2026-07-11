@@ -46,7 +46,23 @@ async function newTab() {
   let img = null;
   try { img = new ImageAddon.ImageAddon(); term.loadAddon(img); } catch (e) { console.error('[limpet] image addon failed:', e); }
 
-  term.onData((d) => window.limpet.sendInput(id, d));
+  // Predictive local echo: draw typed characters immediately (in red) and let
+  // the server's echo confirm them, so a laggy ssh link stops feeling laggy.
+  // Adaptive + self-gating, so on a fast link or a no-echo prompt it does
+  // nothing. See predict.js.
+  let predict = null;
+  try {
+    const screenEl = pane.querySelector('.xterm-screen');
+    if (window.Predict && screenEl) predict = window.Predict.create(term, screenEl);
+  } catch (e) { console.error('[limpet] predictor failed:', e); }
+
+  term.onData((d) => { if (predict) predict.onKey(d); window.limpet.sendInput(id, d); });
+  // Server output landed and xterm repainted: confirm/settle predictions.
+  if (predict) {
+    term.onRender(() => predict.reconcile());
+    // Scrolling invalidates the row-based overlay positions; just drop them.
+    term.onScroll(() => predict.flush());
+  }
   term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; } });
   term.attachCustomKeyEventHandler((e) => handleKeys(e, id, term));
   // Right-click: copy if there's a selection, else paste.
@@ -56,7 +72,7 @@ async function newTab() {
     else pasteClipboard(id);
   });
 
-  const tab = { term, fit, pane, tabEl, titleEl, img, peeks: [], splitBusy: false, splitPending: [], peekTimer: null };
+  const tab = { term, fit, pane, tabEl, titleEl, img, predict, peeks: [], splitBusy: false, splitPending: [], peekTimer: null };
   tabs.set(id, tab);
   // A resize makes ConPTY repaint the viewport and wipe peek images; redraw
   // them once the repaint settles.
@@ -88,6 +104,7 @@ function removeTab(id) {
   const order = tabOrder();
   const idx = order.indexOf(id);
   tabs.delete(id);
+  if (t.predict) t.predict.dispose();
   t.term.dispose();
   t.pane.remove();
   t.tabEl.remove();
@@ -165,6 +182,7 @@ function rowsBlank(buf, line, rows) {
 function syncSize() {
   const t = tabs.get(activeId);
   if (!t) return;
+  if (t.predict) t.predict.flush();  // reflow moves cells -> drop stale overlay glyphs
   t.fit.fit();
   window.limpet.resize(activeId, t.term.cols, t.term.rows);
 }

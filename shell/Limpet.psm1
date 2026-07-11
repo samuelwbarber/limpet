@@ -263,8 +263,11 @@ function chmod {
 }
 
 # ---------------------------------------------------------------------------
-# Resilient SSH: a drop-in for ssh that auto-reconnects (no password, via your
-# key) when the link drops. Use exactly like ssh:
+# Resilient SSH: a drop-in for ssh that auto-reconnects when the link drops.
+# Reconnects are password-free: if the host uses key/agent or Windows Hello auth
+# nothing is typed, and if it uses a login PASSWORD that password is captured
+# once up front and replayed to every reconnect (so a drop resumes silently
+# instead of re-prompting). Use exactly like ssh:
 #     xssh user@host
 #     xssh -p 2222 root@1.2.3.4
 #     xssh -NoResume user@host    # reconnect to a fresh shell instead of tmux
@@ -338,6 +341,42 @@ function xssh {
         }
     }
 
+    # Password auto-reconnect: on a host that authenticates with a login PASSWORD
+    # (no key/agent, not Hello-enrolled), ssh would re-prompt on every reconnect.
+    # Capture the password ONCE now and feed it to every (re)connect through the
+    # same askpass helper the Hello path uses, so a drop resumes without typing.
+    # A quick BatchMode probe first checks whether key/agent auth already works --
+    # if so we skip this entirely, so key users never see a prompt. The password
+    # is held only in this process for the loop's lifetime and wiped on exit.
+    # Opt out with LIMPET_NO_PWCACHE=1 (also how the test suite disables it).
+    $passCached = $false
+    if (-not $helloActive -and $hostTok -and $env:LIMPET_NO_PWCACHE -ne '1' -and
+        (Get-Command Get-LimpetAskpass -ErrorAction SilentlyContinue)) {
+        try {
+            # Non-interactive probe: succeeds only if publickey/agent/gssapi auth
+            # works with no password. BatchMode never sends a password (so it can't
+            # trip fail2ban); accept-new avoids a host-key yes/no prompt.
+            $probe = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
+                       '-o', 'StrictHostKeyChecking=accept-new') + $sshArgs
+            & ssh @probe 'true' 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $sec = Read-Host "xssh: password for $hostTok (cached for auto-reconnect)" -AsSecureString
+                if ($sec -and $sec.Length -gt 0) {
+                    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+                    try { $env:LIMPET_ASKPASS = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+                    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+                    $env:SSH_ASKPASS = Get-LimpetAskpass
+                    $env:SSH_ASKPASS_REQUIRE = 'force'
+                    $passCached = $true
+                }
+            }
+        }
+        catch {
+            $env:LIMPET_ASKPASS = $null; $env:SSH_ASKPASS = $null; $env:SSH_ASKPASS_REQUIRE = $null
+            Write-Host "xssh: password cache setup failed ($($_.Exception.Message)); reconnects may re-prompt." -ForegroundColor Yellow
+        }
+    }
+
     # Load limpet shell integration into the remote session (sent fresh each
     # connect; nothing persisted on the server). Gives peek/download/upload.
     $integrated = $false
@@ -379,6 +418,7 @@ function xssh {
 
     Write-Host "xssh: resilient ssh (auto-reconnect on drop; Ctrl+C to stop)" -ForegroundColor DarkGray
     if ($helloActive) { Write-Host "      auth: Windows Hello (limpet key)" -ForegroundColor DarkGray }
+    if ($passCached) { Write-Host "      auth: password cached this session -- reconnects won't re-prompt" -ForegroundColor DarkGray }
     if ($resume) { Write-Host "      session: kept alive in remote tmux 'limpet' -- reconnects resume where you left off (-NoResume to skip)" -ForegroundColor DarkGray }
     if ($integrated) { Write-Host "      in-session: peek <img> | download <file> | upload <pc-path> | reels [url]" -ForegroundColor DarkGray }
 
@@ -421,8 +461,8 @@ function xssh {
         }
     }
     finally {
-        # Wipe the cached passphrase and askpass wiring from this process.
-        if ($helloActive) {
+        # Wipe the cached passphrase/password and askpass wiring from this process.
+        if ($helloActive -or $passCached) {
             $env:LIMPET_ASKPASS = $null
             $env:SSH_ASKPASS = $null
             $env:SSH_ASKPASS_REQUIRE = $null

@@ -16,7 +16,13 @@ function Check($name, $cond) {
 $stateFile = Join-Path $env:TEMP 'limpet-last-ssh.txt'
 $stateBackup = if (Test-Path $stateFile) { Get-Content $stateFile -Raw } else { $null }
 
+$pwCacheBackup = $env:LIMPET_NO_PWCACHE
 try {
+    # Keep the password-cache probe/prompt out of the bootstrap + reconnect-policy
+    # tests (it would add an ssh call and, on a failing probe, block on Read-Host);
+    # it gets its own dedicated section below.
+    $env:LIMPET_NO_PWCACHE = '1'
+
     # ---- what xssh sends, per flag combo (ssh captures its args) ----
     function global:ssh { $script:captured = $args -join ' '; cmd /c exit 0 }
 
@@ -80,9 +86,41 @@ try {
     function global:ssh { $script:calls++; cmd /c exit 0 }
     xssh -Raw user@localhost *>$null
     Check 'clean exit: no reconnect' ($script:calls -eq 1)
+
+    # ---- password caching for auto-reconnect ----
+    # Enable the feature and stub the secure-string prompt so no real typing is
+    # needed. A probe call is distinguished from a real connect by BatchMode.
+    $env:LIMPET_NO_PWCACHE = $null
+    function global:Read-Host { ConvertTo-SecureString 'hunter2' -AsPlainText -Force }
+
+    # key/agent auth works (probe succeeds) -> no prompt, no askpass forced.
+    $script:probed = $false; $script:reqOnConnect = 'unset'
+    function global:ssh {
+        if ($args -match 'BatchMode') { $script:probed = $true; cmd /c exit 0; return }
+        $script:reqOnConnect = $env:SSH_ASKPASS_REQUIRE
+        cmd /c exit 0
+    }
+    xssh -Raw user@localhost *>$null
+    Check 'pwcache: probes whether key auth works'   ($script:probed)
+    Check 'pwcache: key auth -> askpass not forced'  ($null -eq $script:reqOnConnect)
+
+    # password auth (probe fails) -> capture once, feed to the real connect.
+    $script:reqOnConnect = 'unset'; $script:pwOnConnect = $null
+    function global:ssh {
+        if ($args -match 'BatchMode') { cmd /c exit 255; return }
+        $script:reqOnConnect = $env:SSH_ASKPASS_REQUIRE
+        $script:pwOnConnect  = $env:LIMPET_ASKPASS
+        cmd /c exit 0
+    }
+    xssh -Raw user@localhost *>$null
+    Check 'pwcache: no key -> forces askpass on connect' ($script:reqOnConnect -eq 'force')
+    Check 'pwcache: no key -> replays the typed password' ($script:pwOnConnect -eq 'hunter2')
+    Check 'pwcache: askpass wiring wiped after exit'      ($null -eq $env:LIMPET_ASKPASS -and $null -eq $env:SSH_ASKPASS_REQUIRE)
 }
 finally {
     Remove-Item Function:\ssh -Force -ErrorAction SilentlyContinue
+    Remove-Item Function:\Read-Host -Force -ErrorAction SilentlyContinue
+    $env:LIMPET_NO_PWCACHE = $pwCacheBackup
     if ($null -ne $stateBackup) { Set-Content -Path $stateFile -Value $stateBackup -NoNewline }
     else { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
 }

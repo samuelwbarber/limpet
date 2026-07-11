@@ -52,7 +52,7 @@ jobs:
       - name: Install dependencies (validates native modules on Windows)
         run: npm ci --no-audit --no-fund
       - name: Parse-check sources
-        run: foreach ($f in 'src/main.js', 'src/preload.js', 'src/renderer.js', 'src/protocol.js') { node --check $f; if ($LASTEXITCODE) { exit 1 } }
+        run: foreach ($f in 'src/main.js', 'src/preload.js', 'src/renderer.js', 'src/protocol.js', 'src/predict.js') { node --check $f; if ($LASTEXITCODE) { exit 1 } }
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download)

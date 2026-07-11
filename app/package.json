@@ -6,7 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/protocol.test.js",
+    "test": "node --test tests/protocol.test.js tests/predict.test.js",
     "test:e2e": "node tests/e2e.js"
   },
   "license": "MIT",
