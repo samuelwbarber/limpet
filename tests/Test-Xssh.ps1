@@ -34,15 +34,25 @@ try {
 
     $c = Invoke-Combo @()
     Check 'default: injects the integration'    ($c -like '*base64 -d*')
+    Check 'default: decompresses with gunzip'   ($c -like '*base64 -d | gunzip*')
     Check 'default: resumes the tmux "limpet" session' ($c -like '*-s limpet*' -and $c -like '*tmux attach -d -t limpet*')
     Check 'default: session sources the fresh script'  ($c -like '*bash --rcfile $f -i*')
     Check 'default: version-stamps the session'        ($c -like '*_LIMPET_VER*')
     Check 'default: adds keepalive options'     ($c -like '*ServerAliveInterval=15*')
     Check 'default: forces a tty (-t)'          ($c -like '*-t *')
+    # Regression guard: a long single arg through PowerShell -> ssh.exe gets a
+    # newline injected past ~8-9 KB, splitting the remote `bash -c` and killing the
+    # session. The bootstrap must stay small (gzip keeps it ~4 KB) and carry NO
+    # quotes of either kind (both are mangled by Windows arg passing).
+    Check 'default: bootstrap stays under the arg-length limit' ($c.Length -lt 8000)
+    Check 'default: bootstrap has no single quotes'  ($c -notlike "*'*")
+    Check 'default: bootstrap has no double quotes'  ($c -notlike '*"*')
 
     $c = Invoke-Combo @('-NoResume')
     Check '-NoResume: still injects'            ($c -like '*base64 -d*')
+    Check '-NoResume: decompresses with gunzip' ($c -like '*base64 -d | gunzip*')
     Check '-NoResume: no tmux wrap'             ($c -notlike '*tmux*')
+    Check '-NoResume: bootstrap stays under the arg-length limit' ($c.Length -lt 8000)
 
     $c = Invoke-Combo @('-Raw')
     Check '-Raw: plain ssh, nothing added'      ($c -notlike '*base64 -d*' -and $c -notlike '*tmux*')

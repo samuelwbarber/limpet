@@ -384,11 +384,24 @@ function xssh {
         $scriptPath = Join-Path $PSScriptRoot 'limpet-remote.sh'
         if (Test-Path $scriptPath) {
             $scriptRaw = Get-Content $scriptPath -Raw
-            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($scriptRaw))
+            $scriptBytes = [Text.Encoding]::UTF8.GetBytes($scriptRaw)
+            # gzip BEFORE base64. The bootstrap is one ssh.exe argument, and a long
+            # single arg handed through PowerShell -> ssh.exe gets a newline injected
+            # past ~8-9 KB (the raw-base64 script was ~9.5 KB), which split the remote
+            # `bash -c` mid-command -> "unexpected EOF" / garbage -> dead session with
+            # no `download`/`peek`. Compressing the ~7 KB script to a ~4 KB base64 keeps
+            # the whole command well under that limit (verified: <=8100 transmits intact,
+            # 9500 corrupts). The remote decodes with `base64 -d | gunzip` (both are on
+            # every Linux box). gzip is lossless, so the remote gets the exact bytes the
+            # old raw-base64 path delivered.
+            $ms = New-Object IO.MemoryStream
+            $gz = New-Object IO.Compression.GZipStream($ms, [IO.Compression.CompressionMode]::Compress)
+            $gz.Write($scriptBytes, 0, $scriptBytes.Length); $gz.Close()
+            $b64 = [Convert]::ToBase64String($ms.ToArray())
             # A short content hash stamps the tmux session so a reconnect can tell a
             # session running THIS helper version from a stale one.
             $ver = -join (([Security.Cryptography.SHA1]::Create().ComputeHash(
-                        [Text.Encoding]::UTF8.GetBytes($scriptRaw)))[0..5] | ForEach-Object { $_.ToString('x2') })
+                        $scriptBytes))[0..5] | ForEach-Object { $_.ToString('x2') })
             # LIMPET_SH points at the (session-lifetime) script so nested shells can
             # re-source it and the remote xssh function can carry it across hops.
             if ($resume) {
@@ -399,14 +412,18 @@ function xssh {
                 # get a stale peek). Each session is stamped with the helper version;
                 # a reconnect resumes a matching session but recreates a stale one, so
                 # a helper update always takes effect. -d detaches the dropped client.
-                # NOTE: this whole string is one ssh.exe argument, and Windows mangles
-                # embedded double quotes on the way to the remote -- so it uses NO
-                # double quotes (case, not [ = ]; the tmux command is a bare unquoted
-                # `bash --rcfile $f -i`, which tmux execs directly, so no `exec`).
-                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); case ${v#*=} in __VER__) ;; *) tmux kill-session -t limpet 2>/dev/null ;; esac; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet bash --rcfile $f -i; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
+                # NOTE: this whole string is one ssh.exe argument. Windows/PowerShell
+                # mangle BOTH embedded double AND single quotes when handing a native
+                # exe a long arg (single quotes made the remote `bash -c` choke on an
+                # unbalanced quote -> "unexpected EOF" -> dead session). So the template
+                # contains NO quotes of either kind: `case` not `[ = ]`; the tmux command
+                # is a bare unquoted `bash --rcfile $f -i` (tmux execs it directly, no
+                # `exec`); and __B64__ is left UNQUOTED -- the base64 alphabet
+                # (A-Za-z0-9+/=) has no shell-special or glob chars, so it needs none.
+                $tpl = 'f=$(mktemp); printf %s __B64__ | base64 -d | gunzip > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); case ${v#*=} in __VER__) ;; *) tmux kill-session -t limpet 2>/dev/null ;; esac; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet bash --rcfile $f -i; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
             }
             else {
-                $tpl = 'f=$(mktemp); printf %s ''__B64__'' | base64 -d > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
+                $tpl = 'f=$(mktemp); printf %s __B64__ | base64 -d | gunzip > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
             }
             $sshArgs = @('-t') + $sshArgs + @($tpl.Replace('__B64__', $b64).Replace('__VER__', $ver))
             $integrated = $true
