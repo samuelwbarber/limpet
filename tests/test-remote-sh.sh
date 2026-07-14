@@ -127,7 +127,10 @@ grep -q 'LIMPET_SH' "$SSH_CAPTURE"; check 'hop chains LIMPET_SH onward' $?
 # ---- the real bootstrap templates out of Limpet.psm1 ----
 mapfile -t TPLS < <(sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" shell/Limpet.psm1 | sed "s/''/'/g")
 [ "${#TPLS[@]}" = 2 ]; check 'found both bootstrap templates in Limpet.psm1' $?
-b64=$(base64 -w0 shell/limpet-remote.sh)
+# The templates decode with `base64 -d | gunzip`, so the payload must be
+# gzip-then-base64 -- exactly what Limpet.psm1 builds (it gzips before base64 to
+# keep the single ssh.exe arg short enough to survive PowerShell arg passing).
+b64=$(gzip -c shell/limpet-remote.sh | base64 -w0)
 RESUME=''; PLAIN=''
 for t in "${TPLS[@]}"; do
   case "$t" in *tmux*) RESUME=${t/__B64__/$b64};; *) PLAIN=${t/__B64__/$b64};; esac
