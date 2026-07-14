@@ -43,6 +43,17 @@ async function newTab() {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  // Ctrl+C should reliably copy a selection even when a repaint or a burst of
+  // fresh output clears it in the split second before the keypress -- which is
+  // common in full-screen TUIs and while output streams, and is why Ctrl+C
+  // "doesn't always copy". Remember the most recent non-empty selection; Ctrl+C
+  // falls back to it for a brief window (see copySelection). Any typed input
+  // clears it, so a plain Ctrl+C with nothing freshly selected still interrupts.
+  term._selCache = { text: '', at: 0 };
+  term.onSelectionChange(() => {
+    const s = term.getSelection();
+    if (s) term._selCache = { text: s, at: Date.now() };
+  });
   let img = null;
   try { img = new ImageAddon.ImageAddon(); term.loadAddon(img); } catch (e) { console.error('[limpet] image addon failed:', e); }
 
@@ -56,7 +67,7 @@ async function newTab() {
     if (window.Predict && screenEl) predict = window.Predict.create(term, screenEl);
   } catch (e) { console.error('[limpet] predictor failed:', e); }
 
-  term.onData((d) => { if (predict) predict.onKey(d); window.limpet.sendInput(id, d); });
+  term.onData((d) => { if (predict) predict.onKey(d); term._selCache = { text: '', at: 0 }; window.limpet.sendInput(id, d); });
   // Server output landed and xterm repainted: confirm/settle predictions.
   if (predict) {
     term.onRender(() => predict.reconcile());
@@ -214,9 +225,23 @@ window.limpet.onReels((url) => {
 });
 
 // ---- copy / paste ----
+// Copy the current selection, or -- if it was just cleared by a repaint/output
+// in the moment before the keypress -- the cached one (nobody selects text a
+// fraction of a second before deliberately hitting Ctrl+C to interrupt, so this
+// window is short enough not to swallow a real SIGINT). Returns whether it
+// copied, so Ctrl+C knows whether to still send the interrupt.
+const SEL_FALLBACK_MS = 500;
 function copySelection(term) {
-  const sel = term.getSelection();
-  if (sel) { window.limpet.clipboardCopy(sel); term.clearSelection(); }
+  let sel = term.getSelection();
+  const cache = term._selCache;
+  if (!sel && cache && cache.text && Date.now() - cache.at < SEL_FALLBACK_MS) sel = cache.text;
+  if (sel) {
+    window.limpet.clipboardCopy(sel);
+    term.clearSelection();
+    term._selCache = { text: '', at: 0 };
+    return true;
+  }
+  return false;
 }
 function pasteClipboard(id) {
   window.limpet.clipboardPaste().then((t) => { if (t) window.limpet.sendInput(id, t); });
@@ -232,7 +257,9 @@ function handleKeys(e, id, term) {
   if (e.ctrlKey && k === 'tab') { cycleTabs(e.shiftKey ? -1 : 1); return false; }
   if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(term); return false; }
   if (e.ctrlKey && e.shiftKey && k === 'v') { pasteClipboard(id); return false; }
-  if (e.ctrlKey && !e.shiftKey && k === 'c' && term.hasSelection()) { copySelection(term); return false; }
+  // Ctrl+C: copy if something is (or was just) selected, otherwise let it through
+  // as the usual interrupt.
+  if (e.ctrlKey && !e.shiftKey && k === 'c') { if (copySelection(term)) return false; }
   return true;
 }
 

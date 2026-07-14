@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test tests/protocol.test.js tests/predict.test.js",
-    "test:e2e": "node tests/e2e.js"
+    "test:e2e": "node tests/e2e.js && node tests/ctrlc.js"
   },
   "license": "MIT",
   "devDependencies": {
