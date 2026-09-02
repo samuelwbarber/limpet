@@ -544,7 +544,7 @@ function backdropStatus(sess, state, message = '') {
   sendToSession(sess, 'term:backdrop-status', { id: sess.id, state, message });
 }
 
-function considerBackdrop(sess, snapshot) {
+function considerBackdrop(sess, snapshot, conversationTitle = '') {
   if (process.env.LIMPET_DISABLE_BACKDROPS === '1') return { status: 'disabled' };
   const backend = backendStatus();
   if (!backend.ready) return { status: 'not-installed' };
@@ -554,7 +554,7 @@ function considerBackdrop(sess, snapshot) {
   if ((sess.backdropOutputChars || 0) < nextAt) return { status: 'waiting' };
   if (sess.backdropLastAt && now - sess.backdropLastAt < MIN_UPDATE_MS) return { status: 'cooldown' };
   flushBackdropAnalysis(sess);
-  const plan = buildBackdropPlan(snapshot, sess.backdropProfile);
+  const plan = buildBackdropPlan(snapshot, sess.backdropProfile, conversationTitle);
   if (!plan) return { status: 'not-enough-context' };
   if (sess.backdropSceneKey && plan.sceneKey !== sess.backdropSceneKey &&
       plan.confidence < MIN_SCENE_CHANGE_CONFIDENCE) {
@@ -778,10 +778,10 @@ function registerIpc() {
     const sess = ownedSession(event, id);
     return sess ? injectFiles(sess, paths) : { ok: false };
   });
-  ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot } = {}) => {
+  ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot, title } = {}) => {
     const sess = ownedSession(event, id);
     if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };
-    return considerBackdrop(sess, snapshot.slice(-24000));
+    return considerBackdrop(sess, snapshot.slice(-24000), String(title || '').slice(0, 240));
   });
 }
 

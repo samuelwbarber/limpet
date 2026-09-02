@@ -206,7 +206,11 @@ function scheduleBackdropCandidate(id, tab) {
   clearTimeout(tab.backdropTimer);
   tab.backdropTimer = setTimeout(async () => {
     tab.backdropTimer = null;
-    const result = await window.limpet.considerBackdrop(id, terminalSnapshot(tab.term));
+    const result = await window.limpet.considerBackdrop(
+      id,
+      terminalSnapshot(tab.term),
+      tab.titleEl.textContent || '',
+    );
     if (result && result.status === 'queued') tab.tabEl.classList.add('generating');
   }, BACKDROP_IDLE_MS);
 }

@@ -48,15 +48,17 @@ npm run setup:backdrop
 ```
 
 Generation uses a repo-local `stable-diffusion.cpp` CPU build and an eight-step
-LCM model. Terminal text is cleaned and continuously reduced into a rolling,
-recency-weighted profile capped at 64 topic scores. This lets the subject survive
-very long agent conversations without retaining the transcript; only a small
-temporary text chunk exists while its scores are being calculated. Ambiguous
-topic changes keep the existing scene until the new subject is clear. Neither
-terminal text nor the generated prompt is sent to an API. The first background
-is made after roughly 3,000 characters of output. Updates require another 9,000
-characters and are limited to one every ten minutes, so the generator does not
-continually compete with the shell.
+LCM model. When Claude Code or another terminal program provides a meaningful
+chat/window title, that title is the primary image subject. Generic titles such
+as `PowerShell` are ignored. Otherwise terminal text is cleaned and continuously
+reduced into a rolling, recency-weighted profile capped at 64 topic scores. This
+lets the subject survive very long agent conversations without retaining the
+transcript; only a small temporary text chunk exists while its scores are being
+calculated. Ambiguous fallback topic changes keep the existing scene until the
+new subject is clear. Neither terminal text, the title, nor the generated prompt
+is sent to an API. The first background is made after roughly 3,000 characters
+of output. Updates require another 9,000 characters and are limited to one every
+ten minutes, so the generator does not continually compete with the shell.
 
 ## Drag-and-drop upload
 

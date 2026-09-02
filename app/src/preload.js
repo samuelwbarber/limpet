@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('limpet', {
   sendInput: (id, data) => ipcRenderer.send('term:input', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('term:resize', { id, cols, rows }),
   dropFiles: (id, paths) => ipcRenderer.invoke('term:drop-files', { id, paths }),
-  considerBackdrop: (id, snapshot) => ipcRenderer.invoke('term:backdrop-candidate', { id, snapshot }),
+  considerBackdrop: (id, snapshot, title) => ipcRenderer.invoke('term:backdrop-candidate', { id, snapshot, title }),
   onBackdrop: (cb) => ipcRenderer.on('term:backdrop', (_e, p) => cb(p)),
   onBackdropStatus: (cb) => ipcRenderer.on('term:backdrop-status', (_e, p) => cb(p)),
   clipboardCopy: (text) => ipcRenderer.invoke('clip:write', text),

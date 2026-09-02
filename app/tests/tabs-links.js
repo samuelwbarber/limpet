@@ -62,6 +62,16 @@ async function type(page, text) {
   await type(detached, "if ($global:LimpetDetachMarker -eq 'LIVE_PTY_7733') { Write-Output LIVE_PTY_PRESERVED_7733 } else { Write-Output PTY_RESTARTED_7733 }");
   check('detached tab keeps the live PTY', !!(await waitFor(async () => (await screenText(detached)).includes('LIVE_PTY_PRESERVED_7733'), 8000)));
 
+  await type(detached, "[Console]::Write([char]27); [Console]::Write(']2;Claude Code - Building a slot machine app'); [Console]::Write([char]7); Start-Sleep -Milliseconds 1500; Write-Output TITLE_READY_7733");
+  const expectedTitle = 'Claude Code - Building a slot machine app';
+  const titleSeen = await waitFor(async () => {
+    const observed = await detached.locator('.tab.active .title').textContent();
+    return observed === expectedTitle ? observed : null;
+  }, 8000);
+  check('agent OSC title reaches the detached tab', titleSeen === expectedTitle);
+  if (!titleSeen) console.log('  observed tab title:', await detached.locator('.tab.active .title').textContent());
+  await waitFor(async () => (await screenText(detached)).includes('TITLE_READY_7733'), 5000);
+
   // Replace shell.openExternal inside the Electron main process so this test
   // records the URL without launching the user's real browser.
   await electronApp.evaluate(({ shell }) => {

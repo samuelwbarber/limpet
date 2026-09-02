@@ -17,6 +17,10 @@ const PROFILE_MAX_TOPICS = 64;
 const PROFILE_DECAY = 0.97;
 const PROFILE_GAIN = 0.24;
 const MIN_SCENE_CHANGE_CONFIDENCE = 2;
+const GENERIC_TITLES = new Set([
+  'limpet', 'terminal', 'powershell', 'windows powershell', 'pwsh',
+  'command prompt', 'cmd', 'shell', 'claude', 'claude code', 'codex',
+]);
 
 const STOP_WORDS = new Set((`
   about after again also always and another because been before being between both
@@ -68,6 +72,25 @@ function extractTopics(snapshot, limit = 10) {
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]))
     .slice(0, limit)
     .map(([word]) => word);
+}
+
+function cleanConversationTitle(input) {
+  const raw = String(input || '').slice(0, 240).trim();
+  if (!raw || /^[A-Za-z]:\\/.test(raw)) return null;
+  const cleaned = cleanSnapshot(raw);
+  if (!cleaned || cleaned.includes('\n')) return null;
+  let title = cleaned
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .replace(/^(?:claude(?: code)?|codex|limpet)\s*[-–—:|]\s*/i, '')
+    .trim()
+    .slice(0, 180);
+  const normalized = title.toLowerCase().replace(/\s+/g, ' ');
+  if (!title || GENERIC_TITLES.has(normalized)) return null;
+  const words = title.match(/[A-Za-z][A-Za-z0-9-]{2,}/g) || [];
+  // A bare username/hostname is the normal PowerShell title, not a project.
+  if (words.length < 2 || /^[^@\s]+@[^:\s]+(?::.*)?$/.test(title)) return null;
+  if (!words.some((word) => !STOP_WORDS.has(word.toLowerCase()))) return null;
+  return title;
 }
 
 const SCENE_RULES = [
@@ -226,23 +249,40 @@ function planScene(clean, topics, profile = null) {
   return chooseScene(clean, topics, profile).scene;
 }
 
-function buildBackdropPlan(snapshot, profile = null) {
+function buildBackdropPlan(snapshot, profile = null, conversationTitle = '') {
+  const title = cleanConversationTitle(conversationTitle);
   const clean = cleanSnapshot(snapshot);
   const recentTopics = extractTopics(clean);
   const stableTopics = profileTopics(profile, 12);
   const topics = [...new Set([...stableTopics, ...recentTopics])].slice(0, 12);
-  if ((clean.length < 500 && stableTopics.length < 3) || topics.length < 3) return null;
-  const choice = chooseScene(clean, topics, profile);
+  if (!title && ((clean.length < 500 && stableTopics.length < 3) || topics.length < 3)) return null;
+  const titleTopics = title ? extractTopics(title, 8) : [];
+  const choice = title
+    ? chooseScene(title, titleTopics, null)
+    : chooseScene(clean, topics, profile);
+  const titleSubject = title && choice.key.startsWith('topics:')
+    ? `the work described as ${title}, depicted using one concrete recognizable object implied by that title`
+    : choice.scene;
   const prompt = [
-    `Clear high-contrast digital illustration of ${choice.scene}.`,
+    title
+      ? `Clear high-contrast digital illustration representing ${title}: ${titleSubject}.`
+      : `Clear high-contrast digital illustration of ${choice.scene}.`,
     'The single main subject is large, centered, sharply defined and immediately recognizable at a glance, with a bold silhouette and clearly separated functional parts.',
     'Polished game concept art, crisp edges, rich distinct colors, simple dark navy background, subtle indigo and lavender accents, generous empty space around the subject, no atmospheric haze, no text, no letters, no labels, no logos, no user interface, not a terminal screenshot.',
   ].join(' ');
-  return { prompt, scene: choice.scene, sceneKey: choice.key, confidence: choice.confidence, topics };
+  return {
+    prompt,
+    scene: titleSubject,
+    sceneKey: title ? `title:${title.toLowerCase()}` : choice.key,
+    confidence: title ? 100 : choice.confidence,
+    topics: title ? titleTopics : topics,
+    source: title ? 'title' : 'profile',
+    title,
+  };
 }
 
-function buildPrompt(snapshot, profile = null) {
-  const plan = buildBackdropPlan(snapshot, profile);
+function buildPrompt(snapshot, profile = null, conversationTitle = '') {
+  const plan = buildBackdropPlan(snapshot, profile, conversationTitle);
   return plan && plan.prompt;
 }
 
@@ -295,6 +335,7 @@ function generateLocalImage({ prompt, destination, onSpawn }) {
 
 module.exports = {
   MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
-  cleanSnapshot, extractTopics, createTopicProfile, updateTopicProfile, profileTopics,
+  cleanSnapshot, extractTopics, cleanConversationTitle,
+  createTopicProfile, updateTopicProfile, profileTopics,
   planScene, buildBackdropPlan, buildPrompt, backendStatus, outputPath, generateLocalImage,
 };

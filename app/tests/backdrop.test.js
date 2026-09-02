@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  cleanSnapshot, extractTopics, createTopicProfile, updateTopicProfile,
+  cleanSnapshot, extractTopics, cleanConversationTitle, createTopicProfile, updateTopicProfile,
   profileTopics, planScene, buildBackdropPlan, buildPrompt,
 } = require('../src/backdrop');
 
@@ -86,4 +86,34 @@ test('switches the scene after sustained evidence of a genuinely new subject', (
   assert.equal(plan.sceneKey, 'rule:2');
   assert.match(plan.prompt, /data cylinders/);
   assert.ok(plan.confidence >= 2);
+});
+
+test('uses a meaningful Claude Code title as the primary image subject', () => {
+  const profile = createTopicProfile();
+  for (let i = 0; i < 20; i++) {
+    updateTopicProfile(profile, `Database migration ${i}: SQL schema table query records and index work.`);
+  }
+  const plan = buildBackdropPlan('short recent output', profile, 'Claude Code - Building a slot machine app');
+  assert.equal(plan.source, 'title');
+  assert.equal(plan.title, 'Building a slot machine app');
+  assert.equal(plan.sceneKey, 'title:building a slot machine app');
+  assert.match(plan.prompt, /Building a slot machine app/);
+  assert.match(plan.prompt, /single classic casino slot machine/);
+});
+
+test('ignores generic or sensitive terminal titles and uses the profile fallback', () => {
+  assert.equal(cleanConversationTitle('PowerShell'), null);
+  assert.equal(cleanConversationTitle('Claude Code'), null);
+  assert.equal(cleanConversationTitle('sbarb'), null);
+  assert.equal(cleanConversationTitle('sbarb@workstation:~'), null);
+  assert.equal(cleanConversationTitle('api key sk-' + 'x'.repeat(60)), null);
+  assert.equal(buildBackdropPlan('too short', createTopicProfile(), 'PowerShell'), null);
+
+  const profile = createTopicProfile();
+  for (let i = 0; i < 8; i++) {
+    updateTopicProfile(profile, `Travel route ${i}: map location weather forecast train flight and compass planning.`);
+  }
+  const plan = buildBackdropPlan('routine output', profile, 'limpet');
+  assert.equal(plan.source, 'profile');
+  assert.match(plan.prompt, /folded map/);
 });
