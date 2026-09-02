@@ -1,5 +1,5 @@
-// Focused e2e: Ctrl+C copies the selection (even after the selection is cleared
-// by a repaint), and a plain Ctrl+C with nothing selected still interrupts.
+// Focused e2e: paste enters the PTY once, Ctrl+C copies the selection (even
+// after it is cleared by a repaint), and plain Ctrl+C still interrupts.
 const { _electron } = require('playwright-core');
 const path = require('path');
 const APP = path.join(__dirname, '..');
@@ -11,10 +11,31 @@ async function waitFor(fn, timeout, every = 300) { const end = Date.now() + time
 async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await page.keyboard.press('Enter'); }
 
 (async () => {
-  const app = await _electron.launch({ executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'), args: [APP], timeout: 60000 });
+  const app = await _electron.launch({
+    executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
+    args: [APP], timeout: 60000,
+    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
+  });
   const page = await app.firstWindow();
   await waitFor(() => screenText(page).then((t) => /PS [A-Z]:/.test(t)), 30000);
   const clip = (t) => app.evaluate(({ clipboard }, v) => (v === undefined ? clipboard.readText() : clipboard.writeText(v)), t);
+
+  // A hidden stock Electron menu used to keep a second Ctrl+V accelerator
+  // alive. Together with xterm's paste event that injected clipboard text
+  // twice. Both common shortcuts must now have one and only one PTY path.
+  for (const [shortcut, marker] of [
+    ['Control+v', 'PASTE_ONCE_CTRL_V_9911'],
+    ['Control+Shift+v', 'PASTE_ONCE_CTRL_SHIFT_V_9922'],
+  ]) {
+    await type(page, 'Clear-Host');
+    await clip(`Write-Output ${marker}`);
+    await page.keyboard.press(shortcut);
+    await page.keyboard.press('Enter');
+    await waitFor(() => screenText(page).then((t) => (t.match(new RegExp(marker, 'g')) || []).length >= 2), 8000);
+    await sleep(300);
+    const count = ((await screenText(page)).match(new RegExp(marker, 'g')) || []).length;
+    check(`${shortcut} pastes exactly once`, count === 2);
+  }
 
   // ---- Ctrl+C copies a selection ----
   await clip('');

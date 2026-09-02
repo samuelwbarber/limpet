@@ -21,6 +21,43 @@ pipe with no line editing.
 Electron is pinned to 29.x because that's the newest ABI the prebuilt PTY ships
 a Windows binary for.
 
+## Tabs, clipboard, and links
+
+Use `Ctrl+Shift+T` for a new tab, `Ctrl+Shift+W` to close one, and `Ctrl+Tab`
+to cycle. Drag a tab beyond the current window to move its live shell into a
+new limpet window; the PTY is handed over rather than restarted.
+
+`Ctrl+V` and `Ctrl+Shift+V` paste once, while `Ctrl+C` copies selected terminal
+text and remains the normal interrupt when nothing is selected. Plain web URLs
+and OSC 8 hyperlinks open in the Windows default browser, including agent login
+links.
+
+## Local conversation backdrops
+
+After a terminal has accumulated enough useful content and then goes idle,
+limpet creates a session-specific background locally. A clear stylized scene
+depicts that terminal's actual subject in the app's indigo/blue/pastel
+palette—for example, work on a slot-machine app produces a prominent,
+recognizable slot machine. Each tab has its own scene, and a detached tab keeps
+its scene.
+
+Setup is a one-time 2.0 GB model download:
+
+```powershell
+npm run setup:backdrop
+```
+
+Generation uses a repo-local `stable-diffusion.cpp` CPU build and an eight-step
+LCM model. Terminal text is cleaned and continuously reduced into a rolling,
+recency-weighted profile capped at 64 topic scores. This lets the subject survive
+very long agent conversations without retaining the transcript; only a small
+temporary text chunk exists while its scores are being calculated. Ambiguous
+topic changes keep the existing scene until the new subject is clear. Neither
+terminal text nor the generated prompt is sent to an API. The first background
+is made after roughly 3,000 characters of output. Updates require another 9,000
+characters and are limited to one every ten minutes, so the generator does not
+continually compete with the shell.
+
 ## Drag-and-drop upload
 
 Drop files onto the window and limpet "pastes" them into the current session: it

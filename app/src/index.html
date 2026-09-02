@@ -16,8 +16,14 @@
     .tab {
       display: flex; align-items: center; gap: 6px; height: 26px;
       padding: 0 4px 0 12px; border-radius: 6px; min-width: 0; max-width: 220px;
-      color: #a6adc8; cursor: default;
+      color: #a6adc8; cursor: grab;
       font: 12px 'Cascadia Mono', Consolas, monospace;
+    }
+    .tab.dragging { opacity: 0.65; cursor: grabbing; }
+    .tab.generating { animation: backdrop-pulse 1.8s ease-in-out infinite; }
+    @keyframes backdrop-pulse {
+      0%, 100% { box-shadow: inset 0 -2px rgba(137,180,250,0.15); }
+      50% { box-shadow: inset 0 -2px rgba(137,180,250,0.9); }
     }
     .tab:hover:not(.active) { background: #232336; }
     .tab.active { background: #313244; color: #cdd6f4; }
@@ -36,7 +42,11 @@
     #newtab:hover { background: #313244; color: #cdd6f4; }
     #main { flex: 1 1 auto; display: flex; min-height: 0; }
     #terms { position: relative; flex: 1 1 auto; min-width: 0; }
-    .term-pane { position: absolute; inset: 0; padding: 6px; display: none; }
+    .term-pane {
+      position: absolute; inset: 0; padding: 6px; display: none;
+      background-color: #1e1e2e; background-size: cover; background-position: center;
+      image-rendering: auto;
+    }
     .term-pane.active { display: block; }
     /* hide xterm's own scrollbar (the thin bar on the terminal's right edge) */
     .xterm-viewport::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
@@ -71,6 +81,7 @@
   <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../node_modules/@xterm/addon-image/lib/addon-image.js"></script>
+  <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="predict.js"></script>
   <script src="renderer.js"></script>
 </body>

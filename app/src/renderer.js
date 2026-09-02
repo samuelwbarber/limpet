@@ -1,7 +1,7 @@
 // Renderer: tabbed xterm.js sessions (one PTY each, Ctrl+Shift+T / Ctrl+Shift+W
 // / Ctrl+Tab like Windows Terminal), plus drag-drop that "pastes" files into
 // whatever session is in front (local or an ssh you started with xssh).
-/* global Terminal, FitAddon, ImageAddon */
+/* global Terminal, FitAddon, ImageAddon, WebLinksAddon */
 
 const termsEl = document.getElementById('terms');
 const tabstrip = document.getElementById('tabstrip');
@@ -10,8 +10,8 @@ let activeId = null;
 
 const tabOrder = () => Array.from(tabs.keys());
 
-async function newTab() {
-  const id = await window.limpet.createSession();
+async function newTab(existingId = null, initialTitle = 'limpet') {
+  const id = existingId ?? await window.limpet.createSession();
 
   const pane = document.createElement('div');
   pane.className = 'term-pane';
@@ -19,11 +19,15 @@ async function newTab() {
 
   const tabEl = document.createElement('div');
   tabEl.className = 'tab';
+  tabEl.draggable = true;
+  tabEl.dataset.sessionId = String(id);
+  tabEl.title = 'Drag outside this window to detach';
   const titleEl = document.createElement('span');
   titleEl.className = 'title';
-  titleEl.textContent = 'limpet';
+  titleEl.textContent = initialTitle || 'limpet';
   const closeEl = document.createElement('button');
   closeEl.className = 'close';
+  closeEl.draggable = false;
   closeEl.textContent = '×';
   closeEl.title = 'Close tab (Ctrl+Shift+W)';
   closeEl.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
@@ -31,6 +35,31 @@ async function newTab() {
   tabEl.addEventListener('mousedown', (e) => { if (e.target !== closeEl) activate(id); });
   // Middle-click closes, like every tabbed thing on earth.
   tabEl.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(id); });
+  let dragPoint = null;
+  tabEl.addEventListener('dragstart', (e) => {
+    if (e.target === closeEl) { e.preventDefault(); return; }
+    activate(id);
+    dragPoint = pointFromDrag(e);
+    tabEl.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-limpet-tab', String(id));
+    }
+  });
+  tabEl.addEventListener('drag', (e) => {
+    const p = pointFromDrag(e);
+    if (p) dragPoint = p;
+  });
+  tabEl.addEventListener('dragend', async (e) => {
+    tabEl.classList.remove('dragging');
+    const point = pointFromDrag(e) || dragPoint;
+    dragPoint = null;
+    if (!point || !outsideCurrentWindow(point) || !tabs.has(id)) return;
+    const moved = await window.limpet.detachSession(id, {
+      x: point.x, y: point.y, title: titleEl.textContent || 'limpet',
+    });
+    if (moved && tabs.has(id)) removeTab(id);
+  });
   tabstrip.appendChild(tabEl);
 
   const term = new Terminal({
@@ -38,11 +67,18 @@ async function newTab() {
     fontSize: 14,
     cursorBlink: true,
     allowProposedApi: true,
-    theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc', selectionBackground: '#585b70' },
+    allowTransparency: true,
+    theme: { background: 'rgba(30,30,46,0.25)', foreground: '#ffffff', cursor: '#f5e0dc', selectionBackground: '#585b70' },
+    // OSC 8 hyperlinks (used by agent login flows) must leave Electron and use
+    // the OS default browser.
+    linkHandler: { activate: (_event, uri) => window.limpet.openExternal(uri) },
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(pane);
+  try {
+    term.loadAddon(new WebLinksAddon.WebLinksAddon((_event, uri) => window.limpet.openExternal(uri)));
+  } catch (e) { console.error('[limpet] web links addon failed:', e); }
   // Ctrl+C should reliably copy a selection even when a repaint or a burst of
   // fresh output clears it in the split second before the keypress -- which is
   // common in full-screen TUIs and while output streams, and is why Ctrl+C
@@ -83,12 +119,32 @@ async function newTab() {
     else pasteClipboard(id);
   });
 
-  const tab = { term, fit, pane, tabEl, titleEl, img, predict, peeks: [], splitBusy: false, splitPending: [], peekTimer: null };
+  const tab = {
+    term, fit, pane, tabEl, titleEl, img, predict, peeks: [], splitBusy: false,
+    splitPending: [], peekTimer: null, backdropTimer: null,
+  };
   tabs.set(id, tab);
   // A resize makes ConPTY repaint the viewport and wipe peek images; redraw
   // them once the repaint settles.
   term.onResize(() => schedulePeekRedraw(tab));
   activate(id);
+  // PTY output is buffered by the main process until the xterm instance exists.
+  // This is especially important while a live session moves between windows.
+  const attached = await window.limpet.sessionReady(id);
+  if (!attached && tabs.has(id)) removeTab(id);
+}
+
+function pointFromDrag(e) {
+  if (!Number.isFinite(e.screenX) || !Number.isFinite(e.screenY)) return null;
+  // Chromium sometimes reports 0,0 on the final drag event; keep the last real
+  // point instead so cancelling a drag cannot fling a tab to the primary screen.
+  if (e.screenX === 0 && e.screenY === 0) return null;
+  return { x: e.screenX, y: e.screenY };
+}
+
+function outsideCurrentWindow({ x, y }) {
+  return x < window.screenX || y < window.screenY ||
+    x >= window.screenX + window.outerWidth || y >= window.screenY + window.outerHeight;
 }
 
 function activate(id) {
@@ -115,6 +171,7 @@ function removeTab(id) {
   const order = tabOrder();
   const idx = order.indexOf(id);
   tabs.delete(id);
+  clearTimeout(t.backdropTimer);
   if (t.predict) t.predict.dispose();
   t.term.dispose();
   t.pane.remove();
@@ -123,9 +180,52 @@ function removeTab(id) {
   if (activeId === id) activate(order[idx + 1] ?? order[idx - 1]);
 }
 
-window.limpet.onData(({ id, data }) => { const t = tabs.get(id); if (t) writeData(t, data); });
+window.limpet.onData(({ id, data }) => {
+  const t = tabs.get(id);
+  if (t) { writeData(t, data); scheduleBackdropCandidate(id, t); }
+});
 // The shell exited on its own (`exit`, crash): the tab goes with it.
 window.limpet.onExit(({ id }) => removeTab(id));
+
+// ---- local conversation backdrops ----
+// Once output settles, send only the current xterm text snapshot to the main
+// process. It stays local and is reduced to visual topics before generation.
+const BACKDROP_IDLE_MS = 12000;
+function terminalSnapshot(term) {
+  const buf = term.buffer.active;
+  const start = Math.max(0, buf.length - 180);
+  const lines = [];
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (line) lines.push(line.translateToString(true));
+  }
+  return lines.join('\n').slice(-24000);
+}
+
+function scheduleBackdropCandidate(id, tab) {
+  clearTimeout(tab.backdropTimer);
+  tab.backdropTimer = setTimeout(async () => {
+    tab.backdropTimer = null;
+    const result = await window.limpet.considerBackdrop(id, terminalSnapshot(tab.term));
+    if (result && result.status === 'queued') tab.tabEl.classList.add('generating');
+  }, BACKDROP_IDLE_MS);
+}
+
+window.limpet.onBackdrop(({ id, dataUrl }) => {
+  const tab = tabs.get(id);
+  if (!tab || !dataUrl) return;
+  tab.pane.style.backgroundImage = `url("${dataUrl}")`;
+  tab.pane.classList.add('has-backdrop');
+  tab.tabEl.classList.remove('generating');
+  tab.tabEl.title = 'Drag outside this window to detach';
+});
+
+window.limpet.onBackdropStatus(({ id, state, message }) => {
+  const tab = tabs.get(id);
+  if (!tab) return;
+  tab.tabEl.classList.toggle('generating', state === 'generating');
+  if (state === 'error') tab.tabEl.title = `Local backdrop failed: ${message}`;
+});
 
 // ---- peek images vs. window resize ----
 // Resizing makes ConPTY repaint the viewport from its own buffer, which holds
@@ -244,7 +344,20 @@ function copySelection(term) {
   return false;
 }
 function pasteClipboard(id) {
-  window.limpet.clipboardPaste().then((t) => { if (t) window.limpet.sendInput(id, t); });
+  window.limpet.clipboardPaste().then((text) => {
+    const tab = tabs.get(id);
+    // Let xterm normalize newlines and apply bracketed-paste mode. term.paste()
+    // emits exactly one onData event, which is the sole path into the PTY.
+    if (tab && text) tab.term.paste(text);
+  });
+}
+
+function consumeKey(e) {
+  // attachCustomKeyEventHandler's `false` only tells xterm not to handle the
+  // key; it does not cancel Chromium's native copy/paste action.
+  e.preventDefault();
+  e.stopPropagation();
+  return false;
 }
 
 // Ctrl+Shift+C / Ctrl+Shift+V, Ctrl+C copies when there's a selection
@@ -252,14 +365,14 @@ function pasteClipboard(id) {
 function handleKeys(e, id, term) {
   if (e.type !== 'keydown') return true;
   const k = e.key.toLowerCase();
-  if (e.ctrlKey && e.shiftKey && k === 't') { newTab(); return false; }
-  if (e.ctrlKey && e.shiftKey && k === 'w') { closeTab(id); return false; }
-  if (e.ctrlKey && k === 'tab') { cycleTabs(e.shiftKey ? -1 : 1); return false; }
-  if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(term); return false; }
-  if (e.ctrlKey && e.shiftKey && k === 'v') { pasteClipboard(id); return false; }
+  if (e.ctrlKey && e.shiftKey && k === 't') { newTab(); return consumeKey(e); }
+  if (e.ctrlKey && e.shiftKey && k === 'w') { closeTab(id); return consumeKey(e); }
+  if (e.ctrlKey && k === 'tab') { cycleTabs(e.shiftKey ? -1 : 1); return consumeKey(e); }
+  if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(term); return consumeKey(e); }
+  if (e.ctrlKey && k === 'v') { pasteClipboard(id); return consumeKey(e); }
   // Ctrl+C: copy if something is (or was just) selected, otherwise let it through
   // as the usual interrupt.
-  if (e.ctrlKey && !e.shiftKey && k === 'c') { if (copySelection(term)) return false; }
+  if (e.ctrlKey && !e.shiftKey && k === 'c') { if (copySelection(term)) return consumeKey(e); }
   return true;
 }
 
@@ -275,10 +388,18 @@ document.getElementById('newtab').addEventListener('click', () => newTab());
 // ---- drag-drop: paste files into the current session ----
 const dropEl = document.getElementById('drop');
 let dragDepth = 0;
-window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; dropEl.classList.add('show'); });
-window.addEventListener('dragover', (e) => e.preventDefault());
-window.addEventListener('dragleave', (e) => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; dropEl.classList.remove('show'); } });
+const isFileDrag = (e) => Array.from((e.dataTransfer && e.dataTransfer.types) || []).includes('Files');
+window.addEventListener('dragenter', (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault(); dragDepth++; dropEl.classList.add('show');
+});
+window.addEventListener('dragover', (e) => { if (isFileDrag(e)) e.preventDefault(); });
+window.addEventListener('dragleave', (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; dropEl.classList.remove('show'); }
+});
 window.addEventListener('drop', async (e) => {
+  if (!isFileDrag(e)) return;
   e.preventDefault();
   dragDepth = 0;
   dropEl.classList.remove('show');
@@ -288,5 +409,11 @@ window.addEventListener('drop', async (e) => {
   if (t) t.term.focus();
 });
 
-newTab();
+const launchParams = new URLSearchParams(window.location.search);
+const detachedId = Number(launchParams.get('session'));
+if (Number.isInteger(detachedId) && detachedId > 0) {
+  newTab(detachedId, launchParams.get('title') || 'limpet');
+} else {
+  newTab();
+}
 setTimeout(syncSize, 120);

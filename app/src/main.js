@@ -6,11 +6,16 @@
 // works inside your SSH session with nothing installed on the remote but
 // coreutils (base64). Real ConPTY via node-pty; pipe fallback if unavailable.
 
-const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, screen, shell, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const {
+  MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
+  createTopicProfile, updateTopicProfile, buildBackdropPlan,
+  backendStatus, outputPath, generateLocalImage,
+} = require('./backdrop');
 
 let ptyLib = null;
 try {
@@ -170,18 +175,81 @@ const REELS_TIDY = `(function () {
 const MAX_DROP_BYTES = 20 * 1024 * 1024; // pasting more than this through a PTY is impractical
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-let win = null;
+// Keep BrowserWindow references alive and route each PTY only to the window
+// that currently owns its tab.
+const windows = new Map(); // webContents id -> BrowserWindow
 // One entry per tab: its PTY plus the OSC-scan state (a marker split across
 // PTY chunks must be held back per stream, not globally).
-const sessions = new Map(); // id -> { id, proc, cols, rows, outPending, flushTimer }
+const sessions = new Map(); // id -> { id, proc, ownerId, ready, uiPending, ... }
 let nextSessionId = 1;
+const backdropQueue = [];
+let backdropRunning = false;
+let activeBackdropProcess = null;
 
-function send(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+function sessionWebContents(sess) {
+  if (!sess || sess.ownerId == null) return null;
+  const wc = webContents.fromId(sess.ownerId);
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+
+function sendToSession(sess, channel, payload) {
+  const wc = sessionWebContents(sess);
+  if (sess.ready && wc) {
+    wc.send(channel, payload);
+  } else {
+    // Output and side-channel events can arrive while the new renderer is
+    // loading. Preserve ordering and flush them after term:ready.
+    sess.uiPending.push({ channel, payload });
+  }
+}
+
+function flushSessionUi(sess) {
+  const wc = sessionWebContents(sess);
+  if (!sess.ready || !wc) return;
+  const pending = sess.uiPending.splice(0);
+  for (const item of pending) wc.send(item.channel, item.payload);
+}
+
+const BACKDROP_ANALYSIS_CHUNK = 4000;
+
+function stripTerminalFormatting(data) {
+  return String(data)
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '');
+}
+
+function recordBackdropOutput(sess, data) {
+  const plain = stripTerminalFormatting(data);
+  // Count human-readable output, not ANSI redraw traffic or inline image data.
+  const visible = plain.replace(/[\u0000-\u001f\u007f]/g, '');
+  sess.backdropOutputChars = (sess.backdropOutputChars || 0) + visible.length;
+
+  // Summarize output in small chunks as it arrives. Only the bounded scores in
+  // backdropProfile survive; raw output is discarded after each chunk.
+  const analysis = plain
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ');
+  if (!analysis.trim()) return;
+  sess.backdropAnalysisBuffer = `${sess.backdropAnalysisBuffer || ''}${analysis}`;
+  while (sess.backdropAnalysisBuffer.length >= BACKDROP_ANALYSIS_CHUNK) {
+    let end = sess.backdropAnalysisBuffer.lastIndexOf('\n', BACKDROP_ANALYSIS_CHUNK);
+    if (end < BACKDROP_ANALYSIS_CHUNK / 2) end = BACKDROP_ANALYSIS_CHUNK;
+    updateTopicProfile(sess.backdropProfile, sess.backdropAnalysisBuffer.slice(0, end));
+    sess.backdropAnalysisBuffer = sess.backdropAnalysisBuffer.slice(
+      end + (sess.backdropAnalysisBuffer[end] === '\n' ? 1 : 0),
+    );
+  }
+}
+
+function flushBackdropAnalysis(sess) {
+  const pending = sess.backdropAnalysisBuffer || '';
+  if (pending.trim().length >= 20) updateTopicProfile(sess.backdropProfile, pending);
+  sess.backdropAnalysisBuffer = '';
 }
 
 function sendData(sess, data) {
-  send('term:data', { id: sess.id, data });
+  recordBackdropOutput(sess, data);
+  sendToSession(sess, 'term:data', { id: sess.id, data });
 }
 
 // --- limpet shell integration (download/upload from inside an ssh session) ---
@@ -271,7 +339,7 @@ function handleLimpetOsc(sess, seq) {
   } else if (parts[0] === 'upload') {
     injectFiles(sess, [b64dec(parts[1]).toString('utf8')]);
   } else if (parts[0] === 'reels') {
-    send('reels:toggle', b64dec(parts[1]).toString('utf8'));
+    sendToSession(sess, 'reels:toggle', b64dec(parts[1]).toString('utf8'));
   } else if (parts[0] === 'peek') {
     const sub = parts[1];
     if (sub === 'h') {
@@ -379,8 +447,13 @@ function endDownload(sess) {
 function sessionExited(sess) {
   if (!sessions.has(sess.id)) return;
   endDownload(sess);
-  sessions.delete(sess.id);
-  send('term:exit', { id: sess.id });
+  sess.proc = null;
+  sess.exited = true;
+  if (sess.ready) {
+    sendToSession(sess, 'term:exit', { id: sess.id });
+    sessions.delete(sess.id);
+    if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
+  }
 }
 
 function startShell(sess) {
@@ -467,14 +540,152 @@ async function injectFiles(sess, paths) {
   return { ok: true, sent };
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1000, height: 660, backgroundColor: '#1e1e2e', title: 'limpet',
+function backdropStatus(sess, state, message = '') {
+  sendToSession(sess, 'term:backdrop-status', { id: sess.id, state, message });
+}
+
+function considerBackdrop(sess, snapshot) {
+  if (process.env.LIMPET_DISABLE_BACKDROPS === '1') return { status: 'disabled' };
+  const backend = backendStatus();
+  if (!backend.ready) return { status: 'not-installed' };
+  if (sess.backdropQueued) return { status: 'busy' };
+  const now = Date.now();
+  const nextAt = sess.backdropNextAt || MIN_OUTPUT_CHARS;
+  if ((sess.backdropOutputChars || 0) < nextAt) return { status: 'waiting' };
+  if (sess.backdropLastAt && now - sess.backdropLastAt < MIN_UPDATE_MS) return { status: 'cooldown' };
+  flushBackdropAnalysis(sess);
+  const plan = buildBackdropPlan(snapshot, sess.backdropProfile);
+  if (!plan) return { status: 'not-enough-context' };
+  if (sess.backdropSceneKey && plan.sceneKey !== sess.backdropSceneKey &&
+      plan.confidence < MIN_SCENE_CHANGE_CONFIDENCE) {
+    return { status: 'low-confidence' };
+  }
+
+  sess.backdropQueued = true;
+  // Reserve the next interval as soon as the job enters the queue, preventing
+  // repeated idle snapshots from adding duplicate jobs.
+  sess.backdropNextAt = (sess.backdropOutputChars || 0) + UPDATE_OUTPUT_CHARS;
+  backdropQueue.push({ sessionId: sess.id, prompt: plan.prompt, sceneKey: plan.sceneKey });
+  backdropStatus(sess, 'generating');
+  runBackdropQueue();
+  return { status: 'queued' };
+}
+
+async function runBackdropQueue() {
+  if (backdropRunning) return;
+  const job = backdropQueue.shift();
+  if (!job) return;
+  const initialSession = sessions.get(job.sessionId);
+  if (!initialSession) { runBackdropQueue(); return; }
+  backdropRunning = true;
+  const destination = outputPath(job.sessionId);
+  try {
+    await generateLocalImage({
+      prompt: job.prompt, destination,
+      onSpawn: (child) => { activeBackdropProcess = child; },
+    });
+    const sess = sessions.get(job.sessionId);
+    if (!sess) {
+      fs.unlink(destination, () => {});
+    } else {
+      const image = fs.readFileSync(destination);
+      if (image.length > 12 * 1024 * 1024) throw new Error('generated background is unexpectedly large');
+      const previous = sess.backdropPath;
+      sess.backdropPath = destination;
+      sess.backdropDataUrl = `data:image/png;base64,${image.toString('base64')}`;
+      sess.backdropSceneKey = job.sceneKey;
+      sess.backdropLastAt = Date.now();
+      sess.backdropQueued = false;
+      sendToSession(sess, 'term:backdrop', { id: sess.id, dataUrl: sess.backdropDataUrl });
+      backdropStatus(sess, 'ready');
+      if (previous && previous !== destination) fs.unlink(previous, () => {});
+    }
+  } catch (error) {
+    fs.unlink(destination, () => {});
+    const sess = sessions.get(job.sessionId);
+    if (sess) {
+      sess.backdropQueued = false;
+      // Wait for some more activity before retrying a failed local generation.
+      sess.backdropNextAt = (sess.backdropOutputChars || 0) + 1500;
+      backdropStatus(sess, 'error', error.message);
+      console.error('[limpet] local backdrop failed:', error.message);
+    }
+  } finally {
+    activeBackdropProcess = null;
+    backdropRunning = false;
+    runBackdropQueue();
+  }
+}
+
+function stopSession(sess) {
+  if (!sess || !sessions.has(sess.id)) return;
+  sessions.delete(sess.id); // deliberate close: keep sessionExited() quiet
+  endDownload(sess);
+  if (sess.flushTimer) clearTimeout(sess.flushTimer);
+  if (sess.proc) sess.proc.kill();
+  if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
+}
+
+function detachedWindowBounds(sourceWindow, point) {
+  const source = sourceWindow && !sourceWindow.isDestroyed()
+    ? sourceWindow.getBounds() : { x: 100, y: 100, width: 1000, height: 660 };
+  const target = point && Number.isFinite(point.x) && Number.isFinite(point.y)
+    ? { x: Math.round(point.x), y: Math.round(point.y) }
+    : { x: source.x + 40, y: source.y + 40 };
+  const work = screen.getDisplayNearestPoint(target).workArea;
+  const width = Math.min(source.width, work.width);
+  const height = Math.min(source.height, work.height);
+  return {
+    width, height,
+    x: Math.max(work.x, Math.min(target.x - 120, work.x + work.width - width)),
+    y: Math.max(work.y, Math.min(target.y - 18, work.y + work.height - height)),
+  };
+}
+
+function openExternalUrl(rawUrl) {
+  try {
+    const url = new URL(String(rawUrl));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    Promise.resolve(shell.openExternal(url.toString())).catch((error) => {
+      console.error('[limpet] failed to open external URL:', error.message);
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function createWindow({ sessionId = null, sourceWindow = null, point = null, title = 'limpet' } = {}) {
+  const detached = sessionId !== null;
+  const bounds = detached ? detachedWindowBounds(sourceWindow, point) : { width: 1000, height: 660 };
+  const browserWin = new BrowserWindow({
+    ...bounds, backgroundColor: '#1e1e2e', title: 'limpet',
     icon: path.join(__dirname, '..', 'build', 'limpet.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
-  win.setMenuBarVisibility(false);
-  win.loadFile(path.join(__dirname, 'index.html'));
+  const windowId = browserWin.webContents.id;
+  windows.set(windowId, browserWin);
+
+  // Hiding the stock menu leaves its Ctrl+C/Ctrl+V accelerators active. Those
+  // race xterm's handlers and were the source of intermittent copy and double
+  // paste, so remove the menu rather than merely hiding it.
+  browserWin.removeMenu();
+
+  if (detached) {
+    const sess = sessions.get(sessionId);
+    if (!sess) { browserWin.destroy(); return null; }
+    sess.ownerId = windowId;
+    sess.ready = false;
+  }
+  const query = detached ? { session: String(sessionId), title: String(title || 'limpet').slice(0, 200) } : {};
+  browserWin.loadFile(path.join(__dirname, 'index.html'), { query });
+
+  // Any renderer-created popup or navigation belongs in the user's normal
+  // browser. The app itself remains a terminal, not a second web browser.
+  browserWin.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalUrl(url);
+    return { action: 'deny' };
+  });
 
   // Inject our preload into the reels <webview> so we can tidy the page from the
   // inside (the reliable injection point — runs in the guest at document-start).
@@ -482,7 +693,7 @@ function createWindow() {
   // from the main process — webview `preload` set via will-attach-webview does
   // not run reliably here, but executeJavaScript on the guest does. Re-injected
   // on every load and SPA navigation; a MutationObserver inside keeps it applied.
-  win.webContents.on('did-attach-webview', (_e, wc) => {
+  browserWin.webContents.on('did-attach-webview', (_e, wc) => {
     // Paint the webview's native backing store the exact terminal background.
     // (Going transparent and letting the host div show through composites the
     // color slightly lighter, so set it solid here instead.)
@@ -491,39 +702,92 @@ function createWindow() {
     wc.on('dom-ready', tidy);
     wc.on('did-finish-load', tidy);
     wc.on('did-navigate-in-page', tidy);
+    wc.setWindowOpenHandler(({ url }) => {
+      openExternalUrl(url);
+      return { action: 'deny' };
+    });
   });
 
+  browserWin.on('closed', () => {
+    windows.delete(windowId);
+    // Closing one window closes only its tabs. Sessions already handed to a
+    // detached window have a different ownerId and stay alive.
+    for (const sess of [...sessions.values()]) {
+      if (sess.ownerId === windowId) stopSession(sess);
+    }
+  });
+  return browserWin;
+}
+
+function ownedSession(event, id) {
+  const sess = sessions.get(id);
+  return sess && sess.ownerId === event.sender.id ? sess : null;
+}
+
+function registerIpc() {
   ipcMain.handle('clip:write', (_e, text) => { clipboard.writeText(String(text || '')); });
   ipcMain.handle('clip:read', () => clipboard.readText());
+  ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
 
-  // Tabs: the renderer creates one session per tab and tags every message with
-  // its id.
-  ipcMain.handle('term:create', () => {
-    const sess = { id: nextSessionId++, proc: null, cols: 80, rows: 24, outPending: '', flushTimer: null };
+  ipcMain.handle('term:create', (event) => {
+    const sess = {
+      id: nextSessionId++, proc: null, ownerId: event.sender.id, ready: false,
+      uiPending: [], cols: 80, rows: 24, outPending: '', flushTimer: null, exited: false,
+      backdropOutputChars: 0, backdropNextAt: MIN_OUTPUT_CHARS, backdropLastAt: 0,
+      backdropQueued: false, backdropPath: null, backdropDataUrl: null,
+      backdropProfile: createTopicProfile(), backdropAnalysisBuffer: '', backdropSceneKey: null,
+    };
     sessions.set(sess.id, sess);
     sess.proc = startShell(sess);
     return sess.id;
   });
-  ipcMain.on('term:close', (_e, id) => {
-    const sess = sessions.get(id);
-    if (!sess) return;
-    sessions.delete(id); // deliberate close: keep sessionExited() quiet
-    sess.proc.kill();
+  ipcMain.handle('term:ready', (event, id) => {
+    const sess = ownedSession(event, id);
+    if (!sess) return false;
+    sess.ready = true;
+    flushSessionUi(sess);
+    if (sess.backdropDataUrl) {
+      sendToSession(sess, 'term:backdrop', { id: sess.id, dataUrl: sess.backdropDataUrl });
+    }
+    if (sess.exited) {
+      sendToSession(sess, 'term:exit', { id: sess.id });
+      sessions.delete(sess.id);
+      if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
+    }
+    return true;
   });
-  ipcMain.on('term:input', (_e, { id, data }) => { const s = sessions.get(id); if (s) s.proc.write(data); });
-  ipcMain.on('term:resize', (_e, { id, cols, rows }) => {
-    const s = sessions.get(id);
-    if (s) { s.cols = cols; s.rows = rows; s.proc.resize(cols, rows); }
+  ipcMain.handle('term:detach', (event, { id, options } = {}) => {
+    const sess = ownedSession(event, id);
+    if (!sess || sess.exited) return false;
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    const x = Number(options && options.x);
+    const y = Number(options && options.y);
+    const point = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    return !!createWindow({ sessionId: id, sourceWindow, point, title: options && options.title });
   });
-
-  ipcMain.handle('term:drop-files', (_e, { id, paths }) => injectFiles(sessions.get(id), paths));
-
-  win.on('closed', () => {
-    for (const s of sessions.values()) s.proc.kill();
-    sessions.clear();
-    win = null;
+  ipcMain.on('term:close', (event, id) => stopSession(ownedSession(event, id)));
+  ipcMain.on('term:input', (event, { id, data }) => {
+    const sess = ownedSession(event, id);
+    if (sess && sess.proc) sess.proc.write(data);
+  });
+  ipcMain.on('term:resize', (event, { id, cols, rows }) => {
+    const sess = ownedSession(event, id);
+    if (sess && sess.proc) { sess.cols = cols; sess.rows = rows; sess.proc.resize(cols, rows); }
+  });
+  ipcMain.handle('term:drop-files', (event, { id, paths }) => {
+    const sess = ownedSession(event, id);
+    return sess ? injectFiles(sess, paths) : { ok: false };
+  });
+  ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot } = {}) => {
+    const sess = ownedSession(event, id);
+    if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };
+    return considerBackdrop(sess, snapshot.slice(-24000));
   });
 }
 
-app.whenReady().then(createWindow);
+registerIpc();
+app.whenReady().then(() => createWindow());
+app.on('before-quit', () => {
+  if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
+});
 app.on('window-all-closed', () => app.quit());

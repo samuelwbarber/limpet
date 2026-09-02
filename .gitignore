@@ -14,6 +14,7 @@ app/node_modules/
 app/dist/
 app/out/
 app/_run.*
+app/local-ai/
 
 # Demo recorder workdir (see tools/demo/README.md; only the scripts are tracked)
 tools/demo/node_modules/

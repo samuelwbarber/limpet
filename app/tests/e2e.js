@@ -64,6 +64,7 @@ async function type(page, text) {
     executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
     args: [APP],
     timeout: 60000,
+    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
   });
   const page = await app.firstWindow();
   const pageErrors = [];
