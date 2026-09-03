@@ -41,16 +41,19 @@ palette—for example, work on a slot-machine app produces a prominent,
 recognizable slot machine. Each tab has its own scene, and a detached tab keeps
 its scene.
 
-Setup is a one-time 2.0 GB model download:
+Setup is a one-time 651 MB model download:
 
 ```powershell
 npm run setup:backdrop
 ```
 
-Generation uses a repo-local `stable-diffusion.cpp` CPU build and an eight-step
-LCM model. When Claude Code or another terminal program provides a meaningful
-chat/window title, that title is the primary image subject. Generic titles such
-as `PowerShell` are ignored. Otherwise terminal text is cleaned and continuously
+Generation uses a repo-local `stable-diffusion.cpp` CPU build and the one-step,
+Q8-quantized SDXS-512 model. Its output is reduced locally to a 160x100 limited
+palette and enlarged with hard pixel edges, producing actual crisp pixel blocks
+rather than a soft pixel-art imitation. When Claude Code or another terminal
+program provides a meaningful chat/window title, that title is the primary image
+subject. Generic titles such as `PowerShell` are ignored. Otherwise terminal
+text is cleaned and continuously
 reduced into a rolling, recency-weighted profile capped at 64 topic scores. This
 lets the subject survive very long agent conversations without retaining the
 transcript; only a small temporary text chunk exists while its scores are being

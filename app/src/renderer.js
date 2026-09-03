@@ -121,7 +121,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
 
   const tab = {
     term, fit, pane, tabEl, titleEl, img, predict, peeks: [], splitBusy: false,
-    splitPending: [], peekTimer: null, backdropTimer: null,
+    splitPending: [], peekTimer: null, backdropTimer: null, backdropVersion: 0,
   };
   tabs.set(id, tab);
   // A resize makes ConPTY repaint the viewport and wipe peek images; redraw
@@ -215,10 +215,70 @@ function scheduleBackdropCandidate(id, tab) {
   }, BACKDROP_IDLE_MS);
 }
 
-window.limpet.onBackdrop(({ id, dataUrl }) => {
+const PIXEL_BACKDROP_WIDTH = 160;
+const PIXEL_BACKDROP_HEIGHT = 100;
+const PIXEL_COLOR_STEP = 32;
+
+function loadBackdropImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('generated backdrop could not be decoded'));
+    image.src = dataUrl;
+  });
+}
+
+async function pixelateBackdrop(dataUrl) {
+  const image = await loadBackdropImage(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = PIXEL_BACKDROP_WIDTH;
+  canvas.height = PIXEL_BACKDROP_HEIGHT;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return dataUrl;
+
+  // Center-crop into the terminal's 16:10 aspect ratio, then reduce both the
+  // spatial resolution and palette. The browser enlarges these real source
+  // pixels with nearest-neighbour rendering; this is not a blur/filter effect.
+  const sourceAspect = image.naturalWidth / image.naturalHeight;
+  const targetAspect = PIXEL_BACKDROP_WIDTH / PIXEL_BACKDROP_HEIGHT;
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.naturalWidth;
+  let sourceHeight = image.naturalHeight;
+  if (sourceAspect > targetAspect) {
+    sourceWidth = image.naturalHeight * targetAspect;
+    sourceX = (image.naturalWidth - sourceWidth) / 2;
+  } else if (sourceAspect < targetAspect) {
+    sourceHeight = image.naturalWidth / targetAspect;
+    sourceY = (image.naturalHeight - sourceHeight) / 2;
+  }
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    image, sourceX, sourceY, sourceWidth, sourceHeight,
+    0, 0, PIXEL_BACKDROP_WIDTH, PIXEL_BACKDROP_HEIGHT,
+  );
+  const pixels = context.getImageData(0, 0, PIXEL_BACKDROP_WIDTH, PIXEL_BACKDROP_HEIGHT);
+  for (let i = 0; i < pixels.data.length; i += 4) {
+    for (let channel = 0; channel < 3; channel++) {
+      pixels.data[i + channel] = Math.min(
+        255,
+        Math.round(pixels.data[i + channel] / PIXEL_COLOR_STEP) * PIXEL_COLOR_STEP,
+      );
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+window.limpet.onBackdrop(async ({ id, dataUrl }) => {
   const tab = tabs.get(id);
   if (!tab || !dataUrl) return;
-  tab.pane.style.backgroundImage = `url("${dataUrl}")`;
+  const version = ++tab.backdropVersion;
+  let displayedDataUrl = dataUrl;
+  try { displayedDataUrl = await pixelateBackdrop(dataUrl); } catch (_) { /* raw image fallback */ }
+  if (!tabs.has(id) || tab.backdropVersion !== version) return;
+  tab.pane.style.backgroundImage = `url("${displayedDataUrl}")`;
   tab.pane.classList.add('has-backdrop');
   tab.tabEl.classList.remove('generating');
   tab.tabEl.title = 'Drag outside this window to detach';

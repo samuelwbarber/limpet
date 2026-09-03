@@ -7,7 +7,7 @@ const { spawn } = require('child_process');
 
 const LOCAL_AI_DIR = path.join(__dirname, '..', 'local-ai');
 const SD_EXE = path.join(LOCAL_AI_DIR, 'bin', 'sd-cli.exe');
-const MODEL = path.join(LOCAL_AI_DIR, 'models', 'lcm-dreamshaper-v7-f16.gguf');
+const MODEL = path.join(LOCAL_AI_DIR, 'models', 'sdxs-512-tinySDdistilled_Q8_0.gguf');
 const OUTPUT_DIR = path.join(LOCAL_AI_DIR, 'backgrounds');
 const MIN_OUTPUT_CHARS = 3000;
 const UPDATE_OUTPUT_CHARS = 9000;
@@ -265,10 +265,10 @@ function buildBackdropPlan(snapshot, profile = null, conversationTitle = '') {
     : choice.scene;
   const prompt = [
     title
-      ? `Clear high-contrast digital illustration representing ${title}: ${titleSubject}.`
-      : `Clear high-contrast digital illustration of ${choice.scene}.`,
-    'The single main subject is large, centered, sharply defined and immediately recognizable at a glance, with a bold silhouette and clearly separated functional parts.',
-    'Polished game concept art, crisp edges, rich distinct colors, simple dark navy background, subtle indigo and lavender accents, generous empty space around the subject, no atmospheric haze, no text, no letters, no labels, no logos, no user interface, not a terminal screenshot.',
+      ? `Clear high-contrast 16-bit pixel art representing ${title}: ${titleSubject}.`
+      : `Clear high-contrast 16-bit pixel art of ${choice.scene}.`,
+    'Exactly one main subject, isolated, large, centered, front-facing and immediately recognizable at a glance, with a bold chunky silhouette and clearly separated functional parts.',
+    'Low-resolution blocky game art, hard square pixel edges, limited rich color palette, simple dark navy background, subtle indigo and lavender accents, generous empty space around the subject, no surrounding copies, no scenery, no atmospheric haze, no text, no letters, no labels, no logos, no user interface, not a terminal screenshot.',
   ].join(' ');
   return {
     prompt,
@@ -299,16 +299,20 @@ function outputPath(sessionId) {
   return path.join(OUTPUT_DIR, `session-${sessionId}-${Date.now()}.png`);
 }
 
-function generateLocalImage({ prompt, destination, onSpawn }) {
-  const negative = 'text, letters, words, signage, captions, watermark, logo, terminal screenshot, user interface, blur, blurry, haze, hazy, fog, muddy, washed out, monochrome, low contrast, faint subject, clutter, repeated subject, duplicate objects, multiple machines, rows of machines, mascot, limpet, group of characters';
-  const threads = String(Math.min(8, os.cpus().length));
-  const args = [
+function generatorArguments({ prompt, destination, threads }) {
+  const negative = 'text, letters, words, signage, captions, watermark, logo, terminal screenshot, user interface, painting, painterly, photo, photorealistic, smooth gradients, antialiasing, blur, blurry, haze, hazy, fog, muddy, washed out, monochrome, low contrast, faint subject, clutter, repeated subject, duplicate objects, multiple machines, rows of machines, mascot, limpet, group of characters';
+  return [
     '-m', MODEL, '-p', prompt, '-n', negative,
-    '--sampling-method', 'lcm', '--steps', '8', '--cfg-scale', '1.0',
-    '-W', '640', '-H', '384', '--rng', 'cpu', '--seed', '-1',
+    '--steps', '1', '--cfg-scale', '1.0',
+    '-W', '512', '-H', '320', '--rng', 'cpu', '--seed', '-1',
     '--threads', threads,
     '-o', destination,
   ];
+}
+
+function generateLocalImage({ prompt, destination, onSpawn }) {
+  const threads = String(Math.min(8, os.cpus().length));
+  const args = generatorArguments({ prompt, destination, threads });
   return new Promise((resolve, reject) => {
     const child = spawn(SD_EXE, args, {
       cwd: path.dirname(SD_EXE), windowsHide: true,
@@ -322,8 +326,8 @@ function generateLocalImage({ prompt, destination, onSpawn }) {
     child.stderr.on('data', collect);
     const timer = setTimeout(() => {
       try { child.kill(); } catch (_) {}
-      reject(new Error('local image generation timed out after 15 minutes'));
-    }, 15 * 60 * 1000);
+      reject(new Error('local image generation timed out after 5 minutes'));
+    }, 5 * 60 * 1000);
     child.on('error', (error) => { clearTimeout(timer); reject(error); });
     child.on('exit', (code) => {
       clearTimeout(timer);
@@ -337,5 +341,6 @@ module.exports = {
   MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
   cleanSnapshot, extractTopics, cleanConversationTitle,
   createTopicProfile, updateTopicProfile, profileTopics,
-  planScene, buildBackdropPlan, buildPrompt, backendStatus, outputPath, generateLocalImage,
+  planScene, buildBackdropPlan, buildPrompt, backendStatus, outputPath,
+  generatorArguments, generateLocalImage,
 };

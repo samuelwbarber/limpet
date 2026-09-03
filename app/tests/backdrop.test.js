@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   cleanSnapshot, extractTopics, cleanConversationTitle, createTopicProfile, updateTopicProfile,
-  profileTopics, planScene, buildBackdropPlan, buildPrompt,
+  profileTopics, planScene, buildBackdropPlan, buildPrompt, backendStatus, generatorArguments,
 } = require('../src/backdrop');
 
 test('cleans URLs, long values, secrets, duplicates, and control characters', () => {
@@ -116,4 +116,13 @@ test('ignores generic or sensitive terminal titles and uses the profile fallback
   const plan = buildBackdropPlan('routine output', profile, 'limpet');
   assert.equal(plan.source, 'profile');
   assert.match(plan.prompt, /folded map/);
+});
+
+test('configures the lightweight SDXS generator for one-step output', () => {
+  const args = generatorArguments({ prompt: 'pixel art slot machine', destination: 'result.png', threads: '4' });
+  assert.match(backendStatus().model, /sdxs-512-tinySDdistilled_Q8_0\.gguf$/);
+  assert.deepEqual(args.slice(args.indexOf('--steps'), args.indexOf('--steps') + 2), ['--steps', '1']);
+  assert.deepEqual(args.slice(args.indexOf('--cfg-scale'), args.indexOf('--cfg-scale') + 2), ['--cfg-scale', '1.0']);
+  assert.deepEqual(args.slice(args.indexOf('-W'), args.indexOf('-W') + 4), ['-W', '512', '-H', '320']);
+  assert.ok(!args.includes('lcm'));
 });

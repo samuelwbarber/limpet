@@ -45,13 +45,18 @@ async function type(page, text) {
   check('second PTY is ready before detach', !!(await waitFor(async () => (await screenText(source)).includes('DETACH_READY_7733'), 8000)));
 
   const detachedWindow = electronApp.waitForEvent('window', { timeout: 10000 });
-  const tabBox = await source.locator('.tab.active').boundingBox();
-  const viewport = await source.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  await source.mouse.move(tabBox.x + 30, tabBox.y + tabBox.height / 2);
-  await source.mouse.down();
-  await source.mouse.move(tabBox.x + 50, tabBox.y + tabBox.height / 2, { steps: 4 });
-  await source.mouse.move(viewport.width + 120, Math.min(120, viewport.height - 10), { steps: 12 });
-  await source.mouse.up();
+  // Native drag events become unreliable when CI runs through a remote Windows
+  // desktop with mixed DPI. Dispatch the same browser event sequence at an
+  // unambiguously external screen point so the detach path stays deterministic.
+  await source.locator('.tab.active').evaluate((tab) => {
+    const dataTransfer = new DataTransfer();
+    const screenX = window.screenX + window.outerWidth + 120;
+    const screenY = window.screenY + 80;
+    const eventInit = { bubbles: true, cancelable: true, dataTransfer, screenX, screenY };
+    tab.dispatchEvent(new DragEvent('dragstart', eventInit));
+    tab.dispatchEvent(new DragEvent('drag', eventInit));
+    tab.dispatchEvent(new DragEvent('dragend', eventInit));
+  });
   const detached = await detachedWindow;
   detached.on('pageerror', (e) => pageErrors.push(e.message));
   check('source keeps its other tab', !!(await waitFor(() => source.locator('.tab').count().then((n) => n === 1), 10000)));

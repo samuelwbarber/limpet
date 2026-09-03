@@ -72,6 +72,28 @@ async function type(page, text) {
 
   check('prompt appears', !!(await waitFor(async () => /PS [A-Z]:/.test(await screenText(page)), 30000)));
 
+  const pixelCheck = await page.evaluate(async () => {
+    const source = document.createElement('canvas');
+    source.width = 32; source.height = 20;
+    const sourceContext = source.getContext('2d');
+    sourceContext.fillStyle = 'rgb(23, 117, 249)';
+    sourceContext.fillRect(0, 0, source.width, source.height);
+    const result = await window.pixelateBackdrop(source.toDataURL('image/png'));
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve; image.onerror = reject; image.src = result;
+    });
+    const output = document.createElement('canvas');
+    output.width = image.width; output.height = image.height;
+    const context = output.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const rgb = [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+    return { width: image.width, height: image.height, rgb };
+  });
+  check('backdrop is reduced to a quantized 160x100 pixel source',
+    pixelCheck.width === 160 && pixelCheck.height === 100 &&
+    pixelCheck.rgb.every((value) => value === 255 || value % 32 === 0));
+
   // ---- peek renders pixels, prompt returns below ----
   const before = await imagePixels(page);
   await type(page, `peek ${TEST_PNG}`);

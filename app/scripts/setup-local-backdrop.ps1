@@ -10,13 +10,14 @@ $binDir = Join-Path $localRoot 'bin'
 $modelDir = Join-Path $localRoot 'models'
 $downloadDir = Join-Path $localRoot 'downloads'
 $exe = Join-Path $binDir 'sd-cli.exe'
-$model = Join-Path $modelDir 'lcm-dreamshaper-v7-f16.gguf'
+$model = Join-Path $modelDir 'sdxs-512-tinySDdistilled_Q8_0.gguf'
+$previousModel = Join-Path $modelDir 'lcm-dreamshaper-v7-f16.gguf'
 $legacyIncompleteModel = Join-Path $modelDir 'lcm-dreamshaper-v7.safetensors'
 $generatorArchive = 'sd-master-6b3edaa-bin-win-cpu-x64.zip'
 $generatorUrl = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-841-6b3edaa/$generatorArchive"
 $generatorSha256 = 'a36edb067de09fc9f70fcd193e519ff62592f860744558d7918762c7c3401050'
-$modelUrl = 'https://huggingface.co/Steward/lcm-dreamshaper-v7-gguf/resolve/main/LCM_Dreamshaper_v7-f16.gguf'
-$modelSha256 = '0642060766117fdeb8cae0ccdc73ee974ac5779be1112d0a82f2b965bbd00e15'
+$modelUrl = 'https://huggingface.co/concedo/sdxs-512-tinySDdistilled-GGUF/resolve/main/sdxs-512-tinySDdistilled_Q8_0.gguf'
+$modelSha256 = '409ab23582ee074c6b9d5395784fc0741b0599fb9d138686c69087c71678eb6a'
 
 New-Item -ItemType Directory -Force -Path $binDir, $modelDir, $downloadDir | Out-Null
 
@@ -63,19 +64,26 @@ else {
 }
 
 $modelOk = (Test-Path -LiteralPath $model) -and
-    ((Get-Item -LiteralPath $model).Length -eq 2134675232) -and
+    ((Get-Item -LiteralPath $model).Length -eq 682847200) -and
     ((Get-Sha256 $model) -eq $modelSha256)
 if (-not $modelOk) {
     $driveName = [IO.Path]::GetPathRoot($localRoot).TrimEnd(':\')
     $drive = Get-PSDrive -Name $driveName
-    if ($drive.Free -lt 4GB) { throw 'At least 4 GB of free disk space is required for the local backdrop model.' }
-    Write-Host 'Downloading the 2.0 GB local LCM image model (one time only)...' -ForegroundColor Cyan
+    if ($drive.Free -lt 2GB) { throw 'At least 2 GB of free disk space is required for the local backdrop model.' }
+    Write-Host 'Downloading the 651 MB local one-step image model (one time only)...' -ForegroundColor Cyan
     Download-File $modelUrl $model
     Write-Host 'Verifying model checksum...' -ForegroundColor Cyan
     if ((Get-Sha256 $model) -ne $modelSha256) { throw 'Local image model checksum mismatch.' }
 }
 else {
     Write-Host 'Local image model is already installed.' -ForegroundColor DarkGray
+}
+
+# Do not delete the previous model automatically. An older Limpet window may
+# still be running code that references it; removing it here would disrupt that
+# active session. It is safe to remove manually after every older window closes.
+if (Test-Path -LiteralPath $previousModel) {
+    Write-Host "Previous model retained for active older windows: $previousModel" -ForegroundColor DarkGray
 }
 
 # An early development setup pointed at the upstream Diffusers UNet-only file,
