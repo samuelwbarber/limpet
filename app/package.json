@@ -8,8 +8,8 @@
     "start": "electron .",
     "demo:backdrop": "node scripts/show-backdrop-demo.js",
     "setup:backdrop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-backdrop.ps1",
-    "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js",
-    "test:e2e": "node tests/e2e.js && node tests/ctrlc.js && node tests/tabs-links.js"
+    "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js tests/accounts.test.js tests/handoff.test.js tests/codex-import.test.js",
+    "test:e2e": "node tests/e2e.js && node tests/ctrlc.js && node tests/tabs-links.js && node tests/accounts.js"
   },
   "license": "MIT",
   "devDependencies": {

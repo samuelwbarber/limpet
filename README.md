@@ -26,16 +26,6 @@ objects and every normal cmdlet keep working.
 
 Full command list: [`docs/COMMANDS.md`](docs/COMMANDS.md)
 
-## Tabs
-
-Multiple shells in one window, like Windows Terminal. `Ctrl+Shift+T` opens a
-tab, `Ctrl+Tab` cycles, `Ctrl+Shift+W` (or `exit`, or middle-click) closes one.
-Each tab is its own ConPTY session, so an `xssh` reconnecting in one tab never
-touches the build running in another. Tab titles follow the shell's current
-folder.
-
-<p align="center"><img src="docs/media/tabs.gif" width="840" alt="tabs demo: two shells in one window, switching with Ctrl+Tab" /></p>
-
 ## xssh
 
 A drop-in for `ssh` that reconnects with your key when the link drops. British train Wi-Fi, a sleeping laptop, a flaky VPN: instead of a dead terminal you
@@ -107,33 +97,74 @@ Because sometimes the build takes a while. `reels` docks a vertical feed
 (Instagram Reels by default, or any URL you pass) on the right side of the
 terminal. `reels` again to dismiss.
 
-## Two Claude accounts, one history
+## Backgrounds
+
+Right-click a tab and pick a background: the standard limpet colour (the
+default), a handful of other dark colours, or **Generative**, which paints each
+tab with a small pixel-art scene of whatever that tab is working on. The scene
+is made by a local image model, so nothing about your terminal leaves the
+machine; it updates as the conversation moves on.
+
+<p align="center"><img src="docs/media/backdrop.gif" width="840" alt="background demo: picking a colour, then the generative backdrop appearing" /></p>
+
+## Three Claude accounts, one history
 
 Keep a personal and a work [Claude Code](https://www.claude.com/product/claude-code)
-account both signed in at once, and share your session history across them.
+account signed in alongside your usual one, and share your session history
+across all three.
 
 ```powershell
+claude         # your usual account (config in ~/.claude)
 claude1        # personal account
 claude2        # work account
 ```
 
-Each command runs Claude against its own config directory (`~/.claude-1`,
-`~/.claude-2`), so they hold separate logins — `/login` once in each and both
-stay authenticated; `claude1` is always personal, `claude2` always work. Plain
-`claude` is left alone and keeps using `~/.claude`.
+`claude1` and `claude2` run Claude against their own config directory
+(`~/.claude-1`, `~/.claude-2`), so they hold separate logins — `/login` once in
+each and both stay authenticated; `claude1` is always personal, `claude2` always
+work. Plain `claude` keeps its own login in `~/.claude`.
 
-Both accounts' session transcripts live in one shared store (limpet junctions
-each config's `projects/` folder to `~/.claude-shared/projects`), so **`/resume`
-lists the same conversations whichever account you're in**. Start something on
-your personal account, pick it up on work, and back again. Transcripts are named
-by a unique id, so the two accounts can run side by side without ever colliding,
-and the wiring is created automatically the first time you run `claude1` or
-`claude2` — a pre-existing `projects/` folder is folded into the shared store,
-never overwritten.
+All three accounts' session transcripts live in one shared store (limpet
+junctions each config's `projects/` folder to `~/.claude-shared/projects`), so
+**`/resume` lists the same conversations whichever account you're in**. Start
+something on your personal account, pick it up on work, and back again.
+Transcripts are named by a unique id, so the accounts can run side by side
+without ever colliding. The wiring is created automatically the first time you
+run `claude1` or `claude2` (or by hand with `Sync-LimpetClaudeHistory`): any
+pre-existing `projects/` folder, plain `claude`'s included, is folded into the
+shared store file by file, never overwritten. A folder that a running session
+still has open is left alone and picked up on the next launch.
+
+Only the transcripts are shared. The up-arrow prompt history stays per account,
+because Claude Code refuses to read that file through a link.
 
 Any arguments pass straight through (`claude1 --resume`, `claude2 -p "..."`).
-To rename them or add a third, copy the `claude1`/`claude2` functions in
-`shell/Limpet.psm1` and point them at a different config directory.
+To rename them or add another, copy the `claude1`/`claude2` functions in
+`shell/Limpet.psm1`, point them at a different config directory, and add that
+directory to `$script:LimpetClaudeConfigDirs` so it joins the shared store.
+
+### Switch account, or agent, mid-chat
+
+In the limpet app, right-click a tab to see the three Claude accounts and
+Codex, with the one that tab's chat is running on marked. Pick another and
+limpet exits the running agent and brings the same conversation up under the
+pick, in the same shell:
+
+- **Claude to Claude**: `<account> --resume <session id>`. Nothing is copied;
+  the transcript is shared.
+- **Claude to Codex**: Codex's own importer turns the transcript into a Codex
+  thread, then `codex resume <thread id>`.
+- **Codex to Claude**: limpet writes the chat out as a Claude transcript and
+  resumes it, so Claude remembers it natively.
+- If a conversion fails, the chat is rendered to a Markdown handoff file and
+  the new agent starts with a one-line "continue from here" prompt pointing at
+  it.
+
+<p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: a Claude Code chat moved to Codex from the tab menu, conversation intact" /></p>
+
+Handy when one subscription hits its limit. With nothing running in the tab,
+picking an account just starts it there. Moving to Codex sends the conversation
+to OpenAI once Codex replies, so pick with that in mind.
 
 ## Install
 
@@ -189,6 +220,6 @@ CI runs all of these on every push (see `.github/workflows/ci.yml`):
 bash tests/test-remote-sh.sh   # remote helpers + the real xssh bootstrap templates (Linux/WSL)
 
 cd app
-npm test                   # terminal-protocol unit tests (node --test)
-npm run test:e2e           # launches the real app: peek, resize survival, reels, download
+npm test                   # terminal-protocol + account-switch unit tests (node --test)
+npm run test:e2e           # launches the real app: peek, resize survival, reels, download, tab detach, account switch
 ```

@@ -646,7 +646,7 @@ function limpet {
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
-    Write-Host '  Claude   : claude1 / claude2 (two signed-in accounts, one synced history)' -ForegroundColor DarkGray
+    Write-Host '  Claude   : claude / claude1 / claude2 (separate logins, one synced /resume history)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
@@ -656,11 +656,22 @@ function limpet {
 # `claude1` and `claude2` each launch the Claude Code CLI against their own
 # config directory (~/.claude-1, ~/.claude-2), so each stays logged in to a
 # different account -- e.g. personal and work -- with no re-authenticating.
-# Both configs' `projects` folders are junctioned to one shared store, so
-# `/resume` shows the same session history from either account. Session
-# transcripts are named by unique id, so the two never collide even running
-# side by side. Plain `claude` is untouched and still uses ~/.claude.
+# Plain `claude` is the third account and keeps its own login in ~/.claude.
+#
+# All three configs' `projects` folders are junctioned to one shared store
+# (~/.claude-shared/projects), so `/resume` lists the same sessions whichever
+# account you're in. Transcripts are named by unique id, so accounts never
+# collide even running side by side. The wiring is made the first time
+# claude1/claude2 runs (or on demand with Sync-LimpetClaudeHistory); a
+# pre-existing solo `projects` folder is folded into the shared store,
+# merged file by file, never clobbered.
+#
+# Only `projects/` is shared. The up-arrow prompt history (history.jsonl)
+# stays per account: Claude Code refuses to read that file through a link.
 # ---------------------------------------------------------------------------
+
+# Every account's config dir, relative to $HOME. Plain `claude` first.
+$script:LimpetClaudeConfigDirs = @('.claude', '.claude-1', '.claude-2')
 
 function Get-LimpetClaudeExe {
     # Resolve the real Claude Code launcher (npm shim or exe). Our wrappers are
@@ -671,31 +682,140 @@ function Get-LimpetClaudeExe {
     return $null
 }
 
-function Sync-LimpetClaudeHistory {
-    # Make $ConfigDir\projects a junction to a single shared store so every
-    # account resumes the same sessions. Migrates a pre-existing solo folder
-    # into the shared store once; never clobbers.
-    param([Parameter(Mandatory)][string]$ConfigDir)
-    $shared = Join-Path $HOME '.claude-shared\projects'
-    New-Item -ItemType Directory -Force -Path $shared | Out-Null
+function Get-LimpetClaudeSharedStore { Join-Path $HOME '.claude-shared\projects' }
+
+function Test-LimpetSamePath([string]$A, [string]$B) {
+    # Junction targets can come back with a \\?\ prefix or a trailing slash.
+    $na = [IO.Path]::GetFullPath(($A -replace '^\\\\\?\\', '')).TrimEnd('\', '/')
+    $nb = [IO.Path]::GetFullPath(($B -replace '^\\\\\?\\', '')).TrimEnd('\', '/')
+    return [string]::Equals($na, $nb, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Merge-LimpetDirectory {
+    # Move everything under $Source into $Dest, recursing where a folder
+    # already exists on both sides. Same-name files: identical -> the extra
+    # copy is dropped; different -> the larger one keeps the real name and
+    # the other is kept alongside as <name>.conflict-<stamp> (no longer a
+    # *.jsonl, so /resume doesn't list it, but nothing is lost). Anything
+    # that can't be moved (a file open in a running session) stays put and
+    # is counted; the count is returned. Source folders emptied by the merge
+    # are removed. Same volume throughout, so every move is a rename.
+    param([string]$Source, [string]$Dest, [string]$Stamp)
+    $left = 0
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath $Source -Force)) {
+        $target = Join-Path $Dest $item.Name
+        try {
+            if ($item.PSIsContainer) {
+                if (Test-Path -LiteralPath $target) {
+                    $left += Merge-LimpetDirectory -Source $item.FullName -Dest $target -Stamp $Stamp
+                }
+                else {
+                    Move-Item -LiteralPath $item.FullName -Destination $target -ErrorAction Stop
+                }
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $target)) {
+                Move-Item -LiteralPath $item.FullName -Destination $target -ErrorAction Stop
+                continue
+            }
+            $existing = Get-Item -LiteralPath $target -Force
+            if ($existing.Length -eq $item.Length -and
+                (Get-FileHash -LiteralPath $existing.FullName -Algorithm SHA256).Hash -eq
+                (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash) {
+                Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop   # exact duplicate
+                continue
+            }
+            $conflict = Join-Path $Dest ('{0}.conflict-{1}' -f $item.Name, $Stamp)
+            if ($item.Length -gt $existing.Length) {
+                # The incoming file is the fuller transcript: it takes the real name.
+                Move-Item -LiteralPath $existing.FullName -Destination $conflict -ErrorAction Stop
+                Move-Item -LiteralPath $item.FullName -Destination $target -ErrorAction Stop
+            }
+            else {
+                Move-Item -LiteralPath $item.FullName -Destination $conflict -ErrorAction Stop
+            }
+        }
+        catch { $left++ }
+    }
+    if ($left -eq 0) { Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue }
+    return $left
+}
+
+function Sync-LimpetClaudeConfigDir {
+    # Wire one config dir's projects/ to the shared store. Returns $true when
+    # that account is fully synced.
+    param([string]$ConfigDir, [string]$Shared, [string]$Stamp)
     New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
     $link = Join-Path $ConfigDir 'projects'
     $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
-    if ($item) {
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }  # already junctioned
-        Get-ChildItem -LiteralPath $link -Force | ForEach-Object {
-            $dest = Join-Path $shared $_.Name
-            if (-not (Test-Path -LiteralPath $dest)) {
-                Move-Item -LiteralPath $_.FullName -Destination $dest -Force
-            }
+    if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        $target = @($item.Target)[0]
+        if (-not $target -or -not (Test-LimpetSamePath $target $Shared)) {
+            Write-Warning "limpet: $link already links to '$target', not the shared store; leaving it alone (history not synced for this account)."
+            return $false
         }
-        try { Remove-Item -LiteralPath $link -Recurse -Force -ErrorAction Stop }
+        # Already junctioned; fall through to fold in any leftovers.
+    }
+    elseif ($item) {
+        # A real folder from solo use. Swap it out from under Claude with one
+        # atomic rename so the junction goes in straight away (a live session
+        # keeps appending, now into the shared store), then fold the old
+        # contents in. If the rename is refused nothing has changed.
+        $staging = "projects.migrating-$Stamp"
+        try { Rename-Item -LiteralPath $link -NewName $staging -ErrorAction Stop }
         catch {
-            Write-Warning "limpet: couldn't replace $link with the shared junction; history not synced for this account."
-            return
+            Write-Warning "limpet: couldn't move $link aside ($($_.Exception.Message)). Is a Claude session open there? History isn't synced for this account yet; it'll be retried next launch."
+            return $false
         }
     }
-    New-Item -ItemType Junction -Path $link -Target $shared -ErrorAction SilentlyContinue | Out-Null
+    if (-not (Test-Path -LiteralPath $link)) {
+        try { New-Item -ItemType Junction -Path $link -Target $Shared -ErrorAction Stop | Out-Null }
+        catch {
+            Write-Warning "limpet: couldn't create the junction $link -> $Shared ($($_.Exception.Message)); history not synced for this account."
+            return $false
+        }
+    }
+    # Fold in anything set aside, now or by an earlier interrupted run.
+    $ok = $true
+    foreach ($stage in @(Get-ChildItem -LiteralPath $ConfigDir -Directory -Filter 'projects.migrating-*' -Force -ErrorAction SilentlyContinue)) {
+        $left = Merge-LimpetDirectory -Source $stage.FullName -Dest $Shared -Stamp $Stamp
+        if ($left -gt 0) {
+            Write-Warning "limpet: $left item(s) under $($stage.FullName) couldn't be moved into the shared store (open in a running session?). They'll be folded in next launch."
+            $ok = $false
+        }
+    }
+    return $ok
+}
+
+function Sync-LimpetClaudeHistory {
+    <#
+    .SYNOPSIS
+    Point every Claude Code account's projects/ folder at the shared store so
+    /resume lists the same sessions from claude, claude1 and claude2.
+    .DESCRIPTION
+    Runs automatically whenever claude1 or claude2 launches. Run it by hand
+    after using plain claude on a machine where claude1/claude2 have never
+    been started, or to check the wiring. Returns $true when every account is
+    synced; otherwise a warning says which one isn't and why.
+    #>
+    [CmdletBinding()]
+    param(
+        # Config dirs to wire up. Default: ~/.claude, ~/.claude-1, ~/.claude-2.
+        [string[]]$ConfigDir,
+        # Where the shared transcripts live.
+        [string]$Shared = (Get-LimpetClaudeSharedStore)
+    )
+    if (-not $ConfigDir) {
+        $ConfigDir = @($script:LimpetClaudeConfigDirs | ForEach-Object { Join-Path $HOME $_ })
+    }
+    $stamp = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), ([guid]::NewGuid().ToString('N').Substring(0, 4))
+    New-Item -ItemType Directory -Force -Path $Shared | Out-Null
+    $ok = $true
+    foreach ($dir in $ConfigDir) {
+        if (-not (Sync-LimpetClaudeConfigDir -ConfigDir $dir -Shared $Shared -Stamp $stamp)) { $ok = $false }
+    }
+    return $ok
 }
 
 function Invoke-LimpetClaude {
@@ -708,7 +828,9 @@ function Invoke-LimpetClaude {
         Write-Warning 'limpet: the claude CLI is not on PATH. Install Claude Code, then rerun claude1/claude2.'
         return
     }
-    Sync-LimpetClaudeHistory -ConfigDir $ConfigDir
+    # Wire up every account, not just this one, so plain claude's history
+    # lands in the shared store too.
+    Sync-LimpetClaudeHistory | Out-Null
     # CLAUDE_CONFIG_DIR is process-wide; scope it to this launch so plain
     # `claude` keeps using ~/.claude afterwards.
     $prev = $env:CLAUDE_CONFIG_DIR
@@ -780,5 +902,5 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     }
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet, claude1, claude2,
+Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet, claude1, claude2, Sync-LimpetClaudeHistory,
     Enable-LimpetHello, Disable-LimpetHello, Get-LimpetHelloStatus, Get-LimpetHelloPassphrase, Test-LimpetHelloEnrolled, Protect-LimpetSecret, Unprotect-LimpetSecret, Get-LimpetAskpass, Get-LimpetKeyPath
