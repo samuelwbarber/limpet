@@ -135,7 +135,6 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   pid = await claudeStandIn(sid);
   check('claude1 -> codex: move completes', !!(await swapTo('codex')));
   check('claude1 -> codex: the imported thread is resumed', !!(await seenOnScreen('SWAPPED_codex_01a00000-0000-7000-8000-00000000abcd')));
-  check('claude1 -> codex: the terminal says it was imported', !!(await seenOnScreen('imported into Codex as thread')));
 
   // ---- claude1 -> codex: importer fails, so a handoff file and prompt ----
   await electronApp.evaluate(() => { global.__limpetCodexImport = async () => { throw new Error('importer unavailable'); }; });

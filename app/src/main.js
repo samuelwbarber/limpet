@@ -823,6 +823,8 @@ async function switchAgent(sess, cmd) {
       note(31, `couldn't stop the running ${current.cmd} (pid ${current.pid}); not switching.`);
       return { ok: false, reason: 'still running' };
     }
+    // Let the shell redraw its prompt before anything is printed or typed.
+    if (current) await sleep(300);
     // Tests capture the command instead of launching an agent.
     const launch = global.__limpetClaudeLaunch || accounts.launchCommand;
     let options = {};
