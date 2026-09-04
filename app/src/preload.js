@@ -19,4 +19,7 @@ contextBridge.exposeInMainWorld('limpet', {
   clipboardPaste: () => ipcRenderer.invoke('clip:read'),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   onReels: (cb) => ipcRenderer.on('reels:toggle', (_e, url) => cb(url)),
+  claudeAccounts: (id) => ipcRenderer.invoke('claude:accounts', id),
+  claudeSession: (id) => ipcRenderer.invoke('claude:session', id),
+  claudeSwitch: (id, cmd) => ipcRenderer.invoke('claude:switch', { id, cmd }),
 });

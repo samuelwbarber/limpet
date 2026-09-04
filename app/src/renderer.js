@@ -35,6 +35,8 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   tabEl.addEventListener('mousedown', (e) => { if (e.target !== closeEl) activate(id); });
   // Middle-click closes, like every tabbed thing on earth.
   tabEl.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(id); });
+  // Right-click: pick which Claude account this tab's chat runs under.
+  tabEl.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); showAccountMenu(id, tabEl); });
   let dragPoint = null;
   tabEl.addEventListener('dragstart', (e) => {
     if (e.target === closeEl) { e.preventDefault(); return; }
@@ -124,6 +126,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
     splitPending: [], peekTimer: null, backdropTimer: null, backdropVersion: 0,
   };
   tabs.set(id, tab);
+  applyBackground(tab, id);
   // A resize makes ConPTY repaint the viewport and wipe peek images; redraw
   // them once the repaint settles.
   term.onResize(() => schedulePeekRedraw(tab));
@@ -203,6 +206,7 @@ function terminalSnapshot(term) {
 }
 
 function scheduleBackdropCandidate(id, tab) {
+  if (backgroundPref().mode !== 'generative') return;
   clearTimeout(tab.backdropTimer);
   tab.backdropTimer = setTimeout(async () => {
     tab.backdropTimer = null;
@@ -278,9 +282,12 @@ window.limpet.onBackdrop(async ({ id, dataUrl }) => {
   let displayedDataUrl = dataUrl;
   try { displayedDataUrl = await pixelateBackdrop(dataUrl); } catch (_) { /* raw image fallback */ }
   if (!tabs.has(id) || tab.backdropVersion !== version) return;
-  tab.pane.style.backgroundImage = `url("${displayedDataUrl}")`;
-  tab.pane.classList.add('has-backdrop');
   tab.tabEl.classList.remove('generating');
+  tab.backdropUrl = displayedDataUrl;
+  if (backgroundPref().mode === 'generative') {
+    tab.pane.style.backgroundImage = `url("${displayedDataUrl}")`;
+    tab.pane.classList.add('has-backdrop');
+  }
   tab.tabEl.title = 'Drag outside this window to detach';
 });
 
@@ -448,6 +455,164 @@ function cycleTabs(dir) {
 }
 
 document.getElementById('newtab').addEventListener('click', () => newTab());
+
+// ---- terminal background ----
+// A plain colour (the standard limpet one by default) or the generative
+// backdrop drawn from what each tab is working on. Picked from the tab menu,
+// applied to every tab, remembered across launches.
+const BACKGROUNDS = [
+  { name: 'Limpet', color: '#1e1e2e' },
+  { name: 'Blue', color: '#16294d' },
+  { name: 'Black', color: '#000000' },
+  { name: 'Slate', color: '#2a2d3a' },
+  { name: 'Forest', color: '#14291f' },
+  { name: 'Plum', color: '#2b1b36' },
+  { name: 'Ocean', color: '#0f2a33' },
+];
+const DEFAULT_BACKGROUND = { mode: 'color', color: BACKGROUNDS[0].color };
+let backgroundCache = null;
+
+function backgroundPref() {
+  if (backgroundCache) return backgroundCache;
+  try {
+    const saved = JSON.parse(localStorage.getItem('limpet.background') || 'null');
+    if (saved && saved.mode === 'generative') backgroundCache = { mode: 'generative' };
+    else if (saved && saved.mode === 'color' && BACKGROUNDS.some((b) => b.color === saved.color)) backgroundCache = { mode: 'color', color: saved.color };
+  } catch (_) { /* storage unavailable: use the default */ }
+  if (!backgroundCache) backgroundCache = { ...DEFAULT_BACKGROUND };
+  return backgroundCache;
+}
+
+function setBackground(pref) {
+  backgroundCache = pref;
+  try { localStorage.setItem('limpet.background', JSON.stringify(pref)); } catch (_) { /* not remembered, still applied */ }
+  for (const [id, t] of tabs) applyBackground(t, id);
+}
+
+function applyBackground(tab, id) {
+  const pref = backgroundPref();
+  if (pref.mode === 'color') {
+    clearTimeout(tab.backdropTimer);
+    tab.backdropTimer = null;
+    tab.pane.style.backgroundImage = '';
+    tab.pane.style.backgroundColor = pref.color;
+    tab.pane.classList.remove('has-backdrop');
+    tab.tabEl.classList.remove('generating');
+    return;
+  }
+  tab.pane.style.backgroundColor = '';
+  if (tab.backdropUrl) {
+    tab.pane.style.backgroundImage = `url("${tab.backdropUrl}")`;
+    tab.pane.classList.add('has-backdrop');
+  } else if (id !== undefined) {
+    scheduleBackdropCandidate(id, tab);
+  }
+}
+
+// ---- Claude account menu: right-click a tab ----
+// Lists the limpet Claude accounts (claude / claude1 / claude2), marks the one
+// whose Claude Code is running under this tab's shell, and on a pick asks the
+// main process to move the chat: exit that Claude and `--resume` the same
+// session under the other login. Session history is shared between the
+// accounts (see README), so the whole conversation comes across.
+let accountMenu = null;
+
+function closeAccountMenu() {
+  if (!accountMenu) return;
+  accountMenu.remove();
+  accountMenu = null;
+}
+document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.contains(e.target)) closeAccountMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAccountMenu(); }, true);
+window.addEventListener('blur', closeAccountMenu);
+
+async function showAccountMenu(id, tabEl) {
+  closeAccountMenu();
+  const menu = document.createElement('div');
+  menu.className = 'account-menu';
+  menu.dataset.sessionId = String(id);
+  const r = tabEl.getBoundingClientRect();
+  menu.style.left = `${Math.round(r.left)}px`;
+  menu.style.top = `${Math.round(r.bottom + 2)}px`;
+  const head = document.createElement('div');
+  head.className = 'head';
+  head.textContent = 'Claude account · looking for a session…';
+  menu.appendChild(head);
+  document.body.appendChild(menu);
+  accountMenu = menu;
+
+  const items = new Map();
+  for (const a of await window.limpet.claudeAccounts(id)) {
+    if (accountMenu !== menu) return;
+    const item = document.createElement('div');
+    item.className = 'item';
+    item.dataset.cmd = a.cmd;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = a.cmd;
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = a.email || (a.loggedIn ? 'signed in' : 'not signed in');
+    item.append(name, who);
+    item.addEventListener('click', () => pickAccount(id, a.cmd, menu));
+    menu.appendChild(item);
+    items.set(a.cmd, item);
+  }
+
+  // Background: colour swatches, or the generative backdrop.
+  const bg = document.createElement('div');
+  bg.className = 'bg';
+  const bgLabel = document.createElement('span');
+  bgLabel.className = 'label';
+  bgLabel.textContent = 'Background';
+  bg.appendChild(bgLabel);
+  const pref = backgroundPref();
+  for (const b of BACKGROUNDS) {
+    const swatch = document.createElement('button');
+    swatch.className = 'swatch';
+    swatch.style.backgroundColor = b.color;
+    swatch.title = b.name;
+    swatch.dataset.color = b.color;
+    if (pref.mode === 'color' && pref.color === b.color) swatch.classList.add('selected');
+    swatch.addEventListener('click', () => { setBackground({ mode: 'color', color: b.color }); closeAccountMenu(); });
+    bg.appendChild(swatch);
+  }
+  const gen = document.createElement('button');
+  gen.className = 'gen';
+  gen.textContent = 'Generative';
+  gen.title = 'A local AI image of whatever each tab is working on';
+  if (pref.mode === 'generative') gen.classList.add('selected');
+  gen.addEventListener('click', () => { setBackground({ mode: 'generative' }); closeAccountMenu(); });
+  bg.appendChild(gen);
+  menu.appendChild(bg);
+
+  // Finding the session walks the process tree (about a second); the list is
+  // usable meanwhile.
+  const current = await window.limpet.claudeSession(id);
+  if (accountMenu !== menu) return;
+  menu.dataset.current = current ? current.cmd : '';
+  if (current) {
+    head.textContent = `Chat is on ${current.cmd}${current.status ? ` (${current.status})` : ''} · pick another to move it`;
+    const item = items.get(current.cmd);
+    if (item) item.classList.add('current');
+  } else {
+    head.textContent = 'No Claude session in this tab · pick an account to start one';
+  }
+}
+
+async function pickAccount(id, cmd, menu) {
+  if (menu.classList.contains('busy')) return;
+  if (menu.dataset.current === cmd) { closeAccountMenu(); return; }
+  menu.classList.add('busy');
+  menu.querySelector('.head').textContent = `Moving this chat to ${cmd}…`;
+  try {
+    await window.limpet.claudeSwitch(id, cmd); // problems are reported in the terminal
+  } finally {
+    if (accountMenu === menu) closeAccountMenu();
+    const t = tabs.get(id);
+    if (t) t.term.focus();
+  }
+}
 
 // ---- drag-drop: paste files into the current session ----
 const dropEl = document.getElementById('drop');

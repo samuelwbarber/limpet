@@ -63,6 +63,34 @@
       color: #89b4fa; font: 16px 'Cascadia Mono', Consolas, monospace; pointer-events: none;
     }
     #drop.show { display: flex; }
+    /* right-click a tab: which Claude account the chat runs under */
+    .account-menu {
+      position: absolute; z-index: 20; min-width: 300px; padding: 4px;
+      background: #181825; border: 1px solid #313244; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45); color: #cdd6f4;
+      font: 12px 'Cascadia Mono', Consolas, monospace; user-select: none;
+    }
+    .account-menu .head { padding: 6px 10px 4px; color: #6c7086; white-space: nowrap; }
+    .account-menu .item {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 18px;
+      padding: 6px 10px; border-radius: 5px; cursor: pointer;
+    }
+    .account-menu .item:hover { background: #313244; }
+    .account-menu .item.current, .account-menu .item.current .who { color: #a6e3a1; }
+    .account-menu .item.current .name::after { content: ' ●'; }
+    .account-menu .who { color: #a6adc8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .account-menu.busy .item { pointer-events: none; opacity: 0.55; }
+    .account-menu .bg { display: flex; align-items: center; gap: 7px; padding: 8px 10px 6px; margin-top: 4px; border-top: 1px solid #313244; }
+    .account-menu .bg .label { color: #6c7086; margin-right: 4px; }
+    .account-menu .swatch { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #45475a; padding: 0; cursor: pointer; }
+    .account-menu .swatch:hover { border-color: #a6adc8; }
+    .account-menu .swatch.selected { border-color: #cdd6f4; box-shadow: 0 0 0 1px #cdd6f4; }
+    .account-menu .gen {
+      margin-left: auto; border: 1px solid #45475a; background: transparent; color: #a6adc8;
+      border-radius: 5px; padding: 2px 8px; cursor: pointer; font: inherit;
+    }
+    .account-menu .gen:hover { background: #313244; color: #cdd6f4; }
+    .account-menu .gen.selected { border-color: #a6e3a1; color: #a6e3a1; }
   </style>
 </head>
 <body>

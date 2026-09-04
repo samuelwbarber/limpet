@@ -11,6 +11,9 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const accounts = require('./accounts');
+const handoff = require('./handoff');
+const codexImport = require('./codex-import');
 const {
   MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -468,6 +471,7 @@ function startShell(sess) {
       p.onData((d) => forwardOutput(sess, d));
       p.onExit(() => sessionExited(sess));
       return {
+        pid: p.pid,
         write: (d) => { try { p.write(d); } catch (_) { /* ignore */ } },
         resize: (c, r) => { try { p.resize(c, r); } catch (_) { /* ignore */ } },
         kill: () => { try { p.kill(); } catch (_) { /* ignore */ } },
@@ -482,6 +486,7 @@ function startShell(sess) {
   cp.stderr.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.on('exit', () => sessionExited(sess));
   return {
+    pid: cp.pid,
     write: (d) => { try { cp.stdin.write(d); } catch (_) { /* ignore */ } },
     resize: () => { /* pipes can't resize */ },
     kill: () => { try { cp.kill(); } catch (_) { /* ignore */ } },
@@ -614,6 +619,230 @@ async function runBackdropQueue() {
     activeBackdropProcess = null;
     backdropRunning = false;
     runBackdropQueue();
+  }
+}
+
+// ---- Agent switching (right-click a tab) ----
+// Which agent/account is this tab's chat on, and move it to another. Between
+// Claude accounts it is `--resume <id>` in the same shell (their projects/
+// folders are one shared store, see Sync-LimpetClaudeHistory). Claude -> Codex
+// goes through Codex's own importer (codex-import.js); Codex -> Claude writes
+// a Claude transcript from the rollout (handoff.js) and resumes it. If either
+// conversion fails, the chat is rendered to a Markdown handoff file and the
+// new agent is started with a one-line prompt to continue from it.
+const claudeHome = () => process.env.LIMPET_CLAUDE_HOME || os.homedir();
+const accountIo = {
+  exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
+  readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
+};
+const claudeAccounts = () => accounts.ACCOUNTS.filter((a) => a.kind === 'claude');
+
+// The session file Claude Code keeps for every live process, tagged by account.
+function readClaudeSessionFiles() {
+  const out = [];
+  for (const { cmd, dir } of claudeAccounts()) {
+    const sessionsDir = path.join(claudeHome(), dir, 'sessions');
+    let names = [];
+    try { names = fs.readdirSync(sessionsDir); } catch (_) { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const info = accountIo.readJson(path.join(sessionsDir, name));
+      if (info) out.push({ cmd, info });
+    }
+  }
+  return out;
+}
+
+function readFirstJsonLine(file) {
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    const s = buf.toString('utf8', 0, n);
+    const nl = s.indexOf('\n');
+    return JSON.parse(nl === -1 ? s : s.slice(0, nl));
+  } catch (_) { return null; }
+}
+
+// Codex rollouts written since `sinceMs`: { id, path, cwd, mtimeMs }. They live
+// under ~/.codex/sessions/YYYY/MM/DD/, so only files touched recently are read.
+function listCodexRollouts(sinceMs) {
+  const out = [];
+  const walk = (dir, depth) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < 3) walk(p, depth + 1); continue; }
+      if (!/^rollout-.*\.jsonl$/i.test(e.name)) continue;
+      let st;
+      try { st = fs.statSync(p); } catch (_) { continue; }
+      if (st.mtimeMs < sinceMs) continue;
+      const fromName = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(e.name);
+      const meta = readFirstJsonLine(p);
+      const payload = meta && meta.type === 'session_meta' && meta.payload ? meta.payload : {};
+      out.push({ id: payload.id || (fromName ? fromName[1] : ''), path: p, cwd: payload.cwd || '', mtimeMs: st.mtimeMs });
+    }
+  };
+  walk(path.join(claudeHome(), '.codex', 'sessions'), 0);
+  return out;
+}
+
+// pid, parent pid, name and start time of every process. Node has no
+// parent-pid API on Windows, so ask CIM (about a second), fine for a right-click.
+function listProcesses() {
+  return new Promise((resolve) => {
+    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,@{n='Start';e={ if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { 0 } }} | ConvertTo-Json -Compress"],
+    { windowsHide: true });
+    let out = '';
+    ps.stdout.on('data', (d) => { out += d; });
+    ps.on('error', () => resolve([]));
+    ps.on('close', () => {
+      try {
+        const rows = JSON.parse(out);
+        resolve((Array.isArray(rows) ? rows : [rows]).map((r) => ({ pid: r.ProcessId, ppid: r.ParentProcessId, name: r.Name, startedAt: Number(r.Start) || 0 })));
+      } catch (_) { resolve([]); }
+    });
+  });
+}
+
+async function detectAgentSession(sess) {
+  const shellPid = sess && sess.proc && sess.proc.pid;
+  if (!shellPid) return null;
+  const procs = await listProcesses();
+  const shell = procs.find((p) => p.pid === shellPid);
+  const since = shell && shell.startedAt ? shell.startedAt - 5000 : Date.now() - 7 * 24 * 3600 * 1000;
+  return accounts.findSession({ sessionFiles: readClaudeSessionFiles(), rollouts: listCodexRollouts(since) }, procs, shellPid);
+}
+
+// The transcript file behind a Claude session id, wherever its project folder is.
+function findClaudeTranscript(sessionId) {
+  for (const { dir } of claudeAccounts()) {
+    const root = path.join(claudeHome(), dir, 'projects');
+    let projects = [];
+    try { projects = fs.readdirSync(root); } catch (_) { continue; }
+    for (const project of projects) {
+      const file = path.join(root, project, `${sessionId}.jsonl`);
+      if (accountIo.exists(file)) return file;
+    }
+  }
+  return null;
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// Leave the agent the way a person would: Ctrl+C (interrupts a reply, then
+// "press again to exit", then exit), with a beat between presses. If it is
+// still there after that, kill the process tree.
+async function stopAgent(sess, pid) {
+  for (let i = 0; i < 20 && pidAlive(pid); i++) {
+    if (i < 6 && sess.proc) sess.proc.write('\x03');
+    await sleep(250);
+  }
+  if (pidAlive(pid)) {
+    try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch (_) { /* ignore */ }
+    for (let i = 0; i < 20 && pidAlive(pid); i++) await sleep(100);
+  }
+  return !pidAlive(pid);
+}
+
+const handoffDir = () => path.join(app.getPath('userData'), 'handoff');
+
+// Convert the stopped agent's chat for the other kind of agent. Returns the
+// launch options for accounts.launchCommand and how it was done.
+async function carryAcross(current, target, note) {
+  const source = current.kind === 'claude' ? `Claude Code (${current.cmd})` : 'Codex';
+  const transcript = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
+  if (!transcript) {
+    note(33, `couldn't find the ${current.cmd} transcript; starting ${target.cmd} fresh.`);
+    return { launch: {}, how: 'fresh' };
+  }
+  // Native first: Codex imports Claude transcripts itself; Claude resumes a
+  // transcript we write in its own format.
+  try {
+    if (target.kind === 'codex') {
+      const importer = global.__limpetCodexImport || codexImport.importClaudeSession;
+      const threadId = await importer(transcript);
+      if (!accounts.UUID_RE.test(String(threadId))) throw new Error('codex returned no thread id');
+      note(36, `chat imported into Codex as thread ${threadId}.`);
+      return { launch: { resume: threadId }, how: 'import' };
+    }
+    const turns = handoff.parseCodexRollout(fs.readFileSync(transcript, 'utf8'));
+    const cwd = current.cwd || process.env.USERPROFILE || os.homedir();
+    const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
+    const dir = path.join(claudeHome(), target.dir, 'projects', handoff.claudeProjectDirName(cwd));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${built.sessionId}.jsonl`), built.jsonl);
+    note(36, `chat carried over from Codex as Claude session ${built.sessionId}.`);
+    return { launch: { resume: built.sessionId }, how: 'transcript' };
+  } catch (e) {
+    note(33, `native handover failed (${e.message}); using a handoff file instead.`);
+  }
+  // Fallback: the chat as Markdown plus a one-line prompt to continue from it.
+  try {
+    const text = fs.readFileSync(transcript, 'utf8');
+    const turns = current.kind === 'claude' ? handoff.parseClaudeTranscript(text) : handoff.parseCodexRollout(text);
+    const dir = handoffDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${current.cmd}-to-${target.cmd}.md`);
+    fs.writeFileSync(file, handoff.renderMarkdown(turns, { source, cwd: current.cwd }));
+    return { launch: { prompt: handoff.continuePrompt(file, source), addDir: dir }, how: 'handoff' };
+  } catch (e) {
+    note(31, `couldn't hand the chat over (${e.message}); starting ${target.cmd} fresh.`);
+    return { launch: {}, how: 'fresh' };
+  }
+}
+
+// Demo recordings (tools/demo) show stand-in addresses instead of real ones:
+// LIMPET_DEMO_EMAILS="claude=you@home.example,claude1=you@work.example".
+function demoEmails() {
+  const out = {};
+  for (const pair of String(process.env.LIMPET_DEMO_EMAILS || '').split(',')) {
+    const [cmd, email] = pair.split('=');
+    if (cmd && email) out[cmd.trim()] = email.trim();
+  }
+  return out;
+}
+
+// Move the tab's chat to `cmd`. With nothing running, just start that agent.
+async function switchAgent(sess, cmd) {
+  if (!sess || !sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
+  const target = accounts.accountFor(cmd);
+  if (!target) return { ok: false, reason: 'unknown account' };
+  if (sess.switching) return { ok: false, reason: 'busy' };
+  sess.switching = true;
+  const note = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
+  try {
+    const current = await detectAgentSession(sess);
+    if (current && current.cmd === cmd) return { ok: false, reason: 'already' };
+    if (current && !(await stopAgent(sess, current.pid))) {
+      note(31, `couldn't stop the running ${current.cmd} (pid ${current.pid}); not switching.`);
+      return { ok: false, reason: 'still running' };
+    }
+    // Tests capture the command instead of launching an agent.
+    const launch = global.__limpetClaudeLaunch || accounts.launchCommand;
+    let options = {};
+    let how = 'fresh';
+    if (!current) {
+      // nothing to carry
+    } else if (!current.sessionId) {
+      note(33, `no session found for the running ${current.cmd}; starting ${cmd} fresh.`);
+    } else if (current.kind === 'claude' && target.kind === 'claude') {
+      options = { resume: current.sessionId };
+      how = 'resume';
+    } else {
+      ({ launch: options, how } = await carryAcross(current, target, note));
+    }
+    const line = launch(cmd, options);
+    if (current) await sleep(150); // let the prompt come back before typing
+    sess.proc.write(`${line}\r`);
+    return { ok: true, from: current ? current.cmd : null, to: cmd, sessionId: current ? current.sessionId : null, how };
+  } finally {
+    sess.switching = false;
   }
 }
 
@@ -778,6 +1007,17 @@ function registerIpc() {
     const sess = ownedSession(event, id);
     return sess ? injectFiles(sess, paths) : { ok: false };
   });
+  ipcMain.handle('claude:accounts', (event, id) => {
+    if (!ownedSession(event, id)) return [];
+    const demo = demoEmails();
+    return accounts.describeAccounts(claudeHome(), accountIo).map(({ cmd, kind, email, loggedIn }) => ({ cmd, kind, email: demo[cmd] || email, loggedIn }));
+  });
+  ipcMain.handle('claude:session', async (event, id) => {
+    const sess = ownedSession(event, id);
+    const found = sess ? await detectAgentSession(sess) : null;
+    return found ? { cmd: found.cmd, kind: found.kind, sessionId: found.sessionId, status: found.status } : null;
+  });
+  ipcMain.handle('claude:switch', (event, { id, cmd } = {}) => switchAgent(ownedSession(event, id), String(cmd || '')));
   ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot, title } = {}) => {
     const sess = ownedSession(event, id);
     if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };
