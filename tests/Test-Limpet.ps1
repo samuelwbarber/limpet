@@ -187,6 +187,73 @@ finally {
     Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
 }
 
+# ---------------------------------------------------------------------------
+# claude / claude1 / claude2: one shared /resume history. Everything runs
+# against temp dirs; the real ~/.claude* folders are never touched.
+# ---------------------------------------------------------------------------
+$h = Join-Path $env:TEMP ("limpet_claude_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+try {
+    $shared = "$h\shared\projects"
+    $c0 = "$h\.claude"; $c1 = "$h\.claude-1"; $c2 = "$h\.claude-2"
+    # Solo history in plain claude and in claude-2, with an overlapping
+    # project folder, an identical file, and a same-name file that differs.
+    New-Item -ItemType Directory -Force -Path "$c0\projects\C--proj\memory", "$c0\projects\C--only0" | Out-Null
+    Set-Content "$c0\projects\C--proj\aaa.jsonl" 'a'
+    Set-Content "$c0\projects\C--proj\dup.jsonl" 'same'
+    Set-Content "$c0\projects\C--proj\clash.jsonl" 'short'
+    Set-Content "$c0\projects\C--proj\memory\MEMORY.md" 'mem'
+    Set-Content "$c0\projects\C--only0\o.jsonl" 'o'
+    New-Item -ItemType Directory -Force -Path "$c2\projects\C--proj" | Out-Null
+    Set-Content "$c2\projects\C--proj\bbb.jsonl" 'b'
+    Set-Content "$c2\projects\C--proj\dup.jsonl" 'same'
+    Set-Content "$c2\projects\C--proj\clash.jsonl" 'longer content here'
+
+    $ok = Sync-LimpetClaudeHistory -ConfigDir $c0, $c1, $c2 -Shared $shared
+    Check 'sync reports every account synced' ($ok -eq $true)
+    foreach ($c in $c0, $c1, $c2) {
+        $it = Get-Item -LiteralPath "$c\projects" -Force
+        Check "sync junctions $(Split-Path -Leaf $c)\projects to the shared store" (
+            ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path "$c\projects\C--proj\aaa.jsonl"))
+    }
+    Check 'sync merges overlapping project folders' ((Test-Path "$shared\C--proj\aaa.jsonl") -and (Test-Path "$shared\C--proj\bbb.jsonl") -and
+        (Test-Path "$shared\C--proj\memory\MEMORY.md") -and (Test-Path "$shared\C--only0\o.jsonl"))
+    Check 'sync drops an identical duplicate' ((Get-Content "$shared\C--proj\dup.jsonl") -eq 'same' -and
+        @(Get-ChildItem "$shared\C--proj" -Filter 'dup.jsonl*').Count -eq 1)
+    Check 'sync keeps the fuller transcript and preserves the other' ((Get-Content "$shared\C--proj\clash.jsonl") -eq 'longer content here' -and
+        @(Get-ChildItem "$shared\C--proj" -Filter 'clash.jsonl.conflict-*').Count -eq 1)
+    Check 'sync leaves no staging folder behind' (@(Get-ChildItem $c0, $c2 -Filter 'projects.migrating-*' -Directory -Force).Count -eq 0)
+    Check 'sync is idempotent' ((Sync-LimpetClaudeHistory -ConfigDir $c0, $c1, $c2 -Shared $shared) -eq $true)
+
+    # A projects folder with a file held open by another process: nothing is
+    # lost, the account is reported unsynced, and it completes once released.
+    $c3 = "$h\.claude-3"
+    New-Item -ItemType Directory -Force -Path "$c3\projects\C--proj" | Out-Null
+    Set-Content "$c3\projects\C--proj\live.jsonl" 'live'
+    $fs = [IO.File]::Open("$c3\projects\C--proj\live.jsonl", 'Open', 'ReadWrite', 'None')
+    try {
+        $busy = Sync-LimpetClaudeHistory -ConfigDir $c3 -Shared $shared 3>$null
+        $kept = @(Get-ChildItem -LiteralPath $c3 -Recurse -Filter 'live.jsonl' -Force)
+        Check 'sync backs off when the folder is in use' ($busy -eq $false -and $kept.Count -eq 1)
+    }
+    finally { $fs.Dispose() }
+    Check 'sync completes once the folder is free' ((Sync-LimpetClaudeHistory -ConfigDir $c3 -Shared $shared) -eq $true -and
+        (Get-Content "$shared\C--proj\live.jsonl") -eq 'live' -and @(Get-ChildItem $c3 -Filter 'projects.migrating-*' -Directory -Force).Count -eq 0)
+
+    # A junction that already points somewhere else is respected.
+    $c4 = "$h\.claude-4"; $elsewhere = "$h\elsewhere"
+    New-Item -ItemType Directory -Force -Path $c4, $elsewhere | Out-Null
+    New-Item -ItemType Junction -Path "$c4\projects" -Target $elsewhere | Out-Null
+    $foreign = Sync-LimpetClaudeHistory -ConfigDir $c4 -Shared $shared 3>$null
+    Check 'sync leaves a foreign junction alone' ($foreign -eq $false -and (@((Get-Item "$c4\projects" -Force).Target)[0] -like '*elsewhere'))
+}
+finally {
+    # Drop the junctions first: a recursive delete must not walk through them.
+    Get-ChildItem -LiteralPath $h -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+        ForEach-Object { [IO.Directory]::Delete($_.FullName) }
+    Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue
+}
+
 $global:ErrorActionPreference = $script:savedGlobalEAP
 $color = if ($fail) { 'Red' } else { 'Green' }
 Write-Host "`n$pass passed, $fail failed" -ForegroundColor $color
