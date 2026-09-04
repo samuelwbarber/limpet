@@ -14,6 +14,8 @@ node record.js peek      # inline image at the local prompt
 node record.js xssh      # ssh drop + auto-reconnect
 node record.js remote    # peek + download inside an ssh session
 node record.js drop      # drag & drop upload into the session
+node record.js switch    # a Claude Code chat moved to Codex from the tab menu
+node record.js backdrop  # background colours and the generative backdrop
 .\togif.ps1              # mp4 -> palette-optimized GIFs (gifs\*.gif)
 ```
 
@@ -29,3 +31,7 @@ Prerequisites the scripts assume:
 - Capture is a desktop-region grab of the window's coordinates (gdigrab
   window-capture of a GPU-composited Electron window records white), so keep
   the window unobscured while recording.
+
+`switch` needs `claude1` and `codex` signed in (it runs both for real, a few tokens each)
+and shows stand-in addresses in the account menu via `LIMPET_DEMO_EMAILS`; `backdrop`
+needs the local image model installed (`npm run setup:backdrop` in `app`).
