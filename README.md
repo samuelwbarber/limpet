@@ -169,7 +169,7 @@ shell:
   the new agent starts with a one-line "continue from here" prompt pointing at
   it.
 
-<p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: a Claude Code chat moved to Codex from the tab menu, conversation intact" /></p>
+<p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: the tab menu lists the signed-in accounts with usage left, and a Claude Code chat is moved to Codex, conversation intact" /></p>
 
 Handy when one subscription hits its limit: the usage column shows which one
 still has room. With nothing running in the tab, picking an account just

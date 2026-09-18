@@ -53,8 +53,22 @@ async function typeCmd(page, text, delay = 45) {
 (async () => {
   const scenario = process.argv[2];
   const shots = process.env.LIMPET_RECORD ? process.env.LIMPET_RECORD === 'shots' : ['switch', 'backdrop'].includes(scenario);
-  // Stand-in addresses in the account menu, so the recording shows no real email.
-  if (scenario === 'switch' || scenario === 'backdrop') process.env.LIMPET_DEMO_EMAILS = 'claude=you@home.example,claude1=you@work.example,codex=you@openai.example';
+  // Stand-in addresses and usage numbers in the account menu, so the recording
+  // shows no real email or real limits (and tells a story: the account the
+  // chat is on is nearly out, Codex has room).
+  if (scenario === 'switch' || scenario === 'backdrop') {
+    process.env.LIMPET_DEMO_EMAILS = 'claude=you@home.example,claude1=you@work.example,claude2=you@side.example,codex=you@openai.example';
+    const at = (h) => new Date(Date.now() + h * 3600e3).toISOString();
+    const fixture = path.join(VIDS, 'usage-fixture.json');
+    fs.writeFileSync(fixture, JSON.stringify({
+      claude: { fiveHour: { left: 71, resetsAt: at(3) }, weekly: { left: 61, resetsAt: at(90) }, plan: '' },
+      claude1: { fiveHour: { left: 6, resetsAt: at(1) }, weekly: { left: 40, resetsAt: at(50) }, plan: '' },
+      claude2: { fiveHour: { left: 58, resetsAt: at(2) }, weekly: { left: 22, resetsAt: at(30) }, plan: '' },
+      codex: { fiveHour: { left: 100, resetsAt: null }, weekly: { left: 80, resetsAt: at(120) }, plan: 'plus' },
+      codex1: { fiveHour: { left: 90, resetsAt: at(4) }, weekly: { left: 65, resetsAt: at(100) }, plan: 'pro' },
+    }));
+    process.env.LIMPET_USAGE_FIXTURE = fixture;
+  }
   let keepAlive = null;
   if (['xssh', 'remote', 'drop'].includes(scenario)) {
     // WSL2 terminates the distro (and sshd) when the last wsl.exe exits — hold
@@ -185,7 +199,8 @@ async function typeCmd(page, text, delay = 45) {
     await sleep(2500);
     await page.locator('.tab.active').click({ button: 'right' });
     await page.waitForSelector('.account-menu .item.current', { timeout: 20000 }).catch(() => {});
-    await sleep(2500);
+    await page.waitForSelector('.account-menu .item[data-cmd="codex"] .usage.ok', { timeout: 10000 }).catch(() => {});
+    await sleep(3500); // time to read: signed-in accounts, usage left, the marked one
     await page.locator('.account-menu .item[data-cmd="codex"]').click();
     await waitForScreen(page, /Update available|OpenAI Codex|Ask Codex/i, 60000);
     if (/Update available/i.test(await screenText(page))) {
@@ -199,6 +214,12 @@ async function typeCmd(page, text, delay = 45) {
     await sleep(4000);
     await typeCmd(page, 'Carry on from where Claude left off: add the last three lines.', 30);
     await waitForIdle(page, 90000);
+    if (/Approaching rate limits/i.test(await screenText(page))) {
+      // Codex's "switch to a cheaper model?" nudge, shown when the account is
+      // near its limit: dismiss it so the recording ends on the reply.
+      await page.keyboard.press('Escape');
+      await sleep(1200);
+    }
     await sleep(3500);
   } else if (scenario === 'backdrop') {
     // The tab menu's Background row: colours, and the generative backdrop that

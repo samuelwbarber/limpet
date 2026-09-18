@@ -33,5 +33,6 @@ Prerequisites the scripts assume:
   the window unobscured while recording.
 
 `switch` needs `claude1` and `codex` signed in (it runs both for real, a few tokens each)
-and shows stand-in addresses in the account menu via `LIMPET_DEMO_EMAILS`; `backdrop`
-needs the local image model installed (`npm run setup:backdrop` in `app`).
+and shows stand-in addresses and stand-in usage numbers in the account menu via
+`LIMPET_DEMO_EMAILS` and `LIMPET_USAGE_FIXTURE` (written to `vids/usage-fixture.json`);
+`backdrop` needs the local image model installed (`npm run setup:backdrop` in `app`).
