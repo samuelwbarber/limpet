@@ -3,32 +3,59 @@
 // process list; this file decides. No Electron dependencies -- unit tested by
 // tests/accounts.test.js.
 //
-// A tab's shell may be running Claude Code under one of the limpet accounts
-// (plain `claude`, `claude1`, `claude2`; see $script:LimpetClaudeConfigDirs in
-// shell/Limpet.psm1 -- the two lists must match) or the OpenAI Codex CLI.
+// Accounts are named by command: plain `claude` and `codex`, then any number
+// of `claude1`, `claude2`, ... and `codex1`, `codex2`, ... Each numbered one
+// runs its agent against its own config directory (~/.claude-N, ~/.codex-N;
+// shell/Limpet.psm1 defines the commands and creates the directory on first
+// run), so each holds its own login. Which accounts exist is discovered from
+// the home directory, not from a list.
 //
 // Claude Code writes <config dir>/sessions/<pid>.json for every live process,
 // so the Claude session in a tab is the one whose pid descends from that tab's
 // shell. Codex keeps no such file: its session is the rollout file
-// (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl) most recently written since
-// the codex process under the shell started.
+// (<codex home>/sessions/YYYY/MM/DD/rollout-*.jsonl) most recently written
+// since the codex process under the shell started.
 //
 // Moving a chat: between Claude accounts it is `--resume <id>` (their
-// projects/ folders are one shared store). Across agents the transcript is
+// projects/ folders are one shared store). Between Codex accounts the rollout
+// is copied into the other home and resumed. Across agents the transcript is
 // converted (see handoff.js and codex-import.js) and resumed on the other side.
 
 const path = require('path');
 
-const ACCOUNTS = [
-  { cmd: 'claude', kind: 'claude', dir: '.claude' },
-  { cmd: 'claude1', kind: 'claude', dir: '.claude-1' },
-  { cmd: 'claude2', kind: 'claude', dir: '.claude-2' },
-  { cmd: 'codex', kind: 'codex', dir: '.codex' },
-];
-
+const KINDS = ['claude', 'codex'];
+const ACCOUNT_RE = /^(claude|codex)([1-9]\d*)?$/;
+const DIR_RE = /^\.(claude|codex)(?:-([1-9]\d*))?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const accountFor = (cmd) => ACCOUNTS.find((a) => a.cmd === cmd) || null;
+// The account a command name denotes, or null. `claude` -> ~/.claude, `claude3`
+// -> ~/.claude-3, `codex2` -> ~/.codex-2. Any number is valid: the shell
+// creates the directory the first time that command runs.
+function accountFor(cmd) {
+  const m = ACCOUNT_RE.exec(String(cmd || ''));
+  if (!m) return null;
+  const kind = m[1];
+  const number = m[2] ? Number(m[2]) : 0;
+  return { cmd: `${kind}${number || ''}`, kind, number, dir: number ? `.${kind}-${number}` : `.${kind}` };
+}
+
+// Every account with a config directory under `home`, plus plain `claude` and
+// `codex` whether or not theirs exist. `io.listDir(dir)` is the names inside a
+// directory ([] if unreadable). Order: claude, claude1, claude2, ..., codex,
+// codex1, ...
+function listAccounts(home, io) {
+  const numbers = { claude: new Set(), codex: new Set() };
+  for (const name of io.listDir(home)) {
+    const m = DIR_RE.exec(name);
+    if (m && m[2]) numbers[m[1]].add(Number(m[2]));
+  }
+  const out = [];
+  for (const kind of KINDS) {
+    out.push(accountFor(kind));
+    for (const n of [...numbers[kind]].sort((a, b) => a - b)) out.push(accountFor(`${kind}${n}`));
+  }
+  return out;
+}
 
 // The email inside an OpenAI id_token (a JWT); '' if it can't be read.
 function jwtEmail(token) {
@@ -39,29 +66,44 @@ function jwtEmail(token) {
 }
 
 // Describe each account for the menu: signed in? which email? `io.exists(path)`
-// is a boolean, `io.readJson(path)` the parsed file or null.
+// is a boolean, `io.readJson(path)` the parsed file or null, `io.listDir(dir)`
+// the names in a directory.
 function describeAccounts(home, io) {
-  return ACCOUNTS.map(({ cmd, kind, dir }) => {
+  return listAccounts(home, io).map(({ cmd, kind, number, dir }) => {
     const configDir = path.join(home, dir);
     if (kind === 'codex') {
       const auth = io.readJson(path.join(configDir, 'auth.json'));
       const tokens = auth && auth.tokens;
       const email = tokens ? jwtEmail(tokens.id_token) : '';
       return {
-        cmd, kind, dir, configDir,
-        loggedIn: !!auth,
+        cmd, kind, number, dir, configDir,
+        loggedIn: !!auth && !!(tokens || auth.OPENAI_API_KEY),
         email: email || (auth && auth.OPENAI_API_KEY ? 'API key' : ''),
       };
     }
     // Plain `claude` keeps its config at ~/.claude.json; the others inside their dir.
-    const config = io.readJson(path.join(configDir, '.claude.json')) || (dir === '.claude' ? io.readJson(path.join(home, '.claude.json')) : null);
+    const config = io.readJson(path.join(configDir, '.claude.json')) || (number === 0 ? io.readJson(path.join(home, '.claude.json')) : null);
     const oauth = config && config.oauthAccount;
     return {
-      cmd, kind, dir, configDir,
+      cmd, kind, number, dir, configDir,
       loggedIn: io.exists(path.join(configDir, '.credentials.json')),
       email: oauth && typeof oauth.emailAddress === 'string' ? oauth.emailAddress : '',
     };
   });
+}
+
+// Commands the user could sign in to next, for the menu's footer: every
+// account that exists but isn't signed in, then one brand-new number per kind
+// (the shell makes its directory on first run).
+function signInHints(described) {
+  const out = [];
+  for (const kind of KINDS) {
+    const mine = described.filter((a) => a.kind === kind);
+    for (const a of mine) if (!a.loggedIn) out.push(a.cmd);
+    const next = mine.reduce((m, a) => Math.max(m, a.number), 0) + 1;
+    out.push(`${kind}${next}`);
+  }
+  return out;
 }
 
 // Every pid under `rootPid` in a process list of { pid, ppid } rows.
@@ -110,7 +152,9 @@ function findClaudeSession(sessionFiles, procs, shellPid) {
 
 // The Codex session running under a tab's shell: a codex process under the
 // shell (procs carry { pid, ppid, name, startedAt }) plus the rollout written
-// most recently since it started. `rollouts` is [{ id, path, cwd, mtimeMs }].
+// most recently since it started. `rollouts` is [{ cmd, id, path, cwd,
+// mtimeMs }], cmd being the codex account whose home holds the file. With no
+// rollout the account can't be told apart, so plain `codex` is assumed.
 function findCodexSession(rollouts, procs, shellPid) {
   const under = descendants(procs, shellPid);
   const proc = procs
@@ -122,7 +166,7 @@ function findCodexSession(rollouts, procs, shellPid) {
     .filter((r) => UUID_RE.test(String(r.id || '')) && (r.mtimeMs || 0) >= since)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
   return {
-    kind: 'codex', cmd: 'codex', pid: proc.pid, status: '',
+    kind: 'codex', cmd: (rollout && rollout.cmd) || 'codex', pid: proc.pid, status: '',
     sessionId: rollout ? rollout.id : null, cwd: rollout ? rollout.cwd || '' : '',
     rolloutPath: rollout ? rollout.path : null,
   };
@@ -142,7 +186,7 @@ function psQuote(s) {
 }
 
 // The line typed into the shell to bring a chat up under `cmd`:
-//   resume:  `claude1 --resume <id>` / `codex resume <id>`
+//   resume:  `claude1 --resume <id>` / `codex2 resume <id>`
 //   prompt:  `<cmd> '<single-line prompt>'` (a handoff), Claude additionally
 //            granted `--add-dir` so it can read the handoff file unprompted
 //   neither: just `<cmd>`, a fresh start.
@@ -151,7 +195,7 @@ function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
   if (!account) throw new Error(`unknown account: ${cmd}`);
   if (resume && !UUID_RE.test(String(resume))) throw new Error(`not a session id: ${resume}`);
   if (/[\r\n]/.test(String(prompt))) throw new Error('prompt must be a single line');
-  let line = cmd;
+  let line = account.cmd;
   if (resume) line += account.kind === 'codex' ? ` resume ${resume}` : ` --resume ${resume}`;
   if (addDir && account.kind === 'claude') line += ` --add-dir ${psQuote(addDir)}`;
   if (prompt) line += ` ${psQuote(prompt)}`;
@@ -159,6 +203,6 @@ function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
 }
 
 module.exports = {
-  ACCOUNTS, UUID_RE, accountFor, jwtEmail, describeAccounts, descendants,
-  findClaudeSession, findCodexSession, findSession, psQuote, launchCommand,
+  KINDS, ACCOUNT_RE, DIR_RE, UUID_RE, accountFor, listAccounts, jwtEmail, describeAccounts, signInHints,
+  descendants, findClaudeSession, findCodexSession, findSession, psQuote, launchCommand,
 };

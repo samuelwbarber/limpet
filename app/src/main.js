@@ -14,6 +14,7 @@ const { spawn } = require('child_process');
 const accounts = require('./accounts');
 const handoff = require('./handoff');
 const codexImport = require('./codex-import');
+const usage = require('./usage');
 const {
   MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -627,15 +628,22 @@ async function runBackdropQueue() {
 // Claude accounts it is `--resume <id>` in the same shell (their projects/
 // folders are one shared store, see Sync-LimpetClaudeHistory). Claude -> Codex
 // goes through Codex's own importer (codex-import.js); Codex -> Claude writes
-// a Claude transcript from the rollout (handoff.js) and resumes it. If either
-// conversion fails, the chat is rendered to a Markdown handoff file and the
-// new agent is started with a one-line prompt to continue from it.
+// a Claude transcript from the rollout (handoff.js) and resumes it. Codex ->
+// Codex copies the rollout into the other home. If a conversion fails, the
+// chat is rendered to a Markdown handoff file and the new agent is started
+// with a one-line prompt to continue from it.
+//
+// Accounts (claude, claude1, ..., codex, codex1, ...) are whatever config
+// directories exist under the home (accounts.listAccounts); nothing is fixed.
 const claudeHome = () => process.env.LIMPET_CLAUDE_HOME || os.homedir();
 const accountIo = {
   exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
   readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
+  listDir: (p) => { try { return fs.readdirSync(p); } catch (_) { return []; } },
 };
-const claudeAccounts = () => accounts.ACCOUNTS.filter((a) => a.kind === 'claude');
+const knownAccounts = () => accounts.listAccounts(claudeHome(), accountIo);
+const claudeAccounts = () => knownAccounts().filter((a) => a.kind === 'claude');
+const codexAccounts = () => knownAccounts().filter((a) => a.kind === 'codex');
 
 // The session file Claude Code keeps for every live process, tagged by account.
 function readClaudeSessionFiles() {
@@ -665,16 +673,17 @@ function readFirstJsonLine(file) {
   } catch (_) { return null; }
 }
 
-// Codex rollouts written since `sinceMs`: { id, path, cwd, mtimeMs }. They live
-// under ~/.codex/sessions/YYYY/MM/DD/, so only files touched recently are read.
+// Codex rollouts written since `sinceMs`, across every codex account: { cmd,
+// id, path, cwd, mtimeMs }. They live under <codex home>/sessions/YYYY/MM/DD/,
+// so only files touched recently are read.
 function listCodexRollouts(sinceMs) {
   const out = [];
-  const walk = (dir, depth) => {
+  const walk = (cmd, dir, depth) => {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of entries) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (depth < 3) walk(p, depth + 1); continue; }
+      if (e.isDirectory()) { if (depth < 3) walk(cmd, p, depth + 1); continue; }
       if (!/^rollout-.*\.jsonl$/i.test(e.name)) continue;
       let st;
       try { st = fs.statSync(p); } catch (_) { continue; }
@@ -682,10 +691,10 @@ function listCodexRollouts(sinceMs) {
       const fromName = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(e.name);
       const meta = readFirstJsonLine(p);
       const payload = meta && meta.type === 'session_meta' && meta.payload ? meta.payload : {};
-      out.push({ id: payload.id || (fromName ? fromName[1] : ''), path: p, cwd: payload.cwd || '', mtimeMs: st.mtimeMs });
+      out.push({ cmd, id: payload.id || (fromName ? fromName[1] : ''), path: p, cwd: payload.cwd || '', mtimeMs: st.mtimeMs });
     }
   };
-  walk(path.join(claudeHome(), '.codex', 'sessions'), 0);
+  for (const { cmd, dir } of codexAccounts()) walk(cmd, path.join(claudeHome(), dir, 'sessions'), 0);
   return out;
 }
 
@@ -765,8 +774,24 @@ async function carryAcross(current, target, note) {
   // transcript we write in its own format.
   try {
     if (target.kind === 'codex') {
+      const codexHome = path.join(claudeHome(), target.dir);
+      if (current.kind === 'codex') {
+        // Same agent, other login: the rollout file is the thread. Copy it into
+        // the other home at the same dated path and resume it there.
+        const currentHome = path.join(claudeHome(), accounts.accountFor(current.cmd).dir);
+        let rel = path.relative(currentHome, transcript);
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+          const d = new Date();
+          rel = path.join('sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'), path.basename(transcript));
+        }
+        const dest = path.join(codexHome, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(transcript, dest);
+        note(36, `chat copied to ${target.cmd} as thread ${current.sessionId}.`);
+        return { launch: { resume: current.sessionId }, how: 'copy' };
+      }
       const importer = global.__limpetCodexImport || codexImport.importClaudeSession;
-      const threadId = await importer(transcript);
+      const threadId = await importer(transcript, { codexHome });
       if (!accounts.UUID_RE.test(String(threadId))) throw new Error('codex returned no thread id');
       note(36, `chat imported into Codex as thread ${threadId}.`);
       return { launch: { resume: threadId }, how: 'import' };
@@ -795,6 +820,26 @@ async function carryAcross(current, target, note) {
     note(31, `couldn't hand the chat over (${e.message}); starting ${target.cmd} fresh.`);
     return { launch: {}, how: 'fresh' };
   }
+}
+
+// Usage left per signed-in account (usage.js), fetched in parallel and kept for
+// a minute so repeated right-clicks don't hammer the endpoints. Tests and demo
+// recordings point LIMPET_USAGE_FIXTURE at a JSON file of { cmd: result } to
+// stay offline.
+const usageCache = new Map(); // cmd -> { at, result }
+const USAGE_TTL_MS = 60 * 1000;
+function readAllUsage() {
+  const signedIn = accounts.describeAccounts(claudeHome(), accountIo).filter((a) => a.loggedIn);
+  const fixture = process.env.LIMPET_USAGE_FIXTURE ? accountIo.readJson(process.env.LIMPET_USAGE_FIXTURE) : null;
+  const now = Date.now();
+  return Promise.all(signedIn.map(async (a) => {
+    if (fixture) return { cmd: a.cmd, usage: fixture[a.cmd] || { error: 'no fixture' } };
+    const hit = usageCache.get(a.cmd);
+    if (hit && now - hit.at < USAGE_TTL_MS) return { cmd: a.cmd, usage: hit.result };
+    const result = await usage.readUsage(a, accountIo);
+    usageCache.set(a.cmd, { at: Date.now(), result });
+    return { cmd: a.cmd, usage: result };
+  }));
 }
 
 // Demo recordings (tools/demo) show stand-in addresses instead of real ones:
@@ -1010,10 +1055,15 @@ function registerIpc() {
     return sess ? injectFiles(sess, paths) : { ok: false };
   });
   ipcMain.handle('claude:accounts', (event, id) => {
-    if (!ownedSession(event, id)) return [];
+    if (!ownedSession(event, id)) return { accounts: [], more: [] };
     const demo = demoEmails();
-    return accounts.describeAccounts(claudeHome(), accountIo).map(({ cmd, kind, email, loggedIn }) => ({ cmd, kind, email: demo[cmd] || email, loggedIn }));
+    const described = accounts.describeAccounts(claudeHome(), accountIo);
+    return {
+      accounts: described.map(({ cmd, kind, email, loggedIn }) => ({ cmd, kind, email: demo[cmd] || email, loggedIn })),
+      more: accounts.signInHints(described),
+    };
   });
+  ipcMain.handle('claude:usage', (event, id) => (ownedSession(event, id) ? readAllUsage() : []));
   ipcMain.handle('claude:session', async (event, id) => {
     const sess = ownedSession(event, id);
     const found = sess ? await detectAgentSession(sess) : null;

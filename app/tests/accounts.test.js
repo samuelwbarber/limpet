@@ -3,7 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
 const {
-  ACCOUNTS, describeAccounts, descendants, findClaudeSession, findCodexSession, findSession, launchCommand, psQuote, jwtEmail,
+  accountFor, listAccounts, describeAccounts, signInHints, descendants, findClaudeSession, findCodexSession, findSession,
+  launchCommand, psQuote, jwtEmail,
 } = require('../src/accounts');
 
 const procs = [
@@ -25,18 +26,28 @@ const files = [
   { cmd: 'claude1', info: { pid: 220, sessionId: SID_A, cwd: 'C:\\a', status: 'idle', kind: 'interactive', updatedAt: 5 } },
   { cmd: 'claude', info: { pid: 320, sessionId: SID_B, cwd: 'C:\\b', status: 'busy', kind: 'interactive', updatedAt: 9 } },
   // stale: Claude was killed, its pid is gone
-  { cmd: 'claude2', info: { pid: 999, sessionId: SID_A, status: 'idle', kind: 'interactive', updatedAt: 99 } },
+  { cmd: 'claude7', info: { pid: 999, sessionId: SID_A, status: 'idle', kind: 'interactive', updatedAt: 99 } },
 ];
 const T_OLD = '01a00000-0000-7000-8000-000000000001';
 const T_NEW = '01a00000-0000-7000-8000-000000000002';
 const rollouts = [
-  { id: T_OLD, path: 'C:\\r\\old.jsonl', cwd: 'C:\\c', mtimeMs: 40000 },   // finished before codex started
-  { id: T_NEW, path: 'C:\\r\\new.jsonl', cwd: 'C:\\c', mtimeMs: 60000 },
-  { id: 'bogus', path: 'C:\\r\\x.jsonl', cwd: 'C:\\c', mtimeMs: 70000 },
+  { cmd: 'codex', id: T_OLD, path: 'C:\\r\\old.jsonl', cwd: 'C:\\c', mtimeMs: 40000 },   // finished before codex started
+  { cmd: 'codex2', id: T_NEW, path: 'C:\\r2\\new.jsonl', cwd: 'C:\\c', mtimeMs: 60000 },
+  { cmd: 'codex', id: 'bogus', path: 'C:\\r\\x.jsonl', cwd: 'C:\\c', mtimeMs: 70000 },
 ];
 
-test('the account list has the three Claude logins and codex, with kinds', () => {
-  assert.deepStrictEqual(ACCOUNTS.map((a) => `${a.cmd}:${a.kind}`), ['claude:claude', 'claude1:claude', 'claude2:claude', 'codex:codex']);
+test('accountFor maps any claudeN / codexN name to its kind and config dir', () => {
+  assert.deepStrictEqual(accountFor('claude'), { cmd: 'claude', kind: 'claude', number: 0, dir: '.claude' });
+  assert.deepStrictEqual(accountFor('claude3'), { cmd: 'claude3', kind: 'claude', number: 3, dir: '.claude-3' });
+  assert.deepStrictEqual(accountFor('codex'), { cmd: 'codex', kind: 'codex', number: 0, dir: '.codex' });
+  assert.deepStrictEqual(accountFor('codex12'), { cmd: 'codex12', kind: 'codex', number: 12, dir: '.codex-12' });
+  for (const bad of ['claude0', 'claude01', 'claudex', 'Claude1', 'codex-1', 'rm', '', null]) assert.strictEqual(accountFor(bad), null, String(bad));
+});
+
+test('listAccounts discovers numbered config dirs, plain ones always first', () => {
+  const io = { listDir: (p) => (p === 'C:\\h' ? ['.claude', '.claude-10', '.claude-2', '.codex-1', '.codex-01', '.claude-x', 'Documents', '.claude.json'] : []) };
+  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1']);
+  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex']);
 });
 
 test('descendants walks the whole subtree and survives the pid-0 self-parent', () => {
@@ -69,13 +80,13 @@ test('findClaudeSession prefers the freshest interactive session and skips malfo
   assert.deepStrictEqual({ cmd: picked.cmd, pid: picked.pid }, { cmd: 'claude1', pid: 210 });
 });
 
-test('findCodexSession pairs the codex process under the tab with the rollout written since it started', () => {
+test('findCodexSession pairs the codex process under the tab with the rollout written since it started, and names its account', () => {
   const c = findCodexSession(rollouts, procs, 400);
   assert.deepStrictEqual({ kind: c.kind, cmd: c.cmd, pid: c.pid, sessionId: c.sessionId, rolloutPath: c.rolloutPath, cwd: c.cwd },
-    { kind: 'codex', cmd: 'codex', pid: 420, sessionId: T_NEW, rolloutPath: 'C:\\r\\new.jsonl', cwd: 'C:\\c' });
+    { kind: 'codex', cmd: 'codex2', pid: 420, sessionId: T_NEW, rolloutPath: 'C:\\r2\\new.jsonl', cwd: 'C:\\c' });
   assert.strictEqual(findCodexSession(rollouts, procs, 200), null); // no codex under tab A
   const noRollout = findCodexSession([], procs, 400);
-  assert.deepStrictEqual({ pid: noRollout.pid, sessionId: noRollout.sessionId }, { pid: 420, sessionId: null });
+  assert.deepStrictEqual({ cmd: noRollout.cmd, pid: noRollout.pid, sessionId: noRollout.sessionId }, { cmd: 'codex', pid: 420, sessionId: null });
 });
 
 test('findSession reports whichever agent runs under the shell, Claude first', () => {
@@ -85,23 +96,28 @@ test('findSession reports whichever agent runs under the shell, Claude first', (
   assert.strictEqual(findSession(input, procs, 999), null);
 });
 
-test('launchCommand builds resume, handoff-prompt and fresh-start lines per agent', () => {
+test('launchCommand builds resume, handoff-prompt and fresh-start lines per agent, for any account number', () => {
   assert.strictEqual(launchCommand('claude2', { resume: SID_A }), `claude2 --resume ${SID_A}`);
+  assert.strictEqual(launchCommand('claude14', { resume: SID_A }), `claude14 --resume ${SID_A}`);
   assert.strictEqual(launchCommand('codex', { resume: T_NEW }), `codex resume ${T_NEW}`);
+  assert.strictEqual(launchCommand('codex3', { resume: T_NEW }), `codex3 resume ${T_NEW}`);
   assert.strictEqual(launchCommand('claude', {}), 'claude');
   assert.strictEqual(launchCommand('codex'), 'codex');
   assert.strictEqual(launchCommand('codex', { prompt: "it's here", addDir: 'C:\\h' }), "codex 'it''s here'");
   assert.strictEqual(launchCommand('claude1', { prompt: 'go on', addDir: 'C:\\h o' }), "claude1 --add-dir 'C:\\h o' 'go on'");
   assert.throws(() => launchCommand('claude2', { resume: 'x; Remove-Item -Recurse C:\\' }), /not a session id/);
-  assert.throws(() => launchCommand('claude9', { resume: SID_A }), /unknown account/);
+  assert.throws(() => launchCommand('claude9x', { resume: SID_A }), /unknown account/);
+  assert.throws(() => launchCommand('claude01'), /unknown account/);
+  assert.throws(() => launchCommand('Remove-Item'), /unknown account/);
   assert.throws(() => launchCommand('codex', { prompt: 'two\nlines' }), /single line/);
   assert.strictEqual(psQuote("a'b"), "'a''b'");
 });
 
-test('describeAccounts reports login state and email per config dir, including codex', () => {
+test('describeAccounts reports login state and email per discovered config dir, including codex ones', () => {
   const home = 'C:\\h';
   const token = `x.${Buffer.from(JSON.stringify({ email: 'codex@example.com' })).toString('base64url')}.y`;
   const io = {
+    listDir: (p) => (p === home ? ['.claude-1', '.claude-2', '.codex', '.codex-3'] : []),
     exists: (p) => p === path.join(home, '.claude-1', '.credentials.json'),
     readJson: (p) => {
       if (p === path.join(home, '.claude-1', '.claude.json')) return { oauthAccount: { emailAddress: 'one@example.com' } };
@@ -111,7 +127,7 @@ test('describeAccounts reports login state and email per config dir, including c
     },
   };
   const list = describeAccounts(home, io);
-  assert.deepStrictEqual(list.map((a) => a.cmd), ACCOUNTS.map((a) => a.cmd));
+  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3']);
   const one = list.find((a) => a.cmd === 'claude1');
   assert.deepStrictEqual({ loggedIn: one.loggedIn, email: one.email, configDir: one.configDir },
     { loggedIn: true, email: 'one@example.com', configDir: path.join(home, '.claude-1') });
@@ -120,8 +136,25 @@ test('describeAccounts reports login state and email per config dir, including c
   const plain = list.find((a) => a.cmd === 'claude');
   assert.deepStrictEqual({ loggedIn: plain.loggedIn, email: plain.email }, { loggedIn: false, email: 'plain@example.com' });
   const codex = list.find((a) => a.cmd === 'codex');
-  assert.deepStrictEqual({ loggedIn: codex.loggedIn, email: codex.email, kind: codex.kind }, { loggedIn: true, email: 'codex@example.com', kind: 'codex' });
-  const apiKey = describeAccounts(home, { exists: () => false, readJson: (p) => (p.endsWith('auth.json') ? { OPENAI_API_KEY: 'sk' } : null) }).find((a) => a.cmd === 'codex');
+  assert.deepStrictEqual({ loggedIn: codex.loggedIn, email: codex.email, kind: codex.kind, configDir: codex.configDir },
+    { loggedIn: true, email: 'codex@example.com', kind: 'codex', configDir: path.join(home, '.codex') });
+  const three = list.find((a) => a.cmd === 'codex3');
+  assert.deepStrictEqual({ loggedIn: three.loggedIn, email: three.email }, { loggedIn: false, email: '' });
+  const apiKey = describeAccounts(home, { listDir: () => [], exists: () => false, readJson: (p) => (p.endsWith('auth.json') ? { OPENAI_API_KEY: 'sk' } : null) }).find((a) => a.cmd === 'codex');
   assert.deepStrictEqual({ loggedIn: apiKey.loggedIn, email: apiKey.email }, { loggedIn: true, email: 'API key' });
+  const emptyAuth = describeAccounts(home, { listDir: () => [], exists: () => false, readJson: (p) => (p.endsWith('auth.json') ? {} : null) }).find((a) => a.cmd === 'codex');
+  assert.strictEqual(emptyAuth.loggedIn, false);
   assert.strictEqual(jwtEmail('garbage'), '');
+});
+
+test('signInHints names the accounts not yet signed in plus one new number per kind', () => {
+  const described = [
+    { cmd: 'claude', kind: 'claude', number: 0, loggedIn: true },
+    { cmd: 'claude1', kind: 'claude', number: 1, loggedIn: true },
+    { cmd: 'claude2', kind: 'claude', number: 2, loggedIn: false },
+    { cmd: 'claude5', kind: 'claude', number: 5, loggedIn: true },
+    { cmd: 'codex', kind: 'codex', number: 0, loggedIn: false },
+  ];
+  assert.deepStrictEqual(signInHints(described), ['claude2', 'claude6', 'codex', 'codex1']);
+  assert.deepStrictEqual(signInHints([{ cmd: 'claude', kind: 'claude', number: 0, loggedIn: true }, { cmd: 'codex', kind: 'codex', number: 0, loggedIn: true }]), ['claude1', 'codex1']);
 });

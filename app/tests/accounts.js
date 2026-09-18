@@ -1,12 +1,15 @@
-// Focused e2e: right-clicking a tab lists the Claude accounts and Codex, spots
-// the agent running under that tab's shell, and moving the chat exits it and
-// brings the same conversation up under the pick, in the same shell:
-//   claude1 -> claude2   resume by session id
-//   claude1 -> codex     Codex's importer (stubbed here) or a handoff file
+// Focused e2e: right-clicking a tab lists the signed-in accounts (any number
+// of claudeN / codexN, discovered from the home dir) with their usage left,
+// spots the agent running under that tab's shell, and moving the chat exits it
+// and brings the same conversation up under the pick, in the same shell:
+//   claude1 -> claude3   resume by session id
+//   claude1 -> codex1    Codex's importer (stubbed here), pointed at ~/.codex-1
+//   claude1 -> codex     importer fails, so a handoff file
 //   codex   -> claude1   a synthesized Claude transcript, resumed
+//   codex   -> codex1    the rollout copied into the other home, resumed
 // The agents are stood in for by nested PowerShells (detection needs a live
-// pid under the tab's shell plus the files the real agents leave behind), and
-// the launch line is captured instead of run.
+// pid under the tab's shell plus the files the real agents leave behind), the
+// launch line is captured instead of run, and usage comes from a fixture.
 const { _electron } = require('playwright-core');
 const path = require('path');
 const fs = require('fs');
@@ -40,19 +43,33 @@ const pidGone = (pid) => { try { process.kill(pid, 0); return false; } catch (_)
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 (async () => {
-  // A private "home": claude1 signed in, codex signed in, nothing else.
+  // A private "home": claude, claude1 and claude3 signed in, claude2's dir
+  // there but not signed in; codex and codex1 signed in, codex2's dir empty.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-claude-'));
-  const c1 = path.join(home, '.claude-1');
-  fs.mkdirSync(path.join(c1, 'sessions'), { recursive: true });
-  fs.writeFileSync(path.join(c1, '.credentials.json'), '{}');
-  fs.writeFileSync(path.join(c1, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'one@example.com' } }));
-  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(home, '.claude', '.credentials.json'), '{}');
-  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'plain@example.com' } }));
-  const codexDir = path.join(home, '.codex');
-  fs.mkdirSync(path.join(codexDir, 'sessions', '2026', '09', '04'), { recursive: true });
-  const idToken = `x.${Buffer.from(JSON.stringify({ email: 'codex@example.com' })).toString('base64url')}.y`;
-  fs.writeFileSync(path.join(codexDir, 'auth.json'), JSON.stringify({ tokens: { id_token: idToken } }));
+  const claudeDir = (n) => path.join(home, n ? `.claude-${n}` : '.claude');
+  const codexHome = (n) => path.join(home, n ? `.codex-${n}` : '.codex');
+  const idToken = (email) => `x.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.y`;
+  for (const [n, email] of [[0, 'plain@example.com'], [1, 'one@example.com'], [3, 'three@example.com']]) {
+    fs.mkdirSync(path.join(claudeDir(n), 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(claudeDir(n), '.credentials.json'), '{}');
+    fs.writeFileSync(n ? path.join(claudeDir(n), '.claude.json') : path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: email } }));
+  }
+  fs.mkdirSync(path.join(claudeDir(2), 'sessions'), { recursive: true });
+  for (const [n, email] of [[0, 'codex@example.com'], [1, 'codex1@example.com']]) {
+    fs.mkdirSync(path.join(codexHome(n), 'sessions', '2026', '09', '04'), { recursive: true });
+    fs.writeFileSync(path.join(codexHome(n), 'auth.json'), JSON.stringify({ tokens: { id_token: idToken(email) } }));
+  }
+  fs.mkdirSync(codexHome(2), { recursive: true });
+  const c1 = claudeDir(1);
+  const codexDir = codexHome(0);
+  // Usage limits, as usage.js would report them, without going online.
+  const fixture = path.join(home, 'usage.json');
+  fs.writeFileSync(fixture, JSON.stringify({
+    claude1: { fiveHour: { left: 88, resetsAt: new Date(Date.now() + 2 * 3600e3).toISOString() }, weekly: { left: 70, resetsAt: null }, plan: '' },
+    claude3: { error: 'sign-in expired; run claude3 to refresh' },
+    codex: { fiveHour: null, weekly: { left: 0, resetsAt: null }, plan: 'prolite' },
+    codex1: { fiveHour: { left: 25, resetsAt: null }, weekly: { left: 90, resetsAt: null }, plan: 'plus' },
+  }));
   // A stand-in "codex.exe": PowerShell under another name, so the process tree looks right.
   const bin = path.join(home, 'bin');
   fs.mkdirSync(bin);
@@ -61,7 +78,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   const electronApp = await _electron.launch({
     executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
     args: [APP], timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home },
+    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture },
   });
   const page = await electronApp.firstWindow();
   const pageErrors = [];
@@ -78,7 +95,6 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   async function standIn(exe) {
     await page.locator('.term-pane.active').click();
     await type(page, `& '${exe}' -NoProfile -Command 'Write-Output SESSPID_$PID; Start-Sleep 120'`);
-    const marker = `SESSPID_`;
     const seen = new Set();
     for (const m of (await screenText(page)).matchAll(/SESSPID_(\d+)/g)) seen.add(m[1]);
     return waitFor(async () => {
@@ -86,33 +102,48 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
       return null;
     }, 15000);
   }
-  async function claudeStandIn(sid) {
+  async function claudeStandIn(sid, dir = c1) {
     const pid = await standIn('powershell.exe');
-    fs.writeFileSync(path.join(c1, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId: sid, cwd: home, kind: 'interactive', status: 'idle', updatedAt: Date.now() }));
+    fs.writeFileSync(path.join(dir, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId: sid, cwd: home, kind: 'interactive', status: 'idle', updatedAt: Date.now() }));
     return pid;
   }
   const openMenu = async () => { await page.locator('.tab.active').click({ button: 'right' }); return page.locator('.account-menu'); };
+  const menuSettled = (menu) => waitFor(() => menu.locator('.head').textContent().then((t) => /Chat is on|No agent session/.test(t)), 15000);
   const swapTo = async (cmd) => {
     const menu = await openMenu();
-    await waitFor(() => menu.locator('.head').textContent().then((t) => /Chat is on|No Claude session/.test(t)), 15000);
+    await menuSettled(menu);
     await menu.locator(`.item[data-cmd="${cmd}"]`).click();
     return waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 30000);
   };
   const seenOnScreen = (needle) => waitFor(async () => (await screenText(page)).includes(needle), 15000);
+  const itemText = (menu, cmd, sel) => menu.locator(`.item[data-cmd="${cmd}"] ${sel}`).textContent();
 
-  // ---- no agent in the tab yet ----
+  // ---- no agent in the tab yet: only signed-in accounts, with usage ----
   let menu = await openMenu();
   check('right-click opens the account menu', !!(await waitFor(() => menu.count().then((n) => n === 1), 5000)));
-  check('menu lists the three Claude accounts and codex', !!(await waitFor(() => menu.locator('.item').count().then((n) => n === 4), 5000)));
-  check('signed-in Claude account shows its email', (await menu.locator('.item[data-cmd="claude1"] .who').textContent()) === 'one@example.com');
-  check('missing account shows not signed in', (await menu.locator('.item[data-cmd="claude2"] .who').textContent()) === 'not signed in');
-  check('codex shows the email from its token', (await menu.locator('.item[data-cmd="codex"] .who').textContent()) === 'codex@example.com');
-  check('plain claude shows its email from ~/.claude.json', (await menu.locator('.item[data-cmd="claude"] .who').textContent()) === 'plain@example.com');
-  check('menu reports no session in the tab', !!(await waitFor(() => menu.locator('.head').textContent().then((t) => /No Claude session/.test(t)), 15000)));
+  check('menu lists exactly the signed-in accounts', !!(await waitFor(() => menu.locator('.item').count().then((n) => n === 5), 5000)));
+  check('accounts are ordered claude, claude1, claude3, codex, codex1', (await menu.locator('.item').allTextContents()).length === 5 &&
+    JSON.stringify(await menu.locator('.item').evaluateAll((els) => els.map((e) => e.dataset.cmd))) === JSON.stringify(['claude', 'claude1', 'claude3', 'codex', 'codex1']));
+  check('an account that exists but is not signed in is left out', (await menu.locator('.item[data-cmd="claude2"], .item[data-cmd="codex2"]').count()) === 0);
+  check('signed-in Claude account shows its email', (await itemText(menu, 'claude1', '.who')) === 'one@example.com');
+  check('a third Claude account is discovered and shown', (await itemText(menu, 'claude3', '.who')) === 'three@example.com');
+  check('codex shows the email from its token', (await itemText(menu, 'codex', '.who')) === 'codex@example.com');
+  check('a second codex account is discovered and shown', (await itemText(menu, 'codex1', '.who')) === 'codex1@example.com');
+  check('plain claude shows its email from ~/.claude.json', (await itemText(menu, 'claude', '.who')) === 'plain@example.com');
+  check('usage left is shown per account: 5-hour and weekly', !!(await waitFor(() => itemText(menu, 'claude1', '.usage').then((t) => t === '5h 88% · wk 70%'), 10000)));
+  check('a healthy account reads as ok', (await menu.locator('.item[data-cmd="claude1"] .usage.ok').count()) === 1);
+  check('the usage tooltip carries the reset time', /5-hour window: 88% left, resets in (2h 0m|1h 59m)\nWeekly: 70% left/.test(await menu.locator('.item[data-cmd="claude1"] .usage').getAttribute('title')));
+  check('a plan with only a weekly window shows a dash for the 5-hour one', (await itemText(menu, 'codex', '.usage')) === '5h – · wk 0%');
+  check('an exhausted limit reads as low', (await menu.locator('.item[data-cmd="codex"] .usage.low').count()) === 1);
+  check('a tight 5-hour limit reads as mid', (await itemText(menu, 'codex1', '.usage')) === '5h 25% · wk 90%' && (await menu.locator('.item[data-cmd="codex1"] .usage.mid').count()) === 1);
+  check('an account whose usage could not be read says so', (await itemText(menu, 'claude3', '.usage')) === 'usage n/a' && /expired/.test(await menu.locator('.item[data-cmd="claude3"] .usage').getAttribute('title')));
+  check('an account with no usage fixture is left blank, not broken', (await itemText(menu, 'claude', '.usage')) === 'usage n/a');
+  check('footer names the accounts to sign in to next', (await menu.locator('.more').textContent()) === 'Sign in to more: claude2, claude4, codex2, codex3');
+  check('menu reports no session in the tab', !!(await menuSettled(menu)) && /No agent session/.test(await menu.locator('.head').textContent()));
   await page.keyboard.press('Escape');
   check('Escape closes the menu', !!(await waitFor(() => menu.count().then((n) => n === 0), 3000)));
 
-  // ---- claude1 -> claude2: resume by id ----
+  // ---- the account a chat is on is listed even when it isn't signed in ----
   const sid = '11111111-2222-4333-8444-555555555555';
   const projectDir = path.join(c1, 'projects', home.replace(/[^A-Za-z0-9]/g, '-'));
   fs.mkdirSync(projectDir, { recursive: true });
@@ -120,21 +151,35 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     JSON.stringify({ type: 'user', isSidechain: false, uuid: 'u1', parentUuid: null, sessionId: sid, message: { role: 'user', content: 'HANDOFF_ASK make the widget blue' } }),
     JSON.stringify({ type: 'assistant', isSidechain: false, uuid: 'a1', parentUuid: 'u1', sessionId: sid, message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'HANDOFF_REPLY done, it is blue now' }] } }),
   ].join('\n') + '\n');
-  let pid = await claudeStandIn(sid);
+  let pid = await claudeStandIn(sid, claudeDir(2));
+  check('stand-in Claude on the unsigned account runs under the tab', !!pid);
+  menu = await openMenu();
+  check('menu adds and marks the unsigned account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="claude2"]').count().then((n) => n === 1), 15000)));
+  check('menu head names the current account', /on claude2/.test(await page.locator('.account-menu .head').textContent()));
+  check('the other accounts are still the signed-in ones only', (await page.locator('.account-menu .item').count()) === 6);
+  await page.keyboard.press('Escape');
+  check('claude2 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
+  check('claude2 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('claude2 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`)));
+
+  // ---- claude1 -> claude3: resume by id ----
+  pid = await claudeStandIn(sid);
   check('stand-in Claude runs under the tab', !!pid);
   menu = await openMenu();
   check('menu marks the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="claude1"]').count().then((n) => n === 1), 15000)));
-  check('menu head names the current account', /on claude1/.test(await page.locator('.account-menu .head').textContent()));
   await page.keyboard.press('Escape');
-  check('claude1 -> claude2: menu closes once the move is done', !!(await swapTo('claude2')));
-  check('claude1 -> claude2: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('claude1 -> claude2: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude2_${sid}`)));
+  check('claude1 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
+  check('claude1 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('claude1 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`)));
 
-  // ---- claude1 -> codex: native import (stubbed) ----
-  await electronApp.evaluate(() => { global.__limpetCodexImport = async () => '01a00000-0000-7000-8000-00000000abcd'; });
+  // ---- claude1 -> codex1: native import (stubbed), aimed at codex1's home ----
+  await electronApp.evaluate(() => {
+    global.__limpetCodexImport = async (transcript, opts) => { global.__limpetImportedInto = opts && opts.codexHome; return '01a00000-0000-7000-8000-00000000abcd'; };
+  });
   pid = await claudeStandIn(sid);
-  check('claude1 -> codex: move completes', !!(await swapTo('codex')));
-  check('claude1 -> codex: the imported thread is resumed', !!(await seenOnScreen('SWAPPED_codex_01a00000-0000-7000-8000-00000000abcd')));
+  check('claude1 -> codex1: move completes', !!(await swapTo('codex1')));
+  check('claude1 -> codex1: the imported thread is resumed under codex1', !!(await seenOnScreen('SWAPPED_codex1_01a00000-0000-7000-8000-00000000abcd')));
+  check('claude1 -> codex1: the importer was pointed at ~/.codex-1', (await electronApp.evaluate(() => global.__limpetImportedInto)) === codexHome(1));
 
   // ---- claude1 -> codex: importer fails, so a handoff file and prompt ----
   await electronApp.evaluate(() => { global.__limpetCodexImport = async () => { throw new Error('importer unavailable'); }; });
@@ -150,10 +195,8 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   }
 
   // ---- codex -> claude1: a synthesized Claude transcript ----
-  const thread = '01a00000-0000-7000-8000-0000000000aa';
-  pid = await standIn(path.join(bin, 'codex.exe'));
-  check('stand-in codex runs under the tab', !!pid);
-  fs.writeFileSync(path.join(codexDir, 'sessions', '2026', '09', '04', `rollout-2026-09-04T12-00-00-${thread}.jsonl`), [
+  const rolloutName = (thread) => `rollout-2026-09-04T12-00-00-${thread}.jsonl`;
+  const writeRollout = (dir, thread) => fs.writeFileSync(path.join(dir, 'sessions', '2026', '09', '04', rolloutName(thread)), [
     JSON.stringify({ type: 'session_meta', payload: { id: thread, cwd: home, timestamp: new Date().toISOString() } }),
     JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>\n<cwd>x</cwd>\n</environment_context>' }] } }),
     JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'CODEX_ASK rename the helper' }] } }),
@@ -161,6 +204,10 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c1', output: [{ type: 'input_text', text: 'src/a.js' }] } }),
     JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CODEX_REPLY renamed it' }] } }),
   ].join('\n') + '\n');
+  const thread = '01a00000-0000-7000-8000-0000000000aa';
+  pid = await standIn(path.join(bin, 'codex.exe'));
+  check('stand-in codex runs under the tab', !!pid);
+  writeRollout(codexDir, thread);
   menu = await openMenu();
   check('menu marks codex as the agent the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex"]').count().then((n) => n === 1), 15000)));
   await page.keyboard.press('Escape');
@@ -179,6 +226,19 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
         rows.every((r) => !r.cwd || r.cwd === home));
     }
   }
+
+  // ---- codex -> codex1: the rollout is copied into the other home ----
+  const thread2 = '01a00000-0000-7000-8000-0000000000bb';
+  pid = await standIn(path.join(bin, 'codex.exe'));
+  writeRollout(codexDir, thread2);
+  menu = await openMenu();
+  check('menu tells which codex account the chat is on from the rollout\'s home', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex"]').count().then((n) => n === 1), 15000)));
+  await page.keyboard.press('Escape');
+  check('codex -> codex1: move completes', !!(await swapTo('codex1')));
+  check('codex -> codex1: the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('codex -> codex1: the same thread is resumed under codex1', !!(await seenOnScreen(`SWAPPED_codex1_${thread2}`)));
+  const copied = path.join(codexHome(1), 'sessions', '2026', '09', '04', rolloutName(thread2));
+  check('codex -> codex1: the rollout was copied into ~/.codex-1 at the same dated path', fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(codexDir, 'sessions', '2026', '09', '04', rolloutName(thread2)), 'utf8'));
 
   // ---- background picker: standard limpet colour by default, swatches, generative ----
   const paneColor = () => page.evaluate(() => getComputedStyle(document.querySelector('.term-pane.active')).backgroundColor);
@@ -208,7 +268,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   // ---- picking an agent with nothing running starts it fresh ----
   menu = await openMenu();
-  await waitFor(() => menu.locator('.head').textContent().then((t) => /No Claude session/.test(t)), 15000);
+  await menuSettled(menu);
   await menu.locator('.item[data-cmd="claude"]').click();
   check('an account picked in an idle tab is started there', !!(await seenOnScreen('SWAPPED_claude_FRESH')));
 

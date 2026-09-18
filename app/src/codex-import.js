@@ -5,8 +5,10 @@
 // then wait for the .../import/completed notification carrying the new thread
 // id. A transcript Codex has already imported unchanged is not detected
 // again; then the thread id comes from Codex's own import record
-// (~/.codex/external_agent_session_imports.json), provided that thread still
-// exists. No Electron dependencies; unit tested against a fake app-server in
+// (<codex home>/external_agent_session_imports.json), provided that thread
+// still exists. The app-server runs with CODEX_HOME set to `codexHome`, so the
+// imported thread lands in that account (codex, codex1, ...). No Electron
+// dependencies; unit tested against a fake app-server in
 // tests/codex-import.test.js.
 
 const { spawn } = require('child_process');
@@ -51,7 +53,7 @@ function importClaudeSession(transcriptPath, {
 } = {}) {
   return new Promise((resolve, reject) => {
     let child;
-    try { child = spawnImpl(command.file, command.args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
+    try { child = spawnImpl(command.file, command.args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CODEX_HOME: codexHome } }); }
     catch (e) { reject(new Error(`codex app-server could not start: ${e.message}`)); return; }
     let settled = false;
     let buf = '';

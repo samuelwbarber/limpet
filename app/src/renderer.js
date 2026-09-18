@@ -509,12 +509,13 @@ function applyBackground(tab, id) {
   }
 }
 
-// ---- Claude account menu: right-click a tab ----
-// Lists the limpet Claude accounts (claude / claude1 / claude2), marks the one
-// whose Claude Code is running under this tab's shell, and on a pick asks the
-// main process to move the chat: exit that Claude and `--resume` the same
-// session under the other login. Session history is shared between the
-// accounts (see README), so the whole conversation comes across.
+// ---- Account menu: right-click a tab ----
+// Lists every signed-in limpet account (claude, claude1, ..., codex, codex1,
+// ...) with how much of its 5-hour and weekly limits is left, marks the one
+// whose agent is running under this tab's shell, and on a pick asks the main
+// process to move the chat there: exit the running agent and resume the same
+// conversation under the pick. Accounts that aren't signed in are left out;
+// a footer names the commands to run to sign in to more.
 let accountMenu = null;
 
 function closeAccountMenu() {
@@ -526,6 +527,39 @@ document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAccountMenu(); }, true);
 window.addEventListener('blur', closeAccountMenu);
 
+// "resets in 2h 10m" for an ISO time; '' if unknown.
+function resetText(iso) {
+  if (!iso) return '';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return '';
+  if (ms <= 0) return ', reset due';
+  const mins = Math.round(ms / 60000);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h >= 48) return `, resets in ${Math.round(h / 24)}d`;
+  return h ? `, resets in ${h}h ${m}m` : `, resets in ${m}m`;
+}
+
+// Fill an item's usage cell from a usage.js result: "5h 88% · wk 70%" (percent
+// left), coloured by the tighter of the two, reset times in the tooltip.
+function renderUsage(el, usage) {
+  if (!usage || usage.error) {
+    el.textContent = usage && usage.error ? 'usage n/a' : '';
+    el.title = usage && usage.error ? usage.error : '';
+    el.className = 'usage na';
+    return;
+  }
+  const pct = (w) => (w ? `${w.left}%` : '–');
+  el.textContent = `5h ${pct(usage.fiveHour)} · wk ${pct(usage.weekly)}`;
+  const lowest = Math.min(...[usage.fiveHour, usage.weekly].filter(Boolean).map((w) => w.left));
+  el.className = `usage ${lowest <= 10 ? 'low' : lowest <= 30 ? 'mid' : 'ok'}`;
+  el.title = [
+    usage.fiveHour ? `5-hour window: ${usage.fiveHour.left}% left${resetText(usage.fiveHour.resetsAt)}` : '5-hour window: no data',
+    usage.weekly ? `Weekly: ${usage.weekly.left}% left${resetText(usage.weekly.resetsAt)}` : 'Weekly: no data',
+    usage.plan ? `Plan: ${usage.plan}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 async function showAccountMenu(id, tabEl) {
   closeAccountMenu();
   const menu = document.createElement('div');
@@ -536,14 +570,22 @@ async function showAccountMenu(id, tabEl) {
   menu.style.top = `${Math.round(r.bottom + 2)}px`;
   const head = document.createElement('div');
   head.className = 'head';
-  head.textContent = 'Claude account · looking for a session…';
+  head.textContent = 'Accounts · looking for a session…';
   menu.appendChild(head);
   document.body.appendChild(menu);
   accountMenu = menu;
 
+  const { accounts: all = [], more = [] } = await window.limpet.claudeAccounts(id) || {};
+  if (accountMenu !== menu) return;
   const items = new Map();
-  for (const a of await window.limpet.claudeAccounts(id)) {
-    if (accountMenu !== menu) return;
+  const footer = document.createElement('div');
+  footer.className = 'more';
+  footer.textContent = more.length ? `Sign in to more: ${more.join(', ')}` : '';
+  footer.title = 'Run one of these in a tab and /login; it appears here once signed in';
+  const none = document.createElement('div');
+  none.className = 'none';
+  none.textContent = 'No accounts signed in';
+  const addItem = (a) => {
     const item = document.createElement('div');
     item.className = 'item';
     item.dataset.cmd = a.cmd;
@@ -553,11 +595,28 @@ async function showAccountMenu(id, tabEl) {
     const who = document.createElement('span');
     who.className = 'who';
     who.textContent = a.email || (a.loggedIn ? 'signed in' : 'not signed in');
-    item.append(name, who);
+    const use = document.createElement('span');
+    use.className = 'usage';
+    use.textContent = a.loggedIn ? '…' : '';
+    item.append(name, who, use);
     item.addEventListener('click', () => pickAccount(id, a.cmd, menu));
-    menu.appendChild(item);
+    menu.insertBefore(item, footer);
     items.set(a.cmd, item);
-  }
+    if (none.parentNode) none.remove();
+    return item;
+  };
+  menu.appendChild(footer);
+  for (const a of all) if (a.loggedIn) addItem(a);
+  if (!items.size) menu.insertBefore(none, footer);
+
+  // Usage limits come from the network; fill them in as they land.
+  window.limpet.claudeUsage(id).then((rows) => {
+    if (accountMenu !== menu) return;
+    for (const { cmd, usage } of rows || []) {
+      const item = items.get(cmd);
+      if (item) renderUsage(item.querySelector('.usage'), usage);
+    }
+  }).catch(() => {});
 
   // Background: colour swatches, or the generative backdrop.
   const bg = document.createElement('div');
@@ -593,10 +652,11 @@ async function showAccountMenu(id, tabEl) {
   menu.dataset.current = current ? current.cmd : '';
   if (current) {
     head.textContent = `Chat is on ${current.cmd}${current.status ? ` (${current.status})` : ''} · pick another to move it`;
-    const item = items.get(current.cmd);
-    if (item) item.classList.add('current');
+    // The account the chat is on is always listed, signed in or not.
+    const item = items.get(current.cmd) || addItem(all.find((a) => a.cmd === current.cmd) || { cmd: current.cmd, kind: current.kind, email: '', loggedIn: false });
+    item.classList.add('current');
   } else {
-    head.textContent = 'No Claude session in this tab · pick an account to start one';
+    head.textContent = 'No agent session in this tab · pick an account to start one';
   }
 }
 

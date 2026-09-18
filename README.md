@@ -107,53 +107,62 @@ machine; it updates as the conversation moves on.
 
 <p align="center"><img src="docs/media/backdrop.gif" width="840" alt="background demo: picking a colour, then the generative backdrop appearing" /></p>
 
-## Three Claude accounts, one history
+## Any number of Claude and Codex accounts
 
-Keep a personal and a work [Claude Code](https://www.claude.com/product/claude-code)
-account signed in alongside your usual one, and share your session history
-across all three.
+Keep as many [Claude Code](https://www.claude.com/product/claude-code) and
+[Codex](https://github.com/openai/codex) logins as you have subscriptions, each
+behind its own command, and share your Claude session history across all of
+them.
 
 ```powershell
-claude         # your usual account (config in ~/.claude)
-claude1        # personal account
-claude2        # work account
+claude         # your usual account       (config in ~/.claude)
+claude1        # another Claude login     (~/.claude-1)
+claude2        # and another              (~/.claude-2)
+claude7        # any number works         (~/.claude-7, created on first run)
+codex          # your usual Codex         (~/.codex)
+codex1         # another Codex login      (~/.codex-1)
 ```
 
-`claude1` and `claude2` run Claude against their own config directory
-(`~/.claude-1`, `~/.claude-2`), so they hold separate logins — `/login` once in
-each and both stay authenticated; `claude1` is always personal, `claude2` always
-work. Plain `claude` keeps its own login in `~/.claude`.
+`claudeN` runs Claude Code with `CLAUDE_CONFIG_DIR` pointed at `~/.claude-N`;
+`codexN` runs Codex with `CODEX_HOME` at `~/.codex-N`. Each holds a separate
+login: `/login` once in each and it stays signed in. There is no list to edit.
+Type a number that doesn't exist yet and limpet creates the directory and runs
+the agent there (a numbered command whose directory already exists is a real
+function, so it tab-completes). Any arguments pass straight through
+(`claude3 --resume`, `codex2 resume <id>`, `claude1 -p "..."`).
 
-All three accounts' session transcripts live in one shared store (limpet
+All Claude accounts' session transcripts live in one shared store (limpet
 junctions each config's `projects/` folder to `~/.claude-shared/projects`), so
 **`/resume` lists the same conversations whichever account you're in**. Start
-something on your personal account, pick it up on work, and back again.
-Transcripts are named by a unique id, so the accounts can run side by side
-without ever colliding. The wiring is created automatically the first time you
-run `claude1` or `claude2` (or by hand with `Sync-LimpetClaudeHistory`): any
-pre-existing `projects/` folder, plain `claude`'s included, is folded into the
-shared store file by file, never overwritten. A folder that a running session
-still has open is left alone and picked up on the next launch.
+something on one account, pick it up on another, and back again. Transcripts
+are named by a unique id, so the accounts can run side by side without ever
+colliding. The wiring is created automatically whenever a numbered `claude`
+command runs (or by hand with `Sync-LimpetClaudeHistory`): any pre-existing
+`projects/` folder, plain `claude`'s included, is folded into the shared store
+file by file, never overwritten. A folder that a running session still has
+open is left alone and picked up on the next launch.
 
 Only the transcripts are shared. The up-arrow prompt history stays per account,
-because Claude Code refuses to read that file through a link.
-
-Any arguments pass straight through (`claude1 --resume`, `claude2 -p "..."`).
-To rename them or add another, copy the `claude1`/`claude2` functions in
-`shell/Limpet.psm1`, point them at a different config directory, and add that
-directory to `$script:LimpetClaudeConfigDirs` so it joins the shared store.
+because Claude Code refuses to read that file through a link. Codex accounts
+share nothing between them; the app copies a thread across when you move it.
 
 ### Switch account, or agent, mid-chat
 
-In the limpet app, right-click a tab to see the three Claude accounts and
-Codex, with the one that tab's chat is running on marked. Pick another and
-limpet exits the running agent and brings the same conversation up under the
-pick, in the same shell:
+In the limpet app, right-click a tab to see every account that is signed in,
+Claude and Codex alike, each with how much of its 5-hour and weekly limit is
+left (`5h 88% · wk 70%`, hover for the reset times; green, amber and red as it
+runs out). The account the tab's chat is running on is marked. Accounts that
+aren't signed in are left out, and the footer names the commands to run to add
+one (`Sign in to more: claude3, codex1`). Pick another and limpet exits the
+running agent and brings the same conversation up under the pick, in the same
+shell:
 
 - **Claude to Claude**: `<account> --resume <session id>`. Nothing is copied;
   the transcript is shared.
-- **Claude to Codex**: Codex's own importer turns the transcript into a Codex
-  thread, then `codex resume <thread id>`.
+- **Codex to Codex**: the thread's rollout file is copied into the other
+  account's home, then `<account> resume <thread id>`.
+- **Claude to Codex**: Codex's own importer turns the transcript into a thread
+  in that Codex account, then `<account> resume <thread id>`.
 - **Codex to Claude**: limpet writes the chat out as a Claude transcript and
   resumes it, so Claude remembers it natively.
 - If a conversion fails, the chat is rendered to a Markdown handoff file and
@@ -162,9 +171,13 @@ pick, in the same shell:
 
 <p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: a Claude Code chat moved to Codex from the tab menu, conversation intact" /></p>
 
-Handy when one subscription hits its limit. With nothing running in the tab,
-picking an account just starts it there. Moving to Codex sends the conversation
-to OpenAI once Codex replies, so pick with that in mind.
+Handy when one subscription hits its limit: the usage column shows which one
+still has room. With nothing running in the tab, picking an account just
+starts it there. Moving to Codex sends the conversation to OpenAI once Codex
+replies, so pick with that in mind. Usage is read with each account's own
+stored login, from the same endpoints `/usage` (Claude) and `/status` (Codex)
+use, and nothing is written back; an expired login shows `usage n/a` until you
+run that account again.
 
 ## Install
 

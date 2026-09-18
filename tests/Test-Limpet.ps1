@@ -254,6 +254,52 @@ finally {
     Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue
 }
 
+# ---------------------------------------------------------------------------
+# Any number of accounts: discovery from the home dir, numbered commands (real
+# functions for dirs that exist, the command-not-found hook for the rest) and
+# CLAUDE_CONFIG_DIR / CODEX_HOME routing. Nothing is launched (--limpet-plan)
+# and everything lives under a temp home; the real ~/.claude* are untouched.
+# ---------------------------------------------------------------------------
+$ah = Join-Path $env:TEMP ("limpet_agents_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$savedAgentHome = $env:LIMPET_AGENT_HOME
+try {
+    New-Item -ItemType Directory -Force -Path "$ah\.claude-2", "$ah\.claude-10", "$ah\.codex-1", "$ah\.claude-x", "$ah\.claude-01", "$ah\Documents" | Out-Null
+    $env:LIMPET_AGENT_HOME = $ah
+    $accts = @(Get-LimpetAgentAccounts)
+    Check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' (($accts | ForEach-Object Command) -join ',' -eq 'claude,claude2,claude10,codex,codex1')
+    Check 'each account maps to its own config dir' (($accts | Where-Object Command -eq 'codex1').ConfigDir -eq "$ah\.codex-1")
+
+    Import-Module $module -Force   # re-import: the numbered dirs become commands
+    Check 'numbered accounts whose dir exists are real commands' (@(Get-Command claude2, claude10, codex1 -ErrorAction SilentlyContinue).Count -eq 3)
+    $plan = claude10 --limpet-plan --resume abc
+    Check 'claude10 runs Claude with CLAUDE_CONFIG_DIR at ~/.claude-10, arguments intact' (
+        $plan.Kind -eq 'claude' -and $plan.EnvName -eq 'CLAUDE_CONFIG_DIR' -and $plan.ConfigDir -eq "$ah\.claude-10" -and (($plan.Arguments -join ' ') -eq '--resume abc'))
+    $plan = codex1 --limpet-plan resume xyz
+    Check 'codex1 runs Codex with CODEX_HOME at ~/.codex-1' (
+        $plan.Kind -eq 'codex' -and $plan.EnvName -eq 'CODEX_HOME' -and $plan.ConfigDir -eq "$ah\.codex-1" -and (($plan.Arguments -join ' ') -eq 'resume xyz'))
+    Check 'a number with no dir is not a command yet' (-not (Get-Command claude7 -ErrorAction SilentlyContinue))
+    $plan = claude7 --limpet-plan -c
+    Check 'claude7 still runs, through the command-not-found hook, and gets its dir' (
+        $plan.ConfigDir -eq "$ah\.claude-7" -and (Test-Path "$ah\.claude-7") -and (($plan.Arguments -join ' ') -eq '-c'))
+    $plan = codex42 --limpet-plan
+    Check 'codex42 likewise' ($plan.Kind -eq 'codex' -and (Test-Path "$ah\.codex-42") -and $plan.Arguments.Count -eq 0)
+    Check 'a Claude launch wires every Claude account into the shared store under that home' (
+        ((Get-Item "$ah\.claude-7\projects" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        ((Get-Item "$ah\.claude-2\projects" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path "$ah\.claude-shared\projects"))
+    Check 'a Codex launch leaves the Claude wiring alone' (-not (Test-Path "$ah\.codex-42\projects"))
+    Check 'a leading zero is not an account' ($(try { Invoke-LimpetAgent -Command 'claude01' -Arguments @('--limpet-plan') -ErrorAction Stop; 'ran' } catch { 'refused' }) -eq 'refused')
+    Check 'other unknown commands still fail normally' ($(try { nosuchlimpetcommand } catch { 'gone' }) -eq 'gone')
+    Check 'plain claude and codex are never shadowed' (@(Get-Command claude, codex -CommandType Function -ErrorAction SilentlyContinue).Count -eq 0)
+}
+finally {
+    if ($null -eq $savedAgentHome) { Remove-Item Env:\LIMPET_AGENT_HOME -ErrorAction SilentlyContinue } else { $env:LIMPET_AGENT_HOME = $savedAgentHome }
+    Import-Module $module -Force   # back to the real home's accounts
+    Get-ChildItem -LiteralPath $ah -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+        ForEach-Object { [IO.Directory]::Delete($_.FullName) }
+    Remove-Item -Recurse -Force $ah -ErrorAction SilentlyContinue
+}
+
 $global:ErrorActionPreference = $script:savedGlobalEAP
 $color = if ($fail) { 'Red' } else { 'Green' }
 Write-Host "`n$pass passed, $fail failed" -ForegroundColor $color

@@ -65,20 +65,27 @@
     #drop.show { display: flex; }
     /* right-click a tab: which Claude account the chat runs under */
     .account-menu {
-      position: absolute; z-index: 20; min-width: 300px; padding: 4px;
+      position: absolute; z-index: 20; min-width: 380px; padding: 4px;
       background: #181825; border: 1px solid #313244; border-radius: 8px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.45); color: #cdd6f4;
       font: 12px 'Cascadia Mono', Consolas, monospace; user-select: none;
     }
     .account-menu .head { padding: 6px 10px 4px; color: #6c7086; white-space: nowrap; }
     .account-menu .item {
-      display: flex; justify-content: space-between; align-items: baseline; gap: 18px;
+      display: grid; grid-template-columns: auto minmax(60px, 1fr) auto; align-items: baseline; gap: 14px;
       padding: 6px 10px; border-radius: 5px; cursor: pointer;
     }
     .account-menu .item:hover { background: #313244; }
     .account-menu .item.current, .account-menu .item.current .who { color: #a6e3a1; }
     .account-menu .item.current .name::after { content: ' ●'; }
     .account-menu .who { color: #a6adc8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .account-menu .usage { color: #6c7086; white-space: nowrap; font-variant-numeric: tabular-nums; justify-self: end; }
+    .account-menu .usage.ok { color: #a6e3a1; }
+    .account-menu .usage.mid { color: #f9e2af; }
+    .account-menu .usage.low { color: #f38ba8; }
+    .account-menu .none { padding: 6px 10px; color: #6c7086; font-style: italic; }
+    .account-menu .more { padding: 4px 10px 6px; color: #6c7086; white-space: nowrap; }
+    .account-menu .more:empty { display: none; }
     .account-menu.busy .item { pointer-events: none; opacity: 0.55; }
     .account-menu .bg { display: flex; align-items: center; gap: 7px; padding: 8px 10px 6px; margin-top: 4px; border-top: 1px solid #313244; }
     .account-menu .bg .label { color: #6c7086; margin-right: 4px; }

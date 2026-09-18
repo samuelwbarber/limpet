@@ -646,43 +646,91 @@ function limpet {
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
-    Write-Host '  Claude   : claude / claude1 / claude2 (separate logins, one synced /resume history)' -ForegroundColor DarkGray
+    Write-Host '  Agents   : claude1, claude2, ... / codex1, codex2, ... (separate logins; Claude shares one /resume history)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
-# Multiple Claude Code accounts, one synced /resume history.
+# Any number of Claude Code and Codex accounts; one synced Claude /resume history.
 #
-# `claude1` and `claude2` each launch the Claude Code CLI against their own
-# config directory (~/.claude-1, ~/.claude-2), so each stays logged in to a
-# different account -- e.g. personal and work -- with no re-authenticating.
-# Plain `claude` is the third account and keeps its own login in ~/.claude.
+# `claude1`, `claude2`, `claude3`, ... each launch the Claude Code CLI against
+# their own config directory (~/.claude-1, ~/.claude-2, ...), so each stays
+# logged in to a different account -- e.g. personal and work -- with no
+# re-authenticating. Plain `claude` keeps its own login in ~/.claude. In the
+# same way `codex1`, `codex2`, ... run the OpenAI Codex CLI with CODEX_HOME at
+# ~/.codex-1, ~/.codex-2, ...; plain `codex` stays on ~/.codex.
 #
-# All three configs' `projects` folders are junctioned to one shared store
+# There is no list of accounts. A numbered command whose directory exists is
+# defined as a real function at import (tab completion, Get-Command); any
+# other number is caught by PowerShell's command-not-found hook, so `claude7`
+# works the first time it is typed and creates ~/.claude-7 on the way. Sign in
+# there once (/login) and it stays signed in; the limpet app's tab menu lists
+# every signed-in account.
+#
+# All Claude configs' `projects` folders are junctioned to one shared store
 # (~/.claude-shared/projects), so `/resume` lists the same sessions whichever
 # account you're in. Transcripts are named by unique id, so accounts never
-# collide even running side by side. The wiring is made the first time
-# claude1/claude2 runs (or on demand with Sync-LimpetClaudeHistory); a
+# collide even running side by side. The wiring is made whenever a numbered
+# claude command runs (or on demand with Sync-LimpetClaudeHistory); a
 # pre-existing solo `projects` folder is folded into the shared store,
 # merged file by file, never clobbered.
 #
 # Only `projects/` is shared. The up-arrow prompt history (history.jsonl)
 # stays per account: Claude Code refuses to read that file through a link.
+# Codex accounts share nothing; the app copies a thread across when asked.
 # ---------------------------------------------------------------------------
 
-# Every account's config dir, relative to $HOME. Plain `claude` first.
-$script:LimpetClaudeConfigDirs = @('.claude', '.claude-1', '.claude-2')
+# Where the account directories live. Tests point this at a temp folder.
+function Get-LimpetAgentHome { if ($env:LIMPET_AGENT_HOME) { $env:LIMPET_AGENT_HOME } else { $HOME } }
+
+# Every account with a config dir under the home, plain ones first, numbers
+# ascending: @{ Command = 'claude3'; Kind = 'claude'; Number = 3; ConfigDir = '...\.claude-3' }
+function Get-LimpetAgentAccounts {
+    param([string]$AgentHome = (Get-LimpetAgentHome))
+    $found = @{ claude = @(); codex = @() }
+    foreach ($d in @(Get-ChildItem -LiteralPath $AgentHome -Directory -Force -ErrorAction SilentlyContinue)) {
+        if ($d.Name -match '^\.(claude|codex)-([1-9]\d*)$') { $found[$Matches[1]] += [int]$Matches[2] }
+    }
+    foreach ($kind in 'claude', 'codex') {
+        [pscustomobject]@{ Command = $kind; Kind = $kind; Number = 0; ConfigDir = (Join-Path $AgentHome ".$kind") }
+        foreach ($n in @($found[$kind] | Sort-Object -Unique)) {
+            [pscustomobject]@{ Command = "$kind$n"; Kind = $kind; Number = $n; ConfigDir = (Join-Path $AgentHome ".$kind-$n") }
+        }
+    }
+}
+
+# The account a command name denotes (claude, claude3, codex, codex12), or $null.
+function Resolve-LimpetAgentCommand {
+    param([string]$Command, [string]$AgentHome = (Get-LimpetAgentHome))
+    if ($Command -notmatch '^(claude|codex)([1-9]\d*)?$') { return $null }
+    $kind = $Matches[1]
+    $n = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+    $dir = if ($n) { ".$kind-$n" } else { ".$kind" }
+    [pscustomobject]@{ Command = $Command; Kind = $kind; Number = $n; ConfigDir = (Join-Path $AgentHome $dir) }
+}
+
+# Every Claude config dir: ~/.claude plus each ~/.claude-N present.
+function Get-LimpetClaudeConfigDirs {
+    @(Get-LimpetAgentAccounts | Where-Object { $_.Kind -eq 'claude' } | ForEach-Object { $_.ConfigDir })
+}
 
 function Get-LimpetClaudeExe {
     # Resolve the real Claude Code launcher (npm shim or exe). Our wrappers are
-    # named claude1/claude2, so there's nothing to recurse into here.
+    # numbered (claude1, ...), so there's nothing to recurse into here.
     $cmd = Get-Command claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($cmd) { return $cmd.Source }
     return $null
 }
 
-function Get-LimpetClaudeSharedStore { Join-Path $HOME '.claude-shared\projects' }
+function Get-LimpetCodexExe {
+    $cmd = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Get-LimpetClaudeSharedStore { Join-Path (Get-LimpetAgentHome) '.claude-shared\projects' }
 
 function Test-LimpetSamePath([string]$A, [string]$B) {
     # Junction targets can come back with a \\?\ prefix or a trailing slash.
@@ -792,22 +840,22 @@ function Sync-LimpetClaudeHistory {
     <#
     .SYNOPSIS
     Point every Claude Code account's projects/ folder at the shared store so
-    /resume lists the same sessions from claude, claude1 and claude2.
+    /resume lists the same sessions from claude, claude1, claude2, ...
     .DESCRIPTION
-    Runs automatically whenever claude1 or claude2 launches. Run it by hand
-    after using plain claude on a machine where claude1/claude2 have never
+    Runs automatically whenever a numbered claude command launches. Run it by
+    hand after using plain claude on a machine where no numbered account has
     been started, or to check the wiring. Returns $true when every account is
     synced; otherwise a warning says which one isn't and why.
     #>
     [CmdletBinding()]
     param(
-        # Config dirs to wire up. Default: ~/.claude, ~/.claude-1, ~/.claude-2.
+        # Config dirs to wire up. Default: ~/.claude plus every ~/.claude-N that exists.
         [string[]]$ConfigDir,
         # Where the shared transcripts live.
         [string]$Shared = (Get-LimpetClaudeSharedStore)
     )
     if (-not $ConfigDir) {
-        $ConfigDir = @($script:LimpetClaudeConfigDirs | ForEach-Object { Join-Path $HOME $_ })
+        $ConfigDir = Get-LimpetClaudeConfigDirs
     }
     $stamp = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), ([guid]::NewGuid().ToString('N').Substring(0, 4))
     New-Item -ItemType Directory -Force -Path $Shared | Out-Null
@@ -818,34 +866,81 @@ function Sync-LimpetClaudeHistory {
     return $ok
 }
 
-function Invoke-LimpetClaude {
+function Invoke-LimpetAgent {
+    <#
+    .SYNOPSIS
+    Run an agent CLI as one limpet account: claude3 -> Claude Code with
+    CLAUDE_CONFIG_DIR=~/.claude-3, codex2 -> Codex with CODEX_HOME=~/.codex-2.
+    .DESCRIPTION
+    What the numbered commands call. The directory is created if missing, a
+    Claude launch first wires every Claude account into the shared history,
+    and Arguments go to the CLI untouched (`claude3 -c`, `codex2 resume <id>`).
+    The env var is set for this launch only and put back afterwards, so plain
+    `claude` / `codex` keep their usual directories. With '--limpet-plan' among
+    the arguments nothing is launched; the resolved plan is returned instead
+    (tests).
+    #>
     param(
-        [Parameter(Mandatory)][string]$ConfigDir,
-        [Parameter(ValueFromRemainingArguments)]$Rest
+        [Parameter(Mandatory)][string]$Command,
+        [object[]]$Arguments = @()
     )
-    $exe = Get-LimpetClaudeExe
-    if (-not $exe) {
-        Write-Warning 'limpet: the claude CLI is not on PATH. Install Claude Code, then rerun claude1/claude2.'
+    $account = Resolve-LimpetAgentCommand -Command $Command
+    if (-not $account) {
+        Write-Error "limpet: '$Command' is not an agent account (claude, claude1, claude2, ..., codex, codex1, ...)."
         return
     }
-    # Wire up every account, not just this one, so plain claude's history
-    # lands in the shared store too.
-    Sync-LimpetClaudeHistory | Out-Null
-    # CLAUDE_CONFIG_DIR is process-wide; scope it to this launch so plain
-    # `claude` keeps using ~/.claude afterwards.
-    $prev = $env:CLAUDE_CONFIG_DIR
+    New-Item -ItemType Directory -Force -Path $account.ConfigDir | Out-Null
+    $envName = if ($account.Kind -eq 'codex') { 'CODEX_HOME' } else { 'CLAUDE_CONFIG_DIR' }
+    if ($account.Kind -eq 'claude') {
+        # Wire up every account, not just this one, so plain claude's history
+        # lands in the shared store too.
+        Sync-LimpetClaudeHistory | Out-Null
+    }
+    $exe = if ($account.Kind -eq 'codex') { Get-LimpetCodexExe } else { Get-LimpetClaudeExe }
+    if ($Arguments -contains '--limpet-plan') {
+        return [pscustomobject]@{
+            Command = $Command; Kind = $account.Kind; ConfigDir = $account.ConfigDir; EnvName = $envName; Exe = $exe
+            Arguments = @($Arguments | Where-Object { $_ -ne '--limpet-plan' })
+        }
+    }
+    if (-not $exe) {
+        $what = if ($account.Kind -eq 'codex') { 'codex CLI (npm i -g @openai/codex)' } else { 'claude CLI (Claude Code)' }
+        Write-Warning "limpet: the $what is not on PATH. Install it, then rerun $Command."
+        return
+    }
+    $prev = [Environment]::GetEnvironmentVariable($envName, 'Process')
     try {
-        $env:CLAUDE_CONFIG_DIR = $ConfigDir
-        & $exe @Rest
+        [Environment]::SetEnvironmentVariable($envName, $account.ConfigDir, 'Process')
+        & $exe @Arguments
     }
     finally {
-        if ($null -eq $prev) { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
-        else { $env:CLAUDE_CONFIG_DIR = $prev }
+        [Environment]::SetEnvironmentVariable($envName, $prev, 'Process')
     }
 }
 
-function claude1 { Invoke-LimpetClaude -ConfigDir (Join-Path $HOME '.claude-1') @args }
-function claude2 { Invoke-LimpetClaude -ConfigDir (Join-Path $HOME '.claude-2') @args }
+# Numbered commands whose directory already exists become real functions, so
+# they tab-complete and Get-Command sees them. The export list at the bottom
+# picks them up.
+$script:LimpetAgentFunctions = @()
+foreach ($acct in @(Get-LimpetAgentAccounts | Where-Object { $_.Number -gt 0 })) {
+    Set-Item -Path "function:$($acct.Command)" -Value ([scriptblock]::Create("Invoke-LimpetAgent -Command '$($acct.Command)' -Arguments `$args"))
+    $script:LimpetAgentFunctions += $acct.Command
+}
+
+# Any other claudeN / codexN is caught by PowerShell's command-not-found hook
+# and dispatched the same way (its directory gets created on first run). A hook
+# that was already installed still sees everything else; both are put back on
+# Remove-Module.
+$script:LimpetPreviousCommandNotFound = $ExecutionContext.InvokeCommand.CommandNotFoundAction
+$ExecutionContext.InvokeCommand.CommandNotFoundAction = {
+    param($CommandName, $EventArgs)
+    if ($CommandName -match '^(claude|codex)[1-9]\d*$') {
+        $EventArgs.CommandScriptBlock = [scriptblock]::Create("Invoke-LimpetAgent -Command '$CommandName' -Arguments `$args")
+        $EventArgs.StopSearch = $true
+        return
+    }
+    if ($script:LimpetPreviousCommandNotFound) { & $script:LimpetPreviousCommandNotFound $CommandName $EventArgs }
+}
 
 # ---------------------------------------------------------------------------
 # Load: point global aliases at the Nix* functions, overriding the built-in
@@ -900,7 +995,10 @@ $ExecutionContext.SessionState.Module.OnRemove = {
     foreach ($name in $script:OriginalAliases.Keys) {
         Set-Alias -Name $name -Value $script:OriginalAliases[$name] -Scope Global -Force -ErrorAction SilentlyContinue
     }
+    $ExecutionContext.InvokeCommand.CommandNotFoundAction = $script:LimpetPreviousCommandNotFound
 }
 
-Export-ModuleMember -Function NixLs, NixRm, NixCp, NixMv, NixCat, mkdir, touch, head, tail, grep, find, which, du, df, chmod, xssh, wput, peek, peak, reels, limpet, claude1, claude2, Sync-LimpetClaudeHistory,
-    Enable-LimpetHello, Disable-LimpetHello, Get-LimpetHelloStatus, Get-LimpetHelloPassphrase, Test-LimpetHelloEnrolled, Protect-LimpetSecret, Unprotect-LimpetSecret, Get-LimpetAskpass, Get-LimpetKeyPath
+Export-ModuleMember -Function (@('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'reels', 'limpet',
+    'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'Sync-LimpetClaudeHistory',
+    'Enable-LimpetHello', 'Disable-LimpetHello', 'Get-LimpetHelloStatus', 'Get-LimpetHelloPassphrase', 'Test-LimpetHelloEnrolled', 'Protect-LimpetSecret', 'Unprotect-LimpetSecret', 'Get-LimpetAskpass', 'Get-LimpetKeyPath') +
+    $script:LimpetAgentFunctions)
