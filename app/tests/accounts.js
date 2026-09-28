@@ -81,11 +81,35 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   const bin = path.join(home, 'bin');
   fs.mkdirSync(bin);
   fs.copyFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), path.join(bin, 'codex.exe'));
+  // A stand-in for the backdrop setup script, installing into a scratch folder:
+  // the first run fails, the second hangs mid-download (to be cancelled), the
+  // third finishes.
+  const localAi = path.join(home, 'local-ai');
+  const fakeSetup = path.join(home, 'fake-setup.ps1');
+  fs.writeFileSync(fakeSetup, [
+    'param([switch]$Force, [string]$LocalRoot)',
+    '$ErrorActionPreference = "Stop"',
+    '$home_ = Split-Path $LocalRoot',
+    '$runs = Join-Path $home_ "setup-runs"',
+    '$n = 1 + [int](Get-Content $runs -ErrorAction SilentlyContinue)',
+    'Set-Content $runs $n',
+    'Set-Content (Join-Path $home_ "setup-pid") $PID',
+    'if ($n -eq 1) { $host.UI.WriteErrorLine("Simulated: no network"); exit 1 }',
+    'New-Item -ItemType Directory -Force (Join-Path $LocalRoot "bin"), (Join-Path $LocalRoot "models") | Out-Null',
+    'Set-Content (Join-Path $LocalRoot "bin\\sd-cli.exe") "stand-in"',
+    '$model = Join-Path $LocalRoot "models\\sdxs-512-tinySDdistilled_Q8_0.gguf"',
+    '[IO.File]::WriteAllBytes("$model.partial", (New-Object byte[] 3145728))',
+    'Start-Sleep -Seconds $(if ($n -eq 2) { 120 } else { 2 })',
+    'Move-Item "$model.partial" $model -Force',
+  ].join('\r\n'));
 
   const electronApp = await _electron.launch({
     executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
     args: [APP], timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir },
+    env: {
+      ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,
+      LIMPET_LOCAL_AI_DIR: localAi, LIMPET_BACKDROP_SETUP: fakeSetup,
+    },
   });
   const page = await electronApp.firstWindow();
   const pageErrors = [];
@@ -366,14 +390,48 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await waitFor(() => page.locator('.tab').count().then((n) => n === 2), 10000);
   check('a new tab gets the picked colour too', (await paneColor()) === 'rgb(22, 41, 77)');
   check('the choice is remembered', (await page.evaluate(() => localStorage.getItem('limpet.background'))) === '{"mode":"color","color":"#16294d"}');
-  menu = await openMenu();
-  await waitFor(() => menu.locator('.bg .gen').count().then((n) => n === 1), 5000);
-  await menu.locator('.bg .gen').click();
-  await waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 3000);
+  // Generative needs a one-time download, so picking it before that asks first.
+  const pickGenerative = async () => {
+    const m = await openMenu();
+    await waitFor(() => m.locator('.bg .gen').count().then((n) => n === 1), 5000);
+    await m.locator('.bg .gen').click();
+  };
+  const setupPrompt = page.locator('.setup-prompt');
+  const notice = page.locator('.setup-notice');
+  const noticeText = () => notice.textContent().catch(() => '');
+  await pickGenerative();
+  check('picking generative before it is installed asks first', !!(await waitFor(() => setupPrompt.count().then((n) => n === 1), 5000)));
+  const promptText = await setupPrompt.textContent();
+  check('the prompt says what it downloads and where', /675 MB/.test(promptText) && promptText.includes(localAi));
+  await setupPrompt.locator('button.later').click();
+  check('"Not now" closes the prompt', !!(await waitFor(() => setupPrompt.count().then((n) => n === 0), 3000)));
+  check('"Not now" keeps the colour', (await paneColor()) === 'rgb(22, 41, 77)');
+  await pickGenerative();
+  await waitFor(() => setupPrompt.count().then((n) => n === 1), 5000);
+  await setupPrompt.locator('button.install').click();
+  check('a failed install says why', !!(await waitFor(async () => (await noticeText()).includes('Simulated: no network'), 15000)));
+  check('a failed install puts the colour back', (await paneColor()) === 'rgb(22, 41, 77)');
+  await notice.locator('button.retry').click();
+  check('the install shows download progress', !!(await waitFor(async () => /3 of 651 MB/.test(await noticeText()), 15000)));
+  check('generative is on while it installs', (await paneColor()) === 'rgb(30, 30, 46)');
+  const setupPid = Number(fs.readFileSync(path.join(home, 'setup-pid'), 'utf8'));
+  await notice.locator('button.cancel').click();
+  check('cancel stops the setup', !!(await waitFor(() => pidGone(setupPid), 10000)));
+  check('cancel closes the notice', !!(await waitFor(() => notice.count().then((n) => n === 0), 5000)));
+  check('cancel puts the colour back', (await paneColor()) === 'rgb(22, 41, 77)');
+  await pickGenerative();
+  await waitFor(() => setupPrompt.count().then((n) => n === 1), 5000);
+  await setupPrompt.locator('button.install').click();
+  check('the install finishes', !!(await waitFor(async () => /are installed/.test(await noticeText()), 20000)));
   menu = await openMenu();
   await waitFor(() => menu.locator('.bg .gen').count().then((n) => n === 1), 5000);
   check('generative can be picked and shows as selected', (await menu.locator('.bg .gen.selected').count()) === 1);
   check('generative clears the solid colour', (await paneColor()) === 'rgb(30, 30, 46)');
+  await menu.locator('.bg .gen').click();
+  await sleep(1000);
+  check('once installed, picking generative does not ask again', (await setupPrompt.count()) === 0);
+  menu = await openMenu();
+  await waitFor(() => menu.locator('.bg .swatch').count().then((n) => n === 7), 5000);
   // Leave the app on its default so a real profile isn't changed by the test.
   await menu.locator('.bg .swatch[data-color="#1e1e2e"]').click();
   await waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 3000);

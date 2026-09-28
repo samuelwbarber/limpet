@@ -98,6 +98,40 @@
     }
     .account-menu .gen:hover { background: #313244; color: #cdd6f4; }
     .account-menu .gen.selected { border-color: #a6e3a1; color: #a6e3a1; }
+    /* Generative picked before its model is installed: ask, then show progress */
+    .setup-overlay {
+      position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+      background: rgba(17,17,27,0.6);
+    }
+    .setup-prompt, .setup-notice {
+      background: #181825; border: 1px solid #313244; color: #cdd6f4;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45); font: 12px 'Cascadia Mono', Consolas, monospace;
+    }
+    .setup-prompt { width: min(460px, calc(100vw - 32px)); padding: 16px 18px 14px; border-radius: 10px; }
+    .setup-prompt .title { font-size: 14px; margin-bottom: 10px; }
+    .setup-prompt p { margin: 0 0 8px; color: #a6adc8; line-height: 1.5; }
+    .setup-prompt p.where { color: #6c7086; overflow-wrap: anywhere; }
+    .setup-prompt .actions, .setup-notice .actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .setup-prompt .actions { margin-top: 14px; }
+    .setup-prompt button, .setup-notice button {
+      font: inherit; color: #cdd6f4; background: transparent; cursor: pointer;
+      border: 1px solid #45475a; border-radius: 6px; padding: 4px 12px;
+    }
+    .setup-prompt button:hover, .setup-notice button:hover { background: #313244; }
+    .setup-prompt button.install { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
+    .setup-prompt button.install:hover { background: #b4befe; border-color: #b4befe; }
+    .setup-prompt button:focus-visible, .setup-notice button:focus-visible { outline: 2px solid #cdd6f4; outline-offset: 1px; }
+    .setup-notice {
+      position: fixed; right: 14px; bottom: 14px; z-index: 25; width: min(340px, calc(100vw - 28px));
+      padding: 10px 12px; border-radius: 8px; box-sizing: border-box;
+    }
+    .setup-notice .head { margin-bottom: 4px; }
+    .setup-notice .text { color: #a6adc8; line-height: 1.45; overflow-wrap: anywhere; }
+    .setup-notice[data-state="error"] .text { color: #f38ba8; }
+    .setup-notice .bar { height: 4px; margin-top: 8px; border-radius: 2px; background: #313244; overflow: hidden; }
+    .setup-notice .fill { height: 100%; width: 0; background: #89b4fa; transition: width 0.4s; }
+    .setup-notice .actions { margin-top: 8px; }
+    .setup-notice button { padding: 2px 10px; }
   </style>
 </head>
 <body>

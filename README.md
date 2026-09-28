@@ -103,7 +103,9 @@ Right-click a tab and pick a background: the standard limpet colour (the
 default), a handful of other dark colours, or **Generative**, which paints each
 tab with a small pixel-art scene of whatever that tab is working on. The scene
 is made by a local image model, so nothing about your terminal leaves the
-machine; it updates as the conversation moves on.
+machine; it updates as the conversation moves on. The first time you pick
+Generative, limpet offers to download that model (about 675 MB, once) and shows
+the progress; `npm run setup:backdrop` in `app/` does the same from a prompt.
 
 <p align="center"><img src="docs/media/backdrop.gif" width="840" alt="background demo: picking a colour, then the generative backdrop appearing" /></p>
 

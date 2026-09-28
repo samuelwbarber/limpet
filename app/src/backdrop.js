@@ -5,9 +5,13 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const LOCAL_AI_DIR = path.join(__dirname, '..', 'local-ai');
+// LIMPET_LOCAL_AI_DIR and LIMPET_BACKDROP_SETUP let the tests install into a
+// scratch folder with a stand-in setup script.
+const LOCAL_AI_DIR = process.env.LIMPET_LOCAL_AI_DIR || path.join(__dirname, '..', 'local-ai');
+const SETUP_SCRIPT = process.env.LIMPET_BACKDROP_SETUP || path.join(__dirname, '..', 'scripts', 'setup-local-backdrop.ps1');
 const SD_EXE = path.join(LOCAL_AI_DIR, 'bin', 'sd-cli.exe');
 const MODEL = path.join(LOCAL_AI_DIR, 'models', 'sdxs-512-tinySDdistilled_Q8_0.gguf');
+const MODEL_BYTES = 682847200; // the pinned model's size, as the setup script checks it
 const OUTPUT_DIR = path.join(LOCAL_AI_DIR, 'backgrounds');
 const MIN_OUTPUT_CHARS = 3000;
 const UPDATE_OUTPUT_CHARS = 9000;
@@ -294,6 +298,40 @@ function backendStatus() {
   };
 }
 
+// How far a running setup has got, read from the files it leaves behind: the
+// generator comes first, then the model downloads to .partial and is moved
+// into place and checksummed.
+function setupProgress({ exe = SD_EXE, model = MODEL } = {}) {
+  const size = (file) => { try { return fs.statSync(file).size; } catch (_) { return -1; } };
+  const partial = size(`${model}.partial`);
+  if (partial >= 0) return { stage: 'model', received: partial, total: MODEL_BYTES };
+  if (size(exe) < 0) return { stage: 'generator' };
+  if (size(model) >= 0) return { stage: 'verify' };
+  return { stage: 'model', received: 0, total: MODEL_BYTES };
+}
+
+// Fetch the generator and model with the setup script (the one
+// `npm run setup:backdrop` runs). Rejects with the script's own reason.
+function runSetup({ onSpawn } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', SETUP_SCRIPT, '-LocalRoot', LOCAL_AI_DIR,
+    ], { windowsHide: true });
+    if (onSpawn) onSpawn(child);
+    // curl's progress meter shares stderr; the reason is the last line.
+    let errors = '';
+    child.stderr.on('data', (chunk) => { errors = (errors + chunk.toString()).slice(-4000); });
+    child.stdout.resume();
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0 && backendStatus().ready) { resolve(); return; }
+      const reason = errors.split(/[\r\n]+/).map((line) => line.trim()).filter(Boolean).pop();
+      reject(new Error(reason || `setup exited ${code}`));
+    });
+  });
+}
+
 function outputPath(sessionId) {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   return path.join(OUTPUT_DIR, `session-${sessionId}-${Date.now()}.png`);
@@ -342,5 +380,5 @@ module.exports = {
   cleanSnapshot, extractTopics, cleanConversationTitle,
   createTopicProfile, updateTopicProfile, profileTopics,
   planScene, buildBackdropPlan, buildPrompt, backendStatus, outputPath,
-  generatorArguments, generateLocalImage,
+  generatorArguments, generateLocalImage, setupProgress, runSetup, LOCAL_AI_DIR,
 };

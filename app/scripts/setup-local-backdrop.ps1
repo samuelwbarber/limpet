@@ -1,11 +1,17 @@
 [CmdletBinding()]
-param([switch]$Force)
+param(
+    [switch]$Force,
+    # Where the generator and model go; the app passes the folder it reads from.
+    [string]$LocalRoot
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# A failure ends in one plain line on stderr, which the app shows as the reason.
+trap { $host.UI.WriteErrorLine($_.Exception.Message); exit 1 }
 
 $appRoot = Split-Path -Parent $PSScriptRoot
-$localRoot = Join-Path $appRoot 'local-ai'
+$localRoot = if ($LocalRoot) { $LocalRoot } else { Join-Path $appRoot 'local-ai' }
 $binDir = Join-Path $localRoot 'bin'
 $modelDir = Join-Path $localRoot 'models'
 $downloadDir = Join-Path $localRoot 'downloads'

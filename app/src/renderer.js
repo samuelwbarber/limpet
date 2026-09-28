@@ -509,6 +509,165 @@ function applyBackground(tab, id) {
   }
 }
 
+// ---- generative backgrounds: one-time install ----
+// The generator and its model aren't in the repo. Picking Generative without
+// them asks first, then the main process downloads them while a notice shows
+// progress (in every window). If the install fails or is cancelled, the colour
+// that was on before comes back.
+let setupPrompt = null;
+let setupNotice = null;
+let setupNoticeTimer = null;
+let setupFallback = null;
+
+const currentColour = () => {
+  const pref = backgroundPref();
+  return pref.mode === 'color' ? pref : { ...DEFAULT_BACKGROUND };
+};
+const focusActiveTerm = () => { const t = tabs.get(activeId); if (t) t.term.focus(); };
+
+function element(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text) el.textContent = text;
+  return el;
+}
+
+async function chooseGenerative() {
+  const setup = await window.limpet.backdropSetupState();
+  if (setup.state === 'ready') setBackground({ mode: 'generative' });
+  else if (setup.state === 'installing') startGenerativeSetup(currentColour());
+  else showSetupPrompt(setup, currentColour());
+}
+
+function startGenerativeSetup(fallback) {
+  setupFallback = fallback;
+  setBackground({ mode: 'generative' });
+  renderSetupNotice({ state: 'installing', stage: 'generator' });
+  window.limpet.installBackdrop().catch(() => {}); // the outcome arrives via onBackdropSetup
+}
+
+function closeSetupPrompt() {
+  if (!setupPrompt) return;
+  setupPrompt.remove();
+  setupPrompt = null;
+  focusActiveTerm();
+}
+
+function showSetupPrompt(setup, fallback) {
+  closeSetupPrompt();
+  const overlay = element('div', 'setup-overlay');
+  const card = element('div', 'setup-prompt');
+  card.setAttribute('role', 'dialog');
+  card.append(
+    element('div', 'title', 'Generative backgrounds'),
+    element('p', '', 'Each tab gets a small pixel-art picture of what it is working on, made by an image model that runs on this PC. Nothing from your terminal leaves the machine.'),
+    element('p', '', 'Setting it up downloads about 675 MB once (the stable-diffusion.cpp generator and the SDXS image model) and needs 2 GB of free disk space. Install it now?'),
+  );
+  if (setup.dir) card.append(element('p', 'where', setup.dir));
+  const install = element('button', 'install', 'Install');
+  const later = element('button', 'later', 'Not now');
+  install.addEventListener('click', () => { closeSetupPrompt(); startGenerativeSetup(fallback); });
+  later.addEventListener('click', () => { closeSetupPrompt(); setBackground(fallback); });
+  const actions = element('div', 'actions');
+  actions.append(later, install);
+  card.append(actions);
+  overlay.append(card);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) later.click(); });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); later.click(); }
+  });
+  document.body.appendChild(overlay);
+  setupPrompt = overlay;
+  install.focus();
+}
+// Keep the keyboard on the prompt while it is up (a tab activating would
+// otherwise hand focus back to its terminal).
+document.addEventListener('focusin', (e) => {
+  if (setupPrompt && !setupPrompt.contains(e.target)) setupPrompt.querySelector('.install').focus();
+});
+
+function closeSetupNotice() {
+  clearTimeout(setupNoticeTimer);
+  if (setupNotice) setupNotice.remove();
+  setupNotice = null;
+}
+
+const SETUP_STAGES = {
+  generator: () => 'Fetching the image generator…',
+  model: (u) => `Downloading the image model: ${Math.round(u.received / 1048576)} of ${Math.round(u.total / 1048576)} MB`,
+  verify: () => 'Checking the download…',
+};
+
+// Built once per state; progress ticks only update the text and bar, so a
+// button is never swapped out from under a click.
+function renderSetupNotice(update) {
+  clearTimeout(setupNoticeTimer);
+  if (!setupNotice || setupNotice.dataset.state !== update.state) {
+    closeSetupNotice();
+    const notice = element('div', 'setup-notice');
+    notice.dataset.state = update.state;
+    const body = element('div', 'text');
+    const actions = element('div', 'actions');
+    const dismiss = element('button', 'dismiss', '×');
+    dismiss.title = 'Close';
+    dismiss.addEventListener('click', closeSetupNotice);
+    if (update.state === 'installing') {
+      const bar = element('div', 'bar');
+      bar.append(element('div', 'fill'));
+      const cancel = element('button', 'cancel', 'Cancel');
+      cancel.title = 'The download so far is kept; installing again picks up where it stopped';
+      cancel.addEventListener('click', () => window.limpet.cancelBackdropSetup());
+      actions.append(cancel);
+      notice.append(element('div', 'head', 'Installing generative backgrounds'), body, bar, actions);
+    } else if (update.state === 'error') {
+      const retry = element('button', 'retry', 'Retry');
+      retry.addEventListener('click', () => startGenerativeSetup(currentColour()));
+      actions.append(retry, dismiss);
+      notice.append(element('div', 'head', "Couldn't install generative backgrounds"), body, actions);
+    } else {
+      actions.append(dismiss);
+      notice.append(element('div', 'head', 'Generative backgrounds are installed'), body, actions);
+    }
+    document.body.appendChild(notice);
+    setupNotice = notice;
+  }
+  const text = setupNotice.querySelector('.text');
+  if (update.state === 'installing') {
+    const stage = SETUP_STAGES[update.stage] || SETUP_STAGES.generator;
+    text.textContent = stage(update);
+    const fill = setupNotice.querySelector('.fill');
+    fill.style.width = update.stage === 'model' && update.total ? `${Math.min(100, (100 * update.received) / update.total)}%` : update.stage === 'verify' ? '100%' : '0%';
+  } else if (update.state === 'error') {
+    text.textContent = update.message || 'The setup stopped without saying why.';
+  } else {
+    text.textContent = 'A tab gets its picture once it has some output and goes quiet.';
+    setupNoticeTimer = setTimeout(closeSetupNotice, 10000);
+  }
+}
+
+window.limpet.onBackdropSetup((update) => {
+  if (update.state === 'installing') { renderSetupNotice(update); return; }
+  if (update.state === 'ready') {
+    setupFallback = null;
+    renderSetupNotice(update);
+    // Start each tab's idle timer now that a picture can be made.
+    for (const [id, t] of tabs) applyBackground(t, id);
+    return;
+  }
+  if (backgroundPref().mode === 'generative') setBackground(setupFallback || { ...DEFAULT_BACKGROUND });
+  setupFallback = null;
+  if (update.state === 'error') renderSetupNotice(update);
+  else closeSetupNotice();
+});
+
+// Generative was picked before it could be installed (or its files were
+// removed since): offer the install again, or go back to a colour.
+async function offerSetupAtStartup() {
+  const setup = await window.limpet.backdropSetupState();
+  if (setup.state === 'installing') renderSetupNotice(setup);
+  else if (setup.state === 'missing' && !setup.disabled) showSetupPrompt(setup, { ...DEFAULT_BACKGROUND });
+}
+
 // ---- Account menu: right-click a tab ----
 // Lists every signed-in limpet account (claude, claude1, ..., codex, codex1,
 // ...) with how much of its 5-hour and weekly limits is left, marks the one
@@ -641,7 +800,7 @@ async function showAccountMenu(id, tabEl) {
   gen.textContent = 'Generative';
   gen.title = 'A local AI image of whatever each tab is working on';
   if (pref.mode === 'generative') gen.classList.add('selected');
-  gen.addEventListener('click', () => { setBackground({ mode: 'generative' }); closeAccountMenu(); });
+  gen.addEventListener('click', () => { closeAccountMenu(); chooseGenerative(); });
   bg.appendChild(gen);
   menu.appendChild(bg);
 
@@ -704,5 +863,6 @@ if (Number.isInteger(detachedId) && detachedId > 0) {
   newTab(detachedId, launchParams.get('title') || 'limpet');
 } else {
   newTab();
+  if (backgroundPref().mode === 'generative') offerSetupAtStartup();
 }
 setTimeout(syncSize, 120);

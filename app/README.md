@@ -41,7 +41,10 @@ palette—for example, work on a slot-machine app produces a prominent,
 recognizable slot machine. Each tab has its own scene, and a detached tab keeps
 its scene.
 
-Setup is a one-time 651 MB model download:
+Setup is a one-time download of about 675 MB (the generator plus the 651 MB
+model) into `app\local-ai`. Picking **Generative** from the tab menu before it
+is installed asks whether to install it, then shows progress with a Cancel
+button (a cancelled download resumes next time). The same setup from a prompt:
 
 ```powershell
 npm run setup:backdrop

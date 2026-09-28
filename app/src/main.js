@@ -19,7 +19,7 @@ const usage = require('./usage');
 const {
   MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
-  backendStatus, outputPath, generateLocalImage,
+  backendStatus, outputPath, generateLocalImage, setupProgress, runSetup, LOCAL_AI_DIR,
 } = require('./backdrop');
 
 let ptyLib = null;
@@ -190,6 +190,7 @@ let nextSessionId = 1;
 const backdropQueue = [];
 let backdropRunning = false;
 let activeBackdropProcess = null;
+let backdropSetup = null; // the running one-time install: { child, cancelled, promise }
 
 function sessionWebContents(sess) {
   if (!sess || sess.ownerId == null) return null;
@@ -624,6 +625,54 @@ async function runBackdropQueue() {
   }
 }
 
+// ---- One-time install of the local generator and model ----
+// Offered the first time Generative is picked. Every window hears the
+// progress, since the install serves all of them.
+function broadcast(channel, payload) {
+  for (const win of windows.values()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
+
+function backdropSetupState() {
+  if (backdropSetup) return { state: 'installing', ...setupProgress() };
+  return {
+    state: backendStatus().ready ? 'ready' : 'missing',
+    dir: LOCAL_AI_DIR,
+    disabled: process.env.LIMPET_DISABLE_BACKDROPS === '1',
+  };
+}
+
+function installBackdrop() {
+  if (backdropSetup) return backdropSetup.promise;
+  if (backendStatus().ready) return Promise.resolve({ state: 'ready' });
+  const job = { child: null, cancelled: false };
+  const ticker = setInterval(() => broadcast('backdrop:setup', backdropSetupState()), 500);
+  job.promise = runSetup({ onSpawn: (child) => { job.child = child; } })
+    .then(() => ({ state: 'ready' }))
+    .catch((error) => (job.cancelled ? { state: 'cancelled' } : { state: 'error', message: error.message }))
+    .then((result) => {
+      clearInterval(ticker);
+      backdropSetup = null;
+      if (result.state === 'error') console.error('[limpet] backdrop setup failed:', result.message);
+      broadcast('backdrop:setup', result);
+      return result;
+    });
+  backdropSetup = job;
+  broadcast('backdrop:setup', backdropSetupState());
+  return job.promise;
+}
+
+// Stop the install and the curl under it. What has downloaded so far is kept;
+// the next install resumes it.
+function cancelBackdropSetup() {
+  const job = backdropSetup;
+  if (!job || !job.child) return false;
+  job.cancelled = true;
+  try { spawn('taskkill', ['/PID', String(job.child.pid), '/T', '/F'], { windowsHide: true }); } catch (_) { /* ignore */ }
+  return true;
+}
+
 // ---- Agent switching (right-click a tab) ----
 // Which agent/account is this tab's chat on, and move it to another. Between
 // accounts of one agent it is resuming the same chat by id in the same shell:
@@ -1051,11 +1100,15 @@ function registerIpc() {
     if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };
     return considerBackdrop(sess, snapshot.slice(-24000), String(title || '').slice(0, 240));
   });
+  ipcMain.handle('backdrop:setup-state', () => backdropSetupState());
+  ipcMain.handle('backdrop:install', () => installBackdrop());
+  ipcMain.handle('backdrop:cancel', () => cancelBackdropSetup());
 }
 
 registerIpc();
 app.whenReady().then(() => createWindow());
 app.on('before-quit', () => {
   if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
+  cancelBackdropSetup();
 });
 app.on('window-all-closed', () => app.quit());

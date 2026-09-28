@@ -1,8 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   cleanSnapshot, extractTopics, cleanConversationTitle, createTopicProfile, updateTopicProfile,
   profileTopics, planScene, buildBackdropPlan, buildPrompt, backendStatus, generatorArguments,
+  setupProgress,
 } = require('../src/backdrop');
 
 test('cleans URLs, long values, secrets, duplicates, and control characters', () => {
@@ -125,4 +129,21 @@ test('configures the lightweight SDXS generator for one-step output', () => {
   assert.deepEqual(args.slice(args.indexOf('--cfg-scale'), args.indexOf('--cfg-scale') + 2), ['--cfg-scale', '1.0']);
   assert.deepEqual(args.slice(args.indexOf('-W'), args.indexOf('-W') + 4), ['-W', '512', '-H', '320']);
   assert.ok(!args.includes('lcm'));
+});
+
+test('reads install progress from the files the setup leaves behind', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-setup-'));
+  const exe = path.join(dir, 'sd-cli.exe');
+  const model = path.join(dir, 'model.gguf');
+  try {
+    assert.deepEqual(setupProgress({ exe, model }), { stage: 'generator' });
+    fs.writeFileSync(exe, 'x');
+    assert.deepEqual(setupProgress({ exe, model }), { stage: 'model', received: 0, total: 682847200 });
+    fs.writeFileSync(`${model}.partial`, Buffer.alloc(1234));
+    assert.deepEqual(setupProgress({ exe, model }), { stage: 'model', received: 1234, total: 682847200 });
+    fs.renameSync(`${model}.partial`, model);
+    assert.deepEqual(setupProgress({ exe, model }), { stage: 'verify' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
