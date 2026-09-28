@@ -94,10 +94,12 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   });
   const userData = await electronApp.evaluate(({ app }) => app.getPath('userData'));
 
-  // Stand in for an agent: a nested process under the tab's shell that prints its pid.
-  async function standIn(exe) {
+  // Stand in for an agent: a nested process under the tab's shell that prints
+  // its pid, holding `lock` open the way Codex holds the thread it has loaded.
+  async function standIn(exe, lock = '') {
     await page.locator('.term-pane.active').click();
-    await type(page, `& '${exe}' -NoProfile -Command 'Write-Output SESSPID_$PID; Start-Sleep 120'`);
+    const hold = lock ? `$l=[IO.File]::Open(''${lock}'',''OpenOrCreate'',''ReadWrite'',''None''); ` : '';
+    await type(page, `& '${exe}' -NoProfile -Command '${hold}Write-Output SESSPID_$PID; Start-Sleep 120'`);
     const seen = new Set();
     for (const m of (await screenText(page)).matchAll(/SESSPID_(\d+)/g)) seen.add(m[1]);
     return waitFor(async () => {
@@ -265,6 +267,25 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await seenOnScreen(`SWAPPED_codex_${thread3}`)));
   check('codex1 -> codex (shared): nothing was copied', fs.readdirSync(path.join(codexDir, 'sessions'), { recursive: true }).filter((n) => String(n).includes(thread3)).length === 1 &&
     fs.lstatSync(path.join(codexHome(1), 'sessions')).isSymbolicLink());
+
+  // ---- two Codex chats at once: the tab's thread is the one its codex holds ----
+  // Another process (another tab's Codex) holds a thread that keeps being
+  // written after ours; the move must still carry this tab's thread.
+  const locks = path.join(codexDir, 'thread-writer-locks');
+  fs.mkdirSync(locks, { recursive: true });
+  const mineThread = '01a00000-0000-7000-8000-0000000000dd';
+  const otherThread = '01a00000-0000-7000-8000-0000000000ee';
+  const holdLock = (thread) => `$l=[IO.File]::Open('${path.join(locks, `${thread}.lock`)}','OpenOrCreate','ReadWrite','None'); Start-Sleep 120`;
+  const other = require('child_process').spawn('powershell.exe', ['-NoProfile', '-Command', holdLock(otherThread)], { windowsHide: true });
+  fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'codex1', pid: shellPid, startedAt: Date.now() }));
+  pid = await standIn(path.join(bin, 'codex.exe'), path.join(locks, `${mineThread}.lock`));
+  writeRollout(codexDir, mineThread);
+  await sleep(1500);
+  writeRollout(codexDir, otherThread); // written later, as a busy chat elsewhere would be
+  check('two chats: move completes', !!(await swapTo('codex')));
+  check('two chats: the tab\'s own thread is resumed, not the busier one', !!(await seenOnScreen(`SWAPPED_codex_${mineThread}`)) &&
+    !(await screenText(page)).includes(`SWAPPED_codex_${otherThread}`));
+  try { other.kill(); } catch (_) { /* gone */ }
   fs.unlinkSync(launchNote);
 
   // ---- background picker: standard limpet colour by default, swatches, generative ----

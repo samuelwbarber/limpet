@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const accounts = require('./accounts');
+const agentScan = require('./agent-scan');
 const handoff = require('./handoff');
 const codexImport = require('./codex-import');
 const usage = require('./usage');
@@ -663,95 +664,20 @@ function readClaudeSessionFiles() {
   return out;
 }
 
-function readFirstJsonLine(file) {
-  try {
-    const fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(64 * 1024);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    const s = buf.toString('utf8', 0, n);
-    const nl = s.indexOf('\n');
-    return JSON.parse(nl === -1 ? s : s.slice(0, nl));
-  } catch (_) { return null; }
-}
-
-const realPath = (p) => { try { return fs.realpathSync.native(p); } catch (_) { return null; } };
-
-// Codex rollouts written since `sinceMs`, across every codex account: { cmd,
-// id, path, cwd, mtimeMs }. They live under <codex home>/sessions/YYYY/MM/DD/,
-// so only files touched recently are read. Homes whose sessions folder is the
-// same place (junctioned together) are walked once, and their rollouts carry
-// cmd '' since the folder no longer says which account wrote them.
-function listCodexRollouts(sinceMs) {
-  const out = [];
-  const folders = new Map(); // real sessions folder -> { dir, cmds }
-  for (const { cmd, dir } of codexAccounts()) {
-    const sessions = path.join(claudeHome(), dir, 'sessions');
-    const real = realPath(sessions);
-    if (!real) continue;
-    const key = real.toLowerCase();
-    if (folders.has(key)) folders.get(key).cmds.push(cmd);
-    else folders.set(key, { dir: sessions, cmds: [cmd] });
-  }
-  const walk = (cmd, dir, depth) => {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) { if (depth < 3) walk(cmd, p, depth + 1); continue; }
-      if (!/^rollout-.*\.jsonl$/i.test(e.name)) continue;
-      let st;
-      try { st = fs.statSync(p); } catch (_) { continue; }
-      if (st.mtimeMs < sinceMs) continue;
-      const fromName = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(e.name);
-      const meta = readFirstJsonLine(p);
-      const payload = meta && meta.type === 'session_meta' && meta.payload ? meta.payload : {};
-      out.push({ cmd, id: payload.id || (fromName ? fromName[1] : ''), path: p, cwd: payload.cwd || '', mtimeMs: st.mtimeMs });
-    }
-  };
-  for (const { dir, cmds } of folders.values()) walk(cmds.length === 1 ? cmds[0] : '', dir, 0);
-  return out;
-}
-
-// Which codex account each shell launched: the shell's codexN wrapper
-// (Invoke-LimpetAgent in shell/Limpet.psm1) leaves <run dir>/<shell pid>.json
-// while it runs. LIMPET_AGENT_RUN moves the folder (tests).
+// Where the shell's codexN wrapper notes which account it launched (see
+// agent-scan.js). LIMPET_AGENT_RUN moves the folder (tests).
 const agentRunDir = () => process.env.LIMPET_AGENT_RUN || path.join(app.getPath('appData'), 'limpet', 'agents');
-function readCodexLaunches() {
-  const dir = agentRunDir();
-  return accountIo.listDir(dir)
-    .filter((name) => /^\d+\.json$/.test(name))
-    .map((name) => accountIo.readJson(path.join(dir, name)))
-    .filter((l) => l && Number.isInteger(l.pid) && typeof l.cmd === 'string')
-    .map((l) => ({ pid: l.pid, cmd: l.cmd, startedAt: Number(l.startedAt) || 0 }));
-}
-
-// pid, parent pid, name and start time of every process. Node has no
-// parent-pid API on Windows, so ask CIM (about a second), fine for a right-click.
-function listProcesses() {
-  return new Promise((resolve) => {
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,@{n='Start';e={ if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { 0 } }} | ConvertTo-Json -Compress"],
-    { windowsHide: true });
-    let out = '';
-    ps.stdout.on('data', (d) => { out += d; });
-    ps.on('error', () => resolve([]));
-    ps.on('close', () => {
-      try {
-        const rows = JSON.parse(out);
-        resolve((Array.isArray(rows) ? rows : [rows]).map((r) => ({ pid: r.ProcessId, ppid: r.ParentProcessId, name: r.Name, startedAt: Number(r.Start) || 0 })));
-      } catch (_) { resolve([]); }
-    });
-  });
-}
 
 async function detectAgentSession(sess) {
   const shellPid = sess && sess.proc && sess.proc.pid;
   if (!shellPid) return null;
-  const procs = await listProcesses();
-  const shell = procs.find((p) => p.pid === shellPid);
-  const since = shell && shell.startedAt ? shell.startedAt - 5000 : Date.now() - 7 * 24 * 3600 * 1000;
-  return accounts.findSession({ sessionFiles: readClaudeSessionFiles(), rollouts: listCodexRollouts(since), launches: readCodexLaunches() }, procs, shellPid);
+  const { procs, input } = await agentScan.scanAgents({
+    shellPid,
+    claudeSessionFiles: readClaudeSessionFiles(),
+    codexHomes: codexAccounts().map(({ cmd, dir }) => ({ cmd, home: path.join(claudeHome(), dir) })),
+    runDir: agentRunDir(),
+  });
+  return accounts.findSession(input, procs, shellPid);
 }
 
 // The transcript file behind a Claude session id, wherever its project folder is.
@@ -806,8 +732,8 @@ async function carryAcross(current, target, note) {
       if (current.kind === 'codex') {
         // Same agent, other login: the rollout file is the thread. Homes that
         // share plain codex's sessions folder already have it, so just resume.
-        const targetSessions = realPath(path.join(codexHome, 'sessions'));
-        const rollout = realPath(transcript);
+        const targetSessions = agentScan.realPath(path.join(codexHome, 'sessions'));
+        const rollout = agentScan.realPath(transcript);
         if (targetSessions && rollout && rollout.toLowerCase().startsWith(`${targetSessions.toLowerCase()}${path.sep}`)) {
           note(36, `resuming thread ${current.sessionId} under ${target.cmd} (shared history).`);
           return { launch: { resume: current.sessionId }, how: 'resume' };

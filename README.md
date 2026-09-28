@@ -147,17 +147,19 @@ because Claude Code refuses to read that file through a link.
 
 Codex accounts share plain `codex`'s history the same way: every `~/.codex-N`
 gets its `sessions/`, `archived_sessions/` and `thread-writer-locks/` junctioned
-to `~/.codex`'s, and its `session_index.jsonl` (the thread names) hard-linked to
-`~/.codex`'s, so `/resume` in `codex1` lists the same threads, names included,
-as plain `codex`. Sharing the writer locks keeps Codex's own guard working
-across accounts: a thread that is open in one account can't be opened for
-writing in another at the same time. `~/.codex` stays where it is (the Codex
-app and editor extensions keep using it directly); a numbered home's own
-threads are folded into it on the first sync, and a thread copied to another
-account and continued there keeps the longer copy. The wiring happens whenever
-a numbered `codex` command runs (or by hand with `Sync-LimpetCodexHistory`); a
-home with a chat open is left until a later launch. Logins, config, the
-up-arrow history and Codex's sqlite state stay per account.
+to `~/.codex`'s, its `session_index.jsonl` (the thread names) hard-linked to
+`~/.codex`'s, and `sqlite_home` in its `config.toml` pointed at `~/.codex`
+(Codex's thread index, which `/resume` lists from), so `/resume` in `codex1`
+lists the same threads, names included, as plain `codex`. Sharing the writer
+locks keeps Codex's own guard working across accounts: a thread that is open
+in one account can't be opened for writing in another at the same time.
+`~/.codex` stays where it is (the Codex app and editor extensions keep using it
+directly); a numbered home's own threads are folded into it on the first sync
+and indexed there, and a thread copied to another account and continued there
+keeps the longer copy. The wiring happens whenever a numbered `codex` command
+runs (or by hand with `Sync-LimpetCodexHistory`); a home with a chat open is
+left until a later launch. Logins, the rest of the config and the up-arrow
+history stay per account.
 
 ### Switch account, or agent, mid-chat
 

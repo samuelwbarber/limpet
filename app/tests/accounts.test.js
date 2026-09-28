@@ -114,6 +114,31 @@ test('findCodexSession ignores notes that cannot be about this codex', () => {
   assert.strictEqual(pick([{ pid: 400, cmd: 'codex01', startedAt: 49000 }]), 'codex');  // not an account at all
 });
 
+test('findCodexSession takes the thread whose writer lock the tab\'s codex holds, not the busiest file', () => {
+  const T_MINE = '01a00000-0000-7000-8000-00000000000a';
+  const T_OTHER = '01a00000-0000-7000-8000-00000000000b';
+  const writers = [
+    { cmd: '', id: T_OTHER, path: 'C:\\s\\other.jsonl', cwd: 'C:\\o', mtimeMs: 90000, pids: [320] },   // another tab, written later
+    { cmd: '', id: T_MINE, path: 'C:\\s\\mine.jsonl', cwd: 'C:\\m', mtimeMs: 55000, pids: [420] },
+  ];
+  const c = findCodexSession(rollouts, procs, 400, [], writers);
+  assert.deepStrictEqual({ sessionId: c.sessionId, rolloutPath: c.rolloutPath, cwd: c.cwd }, { sessionId: T_MINE, rolloutPath: 'C:\\s\\mine.jsonl', cwd: 'C:\\m' });
+  // A codex that holds no lock hasn't started a chat, even with fresher files about.
+  assert.strictEqual(findCodexSession(rollouts, procs, 400, [], [writers[0]]).sessionId, null);
+  // No lock information at all: the newest file since it started.
+  assert.strictEqual(findCodexSession(rollouts, procs, 400, [], null).sessionId, T_NEW);
+  assert.strictEqual(findCodexSession(rollouts, procs, 400, [], []).sessionId, T_NEW);
+});
+
+test('findCodexSession never lands on a sub-agent thread', () => {
+  const T_SUB = '01a00000-0000-7000-8000-00000000000c';
+  const withSub = [...rollouts, { cmd: '', id: T_SUB, path: 'C:\\s\\sub.jsonl', cwd: 'C:\\c', mtimeMs: 95000, subagent: true }];
+  assert.strictEqual(findCodexSession(withSub, procs, 400).sessionId, T_NEW);
+  const heldSub = [{ cmd: '', id: T_SUB, path: 'C:\\s\\sub.jsonl', mtimeMs: 95000, subagent: true, pids: [420] },
+    { cmd: '', id: T_NEW, path: 'C:\\r2\\new.jsonl', mtimeMs: 60000, pids: [420] }];
+  assert.strictEqual(findCodexSession(withSub, procs, 400, [], heldSub).sessionId, T_NEW);
+});
+
 test('findSession reports whichever agent runs under the shell, Claude first', () => {
   const input = { sessionFiles: files, rollouts };
   assert.strictEqual(findSession(input, procs, 200).kind, 'claude');

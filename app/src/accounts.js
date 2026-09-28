@@ -172,21 +172,29 @@ function codexLauncher(proc, procs, shellPid, launches) {
 }
 
 // The Codex session running under a tab's shell: a codex process under the
-// shell (procs carry { pid, ppid, name, startedAt }) plus the rollout written
-// most recently since it started. `rollouts` is [{ cmd, id, path, cwd,
-// mtimeMs }], cmd being the codex account whose home alone holds the file, or
-// '' when homes share it. The account is the launch noted for it
-// (codexLauncher), else the rollout's home, else plain `codex`.
-function findCodexSession(rollouts, procs, shellPid, launches = []) {
+// shell (procs carry { pid, ppid, name, startedAt }) and the thread it has
+// open. Codex holds a writer lock on the thread it has loaded; `writers` is
+// [{ cmd, id, path, cwd, mtimeMs, pids }], each thread whose lock is held and
+// the pids holding it (null when that couldn't be found out). With any to go
+// on, the tab's thread is the one a codex under the tab holds, or none (a
+// Codex that hasn't started a chat). Without, it is the rollout written most
+// recently since the codex started (`rollouts`, [{ cmd, id, path, cwd,
+// mtimeMs, subagent }]). Sub-agent threads never count: they run inside
+// another chat's process. A thread's cmd is the codex account whose home
+// alone holds it, or '' when homes share it. The account is the launch noted
+// for it (codexLauncher), else the thread's home, else plain `codex`.
+const isCodexProc = (p) => /^codex(\.exe)?$/i.test(String(p.name || ''));
+function findCodexSession(rollouts, procs, shellPid, launches = [], writers = null) {
   const under = descendants(procs, shellPid);
-  const proc = procs
-    .filter((p) => under.has(p.pid) && /^codex(\.exe)?$/i.test(String(p.name || '')))
-    .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0))[0];
+  const mine = procs.filter((p) => under.has(p.pid) && isCodexProc(p));
+  const proc = mine.sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0))[0];
   if (!proc) return null;
+  const newest = (list) => list.filter((r) => UUID_RE.test(String(r.id || '')) && !r.subagent).sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))[0];
+  const minePids = new Set(mine.map((p) => p.pid));
   const since = (proc.startedAt || 0) - 5000;
-  const rollout = rollouts
-    .filter((r) => UUID_RE.test(String(r.id || '')) && (r.mtimeMs || 0) >= since)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+  const rollout = writers && writers.length
+    ? newest(writers.filter((w) => (w.pids || []).some((pid) => minePids.has(pid))))
+    : newest(rollouts.filter((r) => (r.mtimeMs || 0) >= since));
   return {
     kind: 'codex', cmd: codexLauncher(proc, procs, shellPid, launches) || (rollout && rollout.cmd) || 'codex', pid: proc.pid, status: '',
     sessionId: rollout ? rollout.id : null, cwd: rollout ? rollout.cwd || '' : '',
@@ -197,8 +205,8 @@ function findCodexSession(rollouts, procs, shellPid, launches = []) {
 // Whatever agent is running under the tab's shell, Claude first (a Claude
 // launched from inside Codex, or vice versa, is rare; prefer the one with a
 // session id we can act on).
-function findSession({ sessionFiles = [], rollouts = [], launches = [] }, procs, shellPid) {
-  return findClaudeSession(sessionFiles, procs, shellPid) || findCodexSession(rollouts, procs, shellPid, launches);
+function findSession({ sessionFiles = [], rollouts = [], launches = [], writers = null }, procs, shellPid) {
+  return findClaudeSession(sessionFiles, procs, shellPid) || findCodexSession(rollouts, procs, shellPid, launches, writers);
 }
 
 // A PowerShell single-quoted literal: only the quote itself needs escaping and

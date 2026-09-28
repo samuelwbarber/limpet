@@ -104,15 +104,20 @@ the next launch. The up-arrow prompt history is not shared (Claude Code won't
 read it through a link).
 
 Every numbered Codex home shares plain `~/.codex`'s history: its `sessions/`,
-`archived_sessions/` and `thread-writer-locks/` are junctioned to `~/.codex`'s
-and its `session_index.jsonl` (thread names) is hard-linked to `~/.codex`'s.
-Codex builds its resume list by scanning `sessions/`, so every account lists
-the same threads; the shared locks keep one thread from being written by two
-accounts at once. A home's own threads are folded in on first sync (a thread
-that was copied across and continued keeps the longer copy), and a home with a
-chat open is skipped until a later launch. While a `codexN` runs, the shell
-notes it in `%APPDATA%\limpet\agents\<shell pid>.json` (`LIMPET_AGENT_RUN`
-overrides the folder) so the app can tell which account a tab's Codex is on.
+`archived_sessions/` and `thread-writer-locks/` are junctioned to `~/.codex`'s,
+its `session_index.jsonl` (thread names) is hard-linked to `~/.codex`'s, and its
+`config.toml` gets `sqlite_home` pointed at `~/.codex`, where Codex keeps the
+thread index `/resume` lists from. The shared locks keep one thread from being
+written by two accounts at once. A home's own threads are folded in on first
+sync (a thread that was copied across and continued keeps the longer copy) and
+then indexed in `~/.codex` through `codex app-server`, names included; a home
+with a chat open is skipped until a later launch. While a `codexN` runs, the
+shell notes it in `%APPDATA%\limpet\agents\<shell pid>.json`
+(`LIMPET_AGENT_RUN` overrides the folder) so the app can tell which account a
+tab's Codex is on. Which thread it is on comes from Codex's writer lock: the
+app asks Windows (Restart Manager) which process holds each
+`thread-writer-locks/<thread>.lock` and takes the one held by the Codex under
+that tab, ignoring sub-agent threads.
 
 In the limpet app, right-click a tab to see the signed-in accounts with the
 5-hour and weekly usage each has left, and to move the tab's chat to another:
