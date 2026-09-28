@@ -279,6 +279,7 @@ try {
     [IO.File]::WriteAllText("$hub\session_index.jsonl", (@(
         '{"id":"t1","thread_name":"hub one","updated_at":"2026-09-10T10:00:00Z"}'
         '{"id":"t2","thread_name":"hub two","updated_at":"2026-09-20T10:00:00Z"}') -join "`n") + "`n", $utf8)
+    [IO.File]::WriteAllText("$k1\config.toml", "model = `"gpt-x`"`n[projects.'c:\p']`ntrust_level = `"trusted`"`n", $utf8)
     [IO.File]::WriteAllText("$k1\session_index.jsonl", (@(
         '{"id":"t1","thread_name":"renamed in codex1","updated_at":"2026-09-15T10:00:00.5Z"}'
         '{"id":"t2","thread_name":"stale in codex1","updated_at":"2026-09-01T10:00:00Z"}'
@@ -303,8 +304,15 @@ try {
     $names = @(Get-Content "$hub\session_index.jsonl" | Where-Object { $_ })
     Check "codex sync adds codex1's newer thread names, oldest first, and skips stale ones" ($names.Count -eq 4 -and
         $names[2] -like '*only in codex1*' -and $names[3] -like '*renamed in codex1*' -and -not ($names -like '*stale in codex1*'))
+    $sqliteLine = 'sqlite_home = "' + ($hub -replace '\\', '\\') + '"'
+    $k1Config = @(Get-Content "$k1\config.toml")
+    Check "codex sync points codex1's sqlite_home (the /resume index) at plain codex's, above its tables" (
+        ($k1Config | Where-Object { $_ -notmatch '^\s*(#|$)' } | Select-Object -First 1) -eq $sqliteLine -and
+        ($k1Config -contains 'model = "gpt-x"') -and ($k1Config -contains "[projects.'c:\p']") -and ($k1Config -contains 'trust_level = "trusted"'))
+    Check 'codex sync gives a home without a config one that holds just sqlite_home' (@(Get-Content "$k2\config.toml") -contains $sqliteLine)
     Check 'codex sync is idempotent' ((Sync-LimpetCodexHistory -CodexHome $k1, $k2 -Hub $hub) -eq $true -and
-        @(Get-Content "$hub\session_index.jsonl" | Where-Object { $_ }).Count -eq 4)
+        @(Get-Content "$hub\session_index.jsonl" | Where-Object { $_ }).Count -eq 4 -and
+        @(Get-Content "$k1\config.toml" | Where-Object { $_ -match '^\s*sqlite_home' }).Count -eq 1)
     Add-Content -LiteralPath "$k1\session_index.jsonl" -Value '{"id":"t4","thread_name":"named later in codex1","updated_at":"2026-09-28T10:00:00Z"}'
     Check 'a name given in codex1 afterwards shows up in plain codex too' ((Get-Content "$hub\session_index.jsonl" -Tail 1) -like '*named later in codex1*')
 
@@ -328,6 +336,13 @@ try {
     New-Item -ItemType Junction -Path "$k4\sessions" -Target $elsewhere | Out-Null
     $foreign = Sync-LimpetCodexHistory -CodexHome $k4 -Hub $hub 3>$null
     Check 'codex sync leaves a foreign junction alone' ($foreign -eq $false -and (@((Get-Item "$k4\sessions" -Force).Target)[0] -like '*elsewhere'))
+
+    # A sqlite_home already set to somewhere else is respected too.
+    $k5 = "$x\.codex-5"
+    New-Item -ItemType Directory -Force -Path $k5 | Out-Null
+    [IO.File]::WriteAllText("$k5\config.toml", "sqlite_home = 'D:\\own'`n", $utf8)
+    $ownIndex = Sync-LimpetCodexHistory -CodexHome $k5 -Hub $hub 3>$null
+    Check "codex sync leaves a home's own sqlite_home alone" ($ownIndex -eq $false -and [IO.File]::ReadAllText("$k5\config.toml") -eq "sqlite_home = 'D:\\own'`n")
 }
 finally {
     Get-ChildItem -LiteralPath $x -Recurse -Directory -Force -ErrorAction SilentlyContinue |

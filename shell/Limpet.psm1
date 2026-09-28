@@ -679,14 +679,16 @@ function limpet {
 # stays per account: Claude Code refuses to read that file through a link.
 #
 # Codex accounts share plain ~/.codex's history. Codex keeps each chat as a
-# rollout file under <CODEX_HOME>/sessions and builds its resume list by
-# scanning that folder (its sqlite index catches up by itself), so each
-# numbered home's `sessions` and `archived_sessions` are junctioned to
-# ~/.codex's. `thread-writer-locks` goes with them: it is how Codex refuses a
-# second writer on a thread, which only holds across accounts if they all look
-# in one place. Thread names live in session_index.jsonl, which Codex only
-# appends to, so a hard link shares it. Logins, config, prompt history and the
-# sqlite state stay per account. ~/.codex itself is the hub rather than a new
+# rollout file under <CODEX_HOME>/sessions, so each numbered home's `sessions`
+# and `archived_sessions` are junctioned to ~/.codex's. `thread-writer-locks`
+# goes with them: it is how Codex refuses a second writer on a thread, which
+# only holds across accounts if they all look in one place. Thread names live
+# in session_index.jsonl, which Codex only appends to, so a hard link shares
+# it. The /resume picker lists threads from Codex's sqlite index, not from the
+# folder, so each numbered home's config.toml also gets `sqlite_home` pointed
+# at ~/.codex; threads moved in from a home are then indexed there once
+# (Update-LimpetCodexThreadIndex). Logins, the rest of config and the up-arrow
+# prompt history stay per account. ~/.codex itself is the hub rather than a new
 # store: the Codex app and editor extensions use it directly and its data
 # never has to move. A numbered home's own chats are folded in on its first
 # sync; a home with a chat open right now is left alone until the next launch.
@@ -1009,8 +1011,123 @@ function Connect-LimpetCodexIndex {
     }
 }
 
+function Set-LimpetCodexSqliteHome {
+    # Point this home's sqlite state at the hub's: `sqlite_home` in its
+    # config.toml (a top-level key, so it goes above the first [table]).
+    # That state holds the thread index the resume picker lists, so without
+    # it each account would still list only the threads it indexed itself.
+    # Returns 'set' when just added, 'ok' when already there, $null when the
+    # config names some other place (left alone, with a warning).
+    param([string]$CodexHome, [string]$Hub)
+    $config = Join-Path $CodexHome 'config.toml'
+    $raw = if (Test-Path -LiteralPath $config) { [IO.File]::ReadAllText($config) } else { '' }
+    $top = ($raw -split '(?m)^\s*\[', 2)[0]
+    if ($top -match '(?m)^\s*sqlite_home\s*=\s*(?:''([^'']*)''|"((?:[^"\\]|\\.)*)")') {
+        $value = if ($Matches[1]) { $Matches[1] } else { $Matches[2] -replace '\\(.)', '$1' }
+        if (Test-LimpetSamePath $value $Hub) { return 'ok' }
+        Write-Warning "limpet: $config already sets sqlite_home to '$value'; leaving it alone, so that account lists only its own threads in /resume."
+        return $null
+    }
+    $nl = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
+    $quoted = '"' + ($Hub -replace '\\', '\\' -replace '"', '\"') + '"'
+    $line = "# limpet: share plain codex's thread index (/resume list) and other state$nl" + "sqlite_home = $quoted$nl"
+    [IO.File]::WriteAllText($config, $line + $(if ($raw) { $nl + $raw } else { '' }), (New-Object Text.UTF8Encoding($false)))
+    return 'set'
+}
+
+function Update-LimpetCodexThreadIndex {
+    # Get threads that were moved into the hub from another account into the
+    # shared thread index. Codex only indexes a rollout when it writes it, or
+    # when a thread listing that scans the sessions folder comes across one
+    # it lacks, so ask `codex app-server` for such a listing, every page of
+    # it, active and archived. Returns $true when it got to the end.
+    param([string]$Hub, [int]$TimeoutSec = 180)
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $env:ComSpec
+    $psi.Arguments = '/d /c codex app-server'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $psi.EnvironmentVariables['CODEX_HOME'] = $Hub
+    $psi.EnvironmentVariables.Remove('CODEX_SQLITE_HOME')
+    $proc = [Diagnostics.Process]::Start($psi)
+    $null = $proc.StandardError.ReadToEndAsync()   # drain it so the server never blocks on it
+    # Windows PowerShell's Process sends a UTF-8 byte-order mark down stdin as
+    # it starts, which would spoil the first message. Start with an empty
+    # line for it to spoil (the server logs it and reads on), then write
+    # without one.
+    $stdin = New-Object IO.StreamWriter($proc.StandardInput.BaseStream, (New-Object Text.UTF8Encoding($false)))
+    $stdin.NewLine = "`n"
+    $stdin.WriteLine()
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $rpc = @{ id = 0 }
+    $call = {
+        param($method, $params)
+        $id = ++$rpc.id
+        $stdin.WriteLine((@{ id = $id; method = $method; params = $params } | ConvertTo-Json -Compress -Depth 5))
+        $stdin.Flush()
+        while ($true) {
+            $left = [int]($deadline - (Get-Date)).TotalMilliseconds
+            if ($left -le 0) { throw 'timed out' }
+            $read = $proc.StandardOutput.ReadLineAsync()
+            if (-not $read.Wait($left)) { throw 'timed out' }
+            if ($null -eq $read.Result) { throw 'codex app-server exited' }
+            try { $msg = $read.Result | ConvertFrom-Json } catch { continue }
+            if ($msg.id -ne $id) { continue }
+            if ($msg.error) { throw "$method failed: $($msg.error.message)" }
+            return $msg.result
+        }
+    }
+    $list = {
+        # Every thread, active and archived: from the index alone, or by
+        # scanning the sessions folder (which indexes what it finds).
+        param([bool]$IndexOnly)
+        foreach ($archived in $false, $true) {
+            $cursor = $null
+            do {
+                $params = @{ sortKey = 'updated_at'; archived = $archived; limit = 100; useStateDbOnly = $IndexOnly }
+                if ($cursor) { $params.cursor = $cursor }
+                $page = & $call 'thread/list' $params
+                $page.data
+                $cursor = $page.nextCursor
+            } while ($cursor)
+        }
+    }
+    try {
+        $null = & $call 'initialize' @{ clientInfo = @{ name = 'limpet'; version = '0.1.0' } }
+        $stdin.WriteLine('{"method":"initialized","params":{}}')
+        $null = & $list $false
+        # The picker shows a thread's name from the index, and indexing a
+        # moved-in thread from its file leaves that blank. Fill each blank in
+        # from session_index.jsonl (last line wins) through Codex's own rename,
+        # which keeps the thread's place in the list.
+        $names = @{}
+        foreach ($line in (Read-LimpetLines (Join-Path $Hub 'session_index.jsonl'))) {
+            try { $e = $line | ConvertFrom-Json } catch { continue }
+            if ($e.id -and $e.thread_name) { $names[[string]$e.id] = [string]$e.thread_name }
+        }
+        foreach ($t in @(& $list $true)) {
+            $name = $names[[string]$t.id]
+            if ($name -and -not $t.name) { $null = & $call 'thread/name/set' @{ threadId = $t.id; name = $name } }
+        }
+        return $true
+    }
+    catch {
+        Write-Warning "limpet: couldn't get Codex to index the threads moved into $Hub ($($_.Exception.Message)); it'll be retried next launch."
+        return $false
+    }
+    finally {
+        try { $stdin.Close() } catch { }
+        if (-not $proc.WaitForExit(5000)) { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null }
+        $proc.Dispose()
+    }
+}
+
 function Sync-LimpetCodexHome {
-    # Wire one numbered Codex home to the hub. Returns $true when it is fully shared.
+    # Wire one numbered Codex home to the hub. Returns $true when it is fully
+    # shared. Leaves <hub>/.limpet-reindex when threads it brought along
+    # still need to go into the shared index (Sync-LimpetCodexHistory does that).
     param([string]$CodexHome, [string]$Hub, [string]$Stamp)
     New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null
     if (Test-LimpetCodexBusy $CodexHome) {
@@ -1018,11 +1135,20 @@ function Sync-LimpetCodexHome {
         Write-Warning "limpet: a chat is open in $cmd right now, so its history isn't shared yet; it will be the next time $cmd starts with none open."
         return $false
     }
+    $reindex = Join-Path $Hub '.limpet-reindex'
+    $ownThreads = @(Get-ChildItem -LiteralPath $CodexHome -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^(archived_)?sessions(\.migrating-.*)?$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+    if ($ownThreads.Count) { New-Item -ItemType File -Force -Path $reindex | Out-Null }
     foreach ($name in $script:LimpetCodexSharedFolders) {
         $ok = Connect-LimpetSharedFolder -Link (Join-Path $CodexHome $name) -Shared (Join-Path $Hub $name) -Stamp $Stamp -Agent 'Codex' -Discard:($name -eq 'thread-writer-locks')
         if (-not $ok) { return $false }
     }
-    return (Connect-LimpetCodexIndex -CodexHome $CodexHome -Hub $Hub -Stamp $Stamp)
+    if (-not (Connect-LimpetCodexIndex -CodexHome $CodexHome -Hub $Hub -Stamp $Stamp)) { return $false }
+    $state = Set-LimpetCodexSqliteHome -CodexHome $CodexHome -Hub $Hub
+    # Newly pointed at the hub: whatever this home had indexed on its own must
+    # be indexed again there.
+    if ($state -eq 'set' -and (Test-Path -LiteralPath (Join-Path $CodexHome 'state_5.sqlite'))) { New-Item -ItemType File -Force -Path $reindex | Out-Null }
+    return [bool]$state
 }
 
 function Sync-LimpetCodexHistory {
@@ -1032,10 +1158,13 @@ function Sync-LimpetCodexHistory {
     .DESCRIPTION
     Runs automatically whenever a numbered codex command launches. Each
     ~/.codex-N gets its sessions, archived_sessions and thread-writer-locks
-    folders junctioned to ~/.codex's and its session_index.jsonl (thread
-    names) hard-linked to ~/.codex's, after folding in whatever it had of its
-    own. A home with a chat open is skipped with a warning and picked up on a
-    later launch. Returns $true when every Codex account is shared.
+    folders junctioned to ~/.codex's, its session_index.jsonl (thread names)
+    hard-linked to ~/.codex's and `sqlite_home` in its config.toml pointed at
+    ~/.codex (the thread index /resume lists from), after folding in whatever
+    it had of its own; threads it brought along are then indexed in ~/.codex
+    by the codex CLI. A home with a chat open is skipped with a warning and
+    picked up on a later launch. Returns $true when every Codex account is
+    shared.
     #>
     [CmdletBinding()]
     param(
@@ -1053,6 +1182,13 @@ function Sync-LimpetCodexHistory {
     foreach ($dir in $CodexHome) {
         if (Test-LimpetSamePath $dir $Hub) { continue }
         if (-not (Sync-LimpetCodexHome -CodexHome $dir -Hub $Hub -Stamp $stamp)) { $ok = $false }
+    }
+    # Threads moved in from other homes still to be indexed: done with the
+    # codex CLI, so with none installed the note just waits for one.
+    $reindex = Join-Path $Hub '.limpet-reindex'
+    if ((Test-Path -LiteralPath $reindex) -and (Get-LimpetCodexExe)) {
+        if (Update-LimpetCodexThreadIndex -Hub $Hub) { Remove-Item -LiteralPath $reindex -Force -ErrorAction SilentlyContinue }
+        else { $ok = $false }
     }
     return $ok
 }
