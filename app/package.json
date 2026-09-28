@@ -6,6 +6,8 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "setup": "npm install --ignore-scripts --no-audit --no-fund && node node_modules/electron/install.js && node scripts/fetch-pty.js",
+    "fetch-pty": "node scripts/fetch-pty.js",
     "demo:backdrop": "node scripts/show-backdrop-demo.js",
     "setup:backdrop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-backdrop.ps1",
     "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js tests/accounts.test.js tests/handoff.test.js tests/codex-import.test.js tests/usage.test.js",

@@ -225,18 +225,20 @@ run that account again.
 ```powershell
 git clone https://github.com/samuelwbarber/limpet
 cd limpet
-.\install.ps1          # wires the module into your PowerShell profile
-
-cd app                 # the limpet terminal app (peek/download/drop live here)
-npm install
-npm start              # or launch "limpet" from the Start Menu after install.ps1
+.\install.ps1
 ```
 
+Then type **limpet** in the Windows search box to open the app.
+
+`install.ps1` adds the shell module to your PowerShell profile, installs the
+app (it needs [Node.js](https://nodejs.org): `winget install OpenJS.NodeJS.LTS`)
+and adds the Start Menu entry that search finds. Re-running it is safe.
+
 - The shell module (`shell/`) works in any terminal: Windows Terminal,
-  WezTerm, VS Code. `install.ps1` adds it to your profile and creates a Start
-  Menu entry for the app.
+  WezTerm, VS Code.
 - The limpet app (`app/`) is the tabbed Electron terminal that renders inline
-  images and catches `download`, `upload` and drag and drop.
+  images and catches `download`, `upload` and drag and drop. From a prompt:
+  `cd app; npm start`.
 - SSH keys: `.\setup-ssh.ps1` generates a key, loads `ssh-agent`, and can
   install it on a host (`-RemoteHost user@host`).
 
@@ -257,7 +259,7 @@ setup.
 ```
 shell/       Limpet PowerShell module + limpet-remote.sh (in-session helpers) + Hello auth
 app/         tabbed Electron terminal (xterm.js + ConPTY)
-install.ps1  idempotent setup (profile, Start Menu shortcut)
+install.ps1  idempotent setup (profile, app install, Start Menu shortcut)
 setup-ssh.ps1  SSH key setup helper
 tests/       Test-Limpet.ps1 smoke test
 tools/demo/  scripts that record the README GIFs

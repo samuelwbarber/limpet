@@ -6,17 +6,22 @@ in the shell (e.g. `xssh user@host`); there's no separate connection UI.
 
 ## Setup
 
+The repo's `install.ps1` does this for you (and adds the Start Menu entry). By
+hand:
+
 ```powershell
-npm install
-npm run fetch-pty   # downloads the ConPTY binary matching this Electron's ABI
+npm run setup   # npm install, Electron's download, and the ConPTY binary
 npm start
 ```
 
-`fetch-pty` is needed because the upstream node-pty package's own installer
-fails on recent Node/Windows; this script fetches the correct prebuilt binary so
+Use `npm run setup`, not a plain `npm install`: the upstream node-pty package's
+own install script fails on recent Node (it spawns a `.cmd` without a shell,
+which Node now refuses), and that takes the whole install down. `setup`
+installs with package scripts skipped, runs Electron's download, then
+`npm run fetch-pty` fetches the ConPTY binary built for this Electron's ABI, so
 the local shell gets a real ConPTY (line editing, Ctrl+R, arrows, full-screen
-TUIs). Without it the app still runs, but the local shell falls back to a basic
-pipe with no line editing.
+TUIs). Without that binary the app still runs, but the local shell falls back
+to a basic pipe with no line editing.
 
 Electron is pinned to 29.x because that's the newest ABI the prebuilt PTY ships
 a Windows binary for.
