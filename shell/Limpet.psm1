@@ -646,19 +646,24 @@ function limpet {
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
-    Write-Host '  Agents   : claude1, claude2, ... / codex1, codex2, ... (separate logins; one /resume history per agent)' -ForegroundColor DarkGray
+    Write-Host '  Agents   : claude1, ... / codex1, ... / agy1, ... / copilot1, ... (separate logins; one /resume history per agent)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
-# Any number of Claude Code and Codex accounts; one /resume history per agent.
+# Any number of Claude Code, Codex, Antigravity (agy) and Copilot accounts;
+# one /resume history per agent.
 #
 # `claude1`, `claude2`, `claude3`, ... each launch the Claude Code CLI against
 # their own config directory (~/.claude-1, ~/.claude-2, ...), so each stays
 # logged in to a different account -- e.g. personal and work -- with no
 # re-authenticating. Plain `claude` keeps its own login in ~/.claude. In the
 # same way `codex1`, `codex2`, ... run the OpenAI Codex CLI with CODEX_HOME at
-# ~/.codex-1, ~/.codex-2, ...; plain `codex` stays on ~/.codex.
+# ~/.codex-1, ~/.codex-2, ...; plain `codex` stays on ~/.codex. `copilot1`, ...
+# run the GitHub Copilot CLI with COPILOT_HOME at ~/.copilot-1, .... `agy1`, ...
+# run Antigravity, which has no such setting and keeps one login in Windows
+# Credential Manager, so limpet keeps each account's login in ~/.agy-N and
+# swaps it in for the launch (see Enter-LimpetAgyAccount).
 #
 # There is no list of accounts. A numbered command whose directory exists is
 # defined as a real function at import (tab completion, Get-Command); any
@@ -692,7 +697,18 @@ function limpet {
 # store: the Codex app and editor extensions use it directly and its data
 # never has to move. A numbered home's own chats are folded in on its first
 # sync; a home with a chat open right now is left alone until the next launch.
+#
+# Copilot accounts share plain ~/.copilot's the same way: `session-state` (one
+# folder per chat, which Copilot's resume list is built from, with its in-use
+# markers and operation locks) is junctioned to ~/.copilot's. Antigravity
+# accounts share everything but the login already: agy always keeps its chats
+# in ~/.gemini.
 # ---------------------------------------------------------------------------
+
+# The agents, in menu order, and the variable that points each at an account's
+# directory (agy has none; its login is swapped instead).
+$script:LimpetAgentKinds = [ordered]@{ claude = 'CLAUDE_CONFIG_DIR'; codex = 'CODEX_HOME'; agy = $null; copilot = 'COPILOT_HOME' }
+$script:LimpetAgentPattern = '(' + ($script:LimpetAgentKinds.Keys -join '|') + ')'
 
 # Where the account directories live. Tests point this at a temp folder.
 function Get-LimpetAgentHome { if ($env:LIMPET_AGENT_HOME) { $env:LIMPET_AGENT_HOME } else { $HOME } }
@@ -701,11 +717,12 @@ function Get-LimpetAgentHome { if ($env:LIMPET_AGENT_HOME) { $env:LIMPET_AGENT_H
 # ascending: @{ Command = 'claude3'; Kind = 'claude'; Number = 3; ConfigDir = '...\.claude-3' }
 function Get-LimpetAgentAccounts {
     param([string]$AgentHome = (Get-LimpetAgentHome))
-    $found = @{ claude = @(); codex = @() }
+    $found = @{}
+    foreach ($kind in $script:LimpetAgentKinds.Keys) { $found[$kind] = @() }
     foreach ($d in @(Get-ChildItem -LiteralPath $AgentHome -Directory -Force -ErrorAction SilentlyContinue)) {
-        if ($d.Name -match '^\.(claude|codex)-([1-9]\d*)$') { $found[$Matches[1]] += [int]$Matches[2] }
+        if ($d.Name -match "^\.$($script:LimpetAgentPattern)-([1-9]\d*)$") { $found[$Matches[1]] += [int]$Matches[2] }
     }
-    foreach ($kind in 'claude', 'codex') {
+    foreach ($kind in $script:LimpetAgentKinds.Keys) {
         [pscustomobject]@{ Command = $kind; Kind = $kind; Number = 0; ConfigDir = (Join-Path $AgentHome ".$kind") }
         foreach ($n in @($found[$kind] | Sort-Object -Unique)) {
             [pscustomobject]@{ Command = "$kind$n"; Kind = $kind; Number = $n; ConfigDir = (Join-Path $AgentHome ".$kind-$n") }
@@ -713,10 +730,11 @@ function Get-LimpetAgentAccounts {
     }
 }
 
-# The account a command name denotes (claude, claude3, codex, codex12), or $null.
+# The account a command name denotes (claude, claude3, codex12, agy2,
+# copilot1), or $null.
 function Resolve-LimpetAgentCommand {
     param([string]$Command, [string]$AgentHome = (Get-LimpetAgentHome))
-    if ($Command -notmatch '^(claude|codex)([1-9]\d*)?$') { return $null }
+    if ($Command -notmatch "^$($script:LimpetAgentPattern)([1-9]\d*)?$") { return $null }
     $kind = $Matches[1]
     $n = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
     $dir = if ($n) { ".$kind-$n" } else { ".$kind" }
@@ -728,21 +746,16 @@ function Get-LimpetClaudeConfigDirs {
     @(Get-LimpetAgentAccounts | Where-Object { $_.Kind -eq 'claude' } | ForEach-Object { $_.ConfigDir })
 }
 
-function Get-LimpetClaudeExe {
-    # Resolve the real Claude Code launcher (npm shim or exe). Our wrappers are
-    # numbered (claude1, ...), so there's nothing to recurse into here.
-    $cmd = Get-Command claude -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
+function Get-LimpetAgentExe([string]$Kind) {
+    # The real CLI (npm shim or exe). Our wrappers are numbered (claude1, ...),
+    # so there's nothing to recurse into here.
+    $cmd = Get-Command $Kind -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($cmd) { return $cmd.Source }
     return $null
 }
 
-function Get-LimpetCodexExe {
-    $cmd = Get-Command codex -CommandType Application, ExternalScript -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($cmd) { return $cmd.Source }
-    return $null
-}
+function Get-LimpetCodexExe { Get-LimpetAgentExe 'codex' }
 
 function Get-LimpetClaudeSharedStore { Join-Path (Get-LimpetAgentHome) '.claude-shared\projects' }
 
@@ -1193,10 +1206,261 @@ function Sync-LimpetCodexHistory {
     return $ok
 }
 
-# Where a shell notes which Codex account it launched, for the limpet app:
+# Plain copilot's home: the history every other Copilot account shares.
+function Get-LimpetCopilotHub { Join-Path (Get-LimpetAgentHome) '.copilot' }
+
+function Test-LimpetCopilotBusy([string]$CopilotHome) {
+    # Is a chat open in this home right now? Copilot marks a chat's folder
+    # with inuse.<pid>.lock while a process has it open. Once the folder is
+    # shared there is nothing home-specific to see.
+    $state = Join-Path $CopilotHome 'session-state'
+    $item = Get-Item -LiteralPath $state -Force -ErrorAction SilentlyContinue
+    if (-not $item -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+    foreach ($chat in @(Get-ChildItem -LiteralPath $state -Directory -Force -ErrorAction SilentlyContinue)) {
+        foreach ($mark in @(Get-ChildItem -LiteralPath $chat.FullName -Filter 'inuse.*.lock' -File -Force -ErrorAction SilentlyContinue)) {
+            if ($mark.Name -match '^inuse\.(\d+)\.lock$' -and (Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Sync-LimpetCopilotHistory {
+    <#
+    .SYNOPSIS
+    Share plain copilot's /resume history (~/.copilot) with copilot1, copilot2, ...
+    .DESCRIPTION
+    Runs automatically whenever a numbered copilot command launches. Each
+    ~/.copilot-N gets its session-state folder (one folder per chat, which
+    Copilot's resume list is built from) junctioned to ~/.copilot's, after
+    folding in whatever it had of its own. A home with a chat open is skipped
+    with a warning and picked up on a later launch. Returns $true when every
+    Copilot account is shared.
+    #>
+    [CmdletBinding()]
+    param(
+        # Numbered Copilot homes to wire up. Default: every ~/.copilot-N that exists.
+        [string[]]$CopilotHome,
+        # The home they share with.
+        [string]$Hub = (Get-LimpetCopilotHub)
+    )
+    if (-not $CopilotHome) {
+        $CopilotHome = @(Get-LimpetAgentAccounts | Where-Object { $_.Kind -eq 'copilot' -and $_.Number -gt 0 } | ForEach-Object { $_.ConfigDir })
+    }
+    $stamp = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), ([guid]::NewGuid().ToString('N').Substring(0, 4))
+    New-Item -ItemType Directory -Force -Path $Hub | Out-Null
+    $ok = $true
+    foreach ($dir in $CopilotHome) {
+        if (Test-LimpetSamePath $dir $Hub) { continue }
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        if (Test-LimpetCopilotBusy $dir) {
+            $cmd = (Split-Path -Leaf $dir) -replace '^\.copilot-', 'copilot'
+            Write-Warning "limpet: a chat is open in $cmd right now, so its history isn't shared yet; it will be the next time $cmd starts with none open."
+            $ok = $false
+            continue
+        }
+        if (-not (Connect-LimpetSharedFolder -Link (Join-Path $dir 'session-state') -Shared (Join-Path $Hub 'session-state') -Stamp $stamp -Agent 'Copilot')) { $ok = $false }
+    }
+    return $ok
+}
+
+# ---------------------------------------------------------------------------
+# Antigravity (agy) accounts. agy keeps its one login in Windows Credential
+# Manager (generic credential "gemini:antigravity") and everything else in
+# ~/.gemini, with no setting to move either. So every agy account shares the
+# chats already, and limpet gives each its own login by keeping a copy of it
+# in ~/.agy-N (login.dat, encrypted for this Windows user with DPAPI) and
+# swapping it into Credential Manager for the length of the launch. Plain
+# agy's own login is set aside in ~/.agy meanwhile and put back afterwards, so
+# plain `agy` always finds its own account. Credential Manager holds one login
+# at a time, so while one agy account is running another is refused.
+# LIMPET_AGY_CRED_TARGET and LIMPET_AGY_PROCESS stand in for the credential
+# name and agy's process name (tests).
+# ---------------------------------------------------------------------------
+
+function Get-LimpetAgyTarget { if ($env:LIMPET_AGY_CRED_TARGET) { $env:LIMPET_AGY_CRED_TARGET } else { 'gemini:antigravity' } }
+
+function Initialize-LimpetCredentials {
+    if ('LimpetCredentials' -as [type]) { return }
+    Add-Type -AssemblyName System.Security
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LimpetCredentials {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct CREDENTIAL {
+        public uint Flags; public uint Type; public string TargetName; public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;
+        public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;
+    }
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CredRead(string target, uint type, uint flags, out IntPtr cred);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CredWrite(ref CREDENTIAL cred, uint flags);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CredDelete(string target, uint type, uint flags);
+    [DllImport("advapi32.dll")] static extern void CredFree(IntPtr cred);
+    const uint GENERIC = 1;
+    const int ERROR_NOT_FOUND = 1168;
+    // { userName, persist, blob } of a generic credential, or null if there is none.
+    public static object[] Read(string target) {
+        IntPtr p;
+        if (!CredRead(target, GENERIC, 0, out p)) {
+            int err = Marshal.GetLastWin32Error();
+            if (err == ERROR_NOT_FOUND) return null;
+            throw new System.ComponentModel.Win32Exception(err);
+        }
+        try {
+            var c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+            var blob = new byte[c.CredentialBlobSize];
+            if (blob.Length > 0) Marshal.Copy(c.CredentialBlob, blob, 0, blob.Length);
+            return new object[] { c.UserName, c.Persist, blob };
+        }
+        finally { CredFree(p); }
+    }
+    public static void Write(string target, string userName, uint persist, byte[] blob) {
+        var c = new CREDENTIAL { Type = GENERIC, TargetName = target, UserName = userName, Persist = persist, CredentialBlobSize = (uint)blob.Length };
+        c.CredentialBlob = Marshal.AllocHGlobal(Math.Max(1, blob.Length));
+        try {
+            Marshal.Copy(blob, 0, c.CredentialBlob, blob.Length);
+            if (!CredWrite(ref c, 0)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        finally { Marshal.FreeHGlobal(c.CredentialBlob); }
+    }
+    public static void Delete(string target) {
+        if (!CredDelete(target, GENERIC, 0)) {
+            int err = Marshal.GetLastWin32Error();
+            if (err != ERROR_NOT_FOUND) throw new System.ComponentModel.Win32Exception(err);
+        }
+    }
+}
+'@
+}
+
+# Which account's login is in Credential Manager now: the command noted in
+# ~/.agy/active, or plain agy when there's no note.
+function Get-LimpetAgyActiveFile { Join-Path (Get-LimpetAgentHome) '.agy\active' }
+function Get-LimpetAgyActive {
+    $file = Get-LimpetAgyActiveFile
+    $cmd = if (Test-Path -LiteralPath $file) { ([IO.File]::ReadAllText($file)).Trim() } else { '' }
+    if (Resolve-LimpetAgentCommand -Command $cmd) { $cmd } else { 'agy' }
+}
+function Set-LimpetAgyActive([string]$Command) {
+    $file = Get-LimpetAgyActiveFile
+    if ($Command -eq 'agy') { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue; return }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+    [IO.File]::WriteAllText($file, $Command)
+}
+
+function Get-LimpetAgyProcesses {
+    $name = if ($env:LIMPET_AGY_PROCESS) { $env:LIMPET_AGY_PROCESS } else { 'agy' }
+    @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+}
+
+# The email in an OAuth id_token (a JWT), or ''.
+function Get-LimpetJwtEmail([string]$Token) {
+    try {
+        $part = $Token.Split('.')[1].Replace('-', '+').Replace('_', '/')
+        $part += '=' * ((4 - $part.Length % 4) % 4)
+        $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($part)) | ConvertFrom-Json
+        if ($claims.email) { return [string]$claims.email }
+    }
+    catch { }
+    return ''
+}
+
+function Save-LimpetAgyLogin([string]$Command) {
+    # Keep the login now in Credential Manager as $Command's: login.dat
+    # (DPAPI) plus account.json with just its email, for the app's menu.
+    # Read back before returning $true, since the credential may be replaced
+    # next. Nothing in Credential Manager (never signed in) is fine too.
+    Initialize-LimpetCredentials
+    $cred = [LimpetCredentials]::Read((Get-LimpetAgyTarget))
+    if (-not $cred) { return $true }
+    $dir = (Resolve-LimpetAgentCommand -Command $Command).ConfigDir
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $record = [ordered]@{ userName = [string]$cred[0]; persist = [uint32]$cred[1]; blob = [Convert]::ToBase64String([byte[]]$cred[2]) }
+    $plain = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+    $sealed = [Security.Cryptography.ProtectedData]::Protect($plain, $null, 'CurrentUser')
+    $file = Join-Path $dir 'login.dat'
+    [IO.File]::WriteAllBytes("$file.new", $sealed)
+    $check = [Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes("$file.new"), $null, 'CurrentUser')
+    if ([Convert]::ToBase64String($check) -ne [Convert]::ToBase64String($plain)) { throw "limpet: couldn't store $Command's agy login safely." }
+    Move-Item -LiteralPath "$file.new" -Destination $file -Force
+    $email = ''
+    try { $email = Get-LimpetJwtEmail ([Text.Encoding]::UTF8.GetString([byte[]]$cred[2]) | ConvertFrom-Json).id_token } catch { }
+    [IO.File]::WriteAllText((Join-Path $dir 'account.json'), (@{ email = $email } | ConvertTo-Json -Compress))
+    return $true
+}
+
+function Restore-LimpetAgyLogin([string]$Command) {
+    # Put $Command's kept login into Credential Manager, or clear it so agy
+    # asks to sign in when that account has none yet.
+    Initialize-LimpetCredentials
+    $file = Join-Path (Resolve-LimpetAgentCommand -Command $Command).ConfigDir 'login.dat'
+    if (-not (Test-Path -LiteralPath $file)) { [LimpetCredentials]::Delete((Get-LimpetAgyTarget)); return }
+    $plain = [Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($file), $null, 'CurrentUser')
+    $record = [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
+    [LimpetCredentials]::Write((Get-LimpetAgyTarget), [string]$record.userName, [uint32]$record.persist, [Convert]::FromBase64String($record.blob))
+}
+
+function Repair-LimpetAgyLogin {
+    # A launch whose shell was closed or killed while agy ran (closing its
+    # limpet tab, say) never got to put plain agy's login back. Once no agy is
+    # running, finish that: keep the login in Credential Manager as the
+    # account that ran, and restore plain agy's. Runs as the module loads (so
+    # every new tab) and before each agy launch; a no-op unless an account
+    # other than plain agy is noted as active.
+    if (-not (Test-Path -LiteralPath (Get-LimpetAgyActiveFile))) { return }
+    $active = Get-LimpetAgyActive
+    if ($active -eq 'agy' -or (Get-LimpetAgyProcesses).Count) { return }
+    try {
+        $null = Save-LimpetAgyLogin $active
+        Restore-LimpetAgyLogin 'agy'
+        Set-LimpetAgyActive 'agy'
+    }
+    catch { Write-Warning "limpet: couldn't put plain agy's login back after $active ($($_.Exception.Message)); it is kept in $(Split-Path -Parent (Get-LimpetAgyActiveFile))." }
+}
+
+function Enter-LimpetAgyAccount([string]$Command) {
+    # Get $Command's login into Credential Manager for a launch. $false (with
+    # a warning) when another agy account is running and holds it.
+    try {
+        Repair-LimpetAgyLogin
+        $active = Get-LimpetAgyActive
+        if ($active -eq $Command) { return $true }
+        if ((Get-LimpetAgyProcesses).Count) {
+            Write-Warning "limpet: agy is already running as $active, and agy can hold only one login at a time. Close it, then run $Command again."
+            return $false
+        }
+        $null = Save-LimpetAgyLogin $active   # throws rather than lose it
+        Restore-LimpetAgyLogin $Command
+        Set-LimpetAgyActive $Command
+        return $true
+    }
+    catch {
+        Write-Warning "limpet: couldn't switch agy to $Command ($($_.Exception.Message)); nothing was changed."
+        return $false
+    }
+}
+
+function Exit-LimpetAgyAccount([string]$Command) {
+    # After a launch: keep $Command's (possibly refreshed) login and put plain
+    # agy's back. Left to the last one out if another agy of this account is
+    # still running.
+    for ($i = 0; $i -lt 12 -and (Get-LimpetAgyProcesses).Count; $i++) { Start-Sleep -Milliseconds 250 }
+    if ((Get-LimpetAgyProcesses).Count -or (Get-LimpetAgyActive) -ne $Command) { return }
+    try {
+        $null = Save-LimpetAgyLogin $Command
+        if ($Command -ne 'agy') {
+            Restore-LimpetAgyLogin 'agy'
+            Set-LimpetAgyActive 'agy'
+        }
+    }
+    catch { Write-Warning "limpet: couldn't put plain agy's login back ($($_.Exception.Message)); it is kept in $(Split-Path -Parent (Get-LimpetAgyActiveFile)) and goes back the next time an agyN exits." }
+}
+
+# Where a shell notes which account it launched, for the limpet app:
 # <dir>/<shell pid>.json. Claude Code leaves a per-process file of its own;
-# Codex doesn't, and with the history shared a rollout no longer shows which
-# account wrote it. LIMPET_AGENT_RUN overrides the folder (tests).
+# the others don't, and with the history shared a chat's files no longer show
+# which account wrote them. LIMPET_AGENT_RUN overrides the folder (tests).
 function Get-LimpetAgentRunDir { if ($env:LIMPET_AGENT_RUN) { $env:LIMPET_AGENT_RUN } else { Join-Path $env:APPDATA 'limpet\agents' } }
 
 function Set-LimpetAgentLaunch([string]$Command) {
@@ -1223,15 +1487,17 @@ function Invoke-LimpetAgent {
     <#
     .SYNOPSIS
     Run an agent CLI as one limpet account: claude3 -> Claude Code with
-    CLAUDE_CONFIG_DIR=~/.claude-3, codex2 -> Codex with CODEX_HOME=~/.codex-2.
+    CLAUDE_CONFIG_DIR=~/.claude-3, codex2 -> Codex with CODEX_HOME=~/.codex-2,
+    copilot1 -> Copilot with COPILOT_HOME=~/.copilot-1, agy2 -> Antigravity
+    with ~/.agy-2's login swapped in.
     .DESCRIPTION
     What the numbered commands call. The directory is created if missing, a
     launch first wires every account of that agent into its shared history,
     and Arguments go to the CLI untouched (`claude3 -c`, `codex2 resume <id>`).
     The env var is set for this launch only and put back afterwards, so plain
-    `claude` / `codex` keep their usual directories. With '--limpet-plan' among
-    the arguments nothing is launched; the resolved plan is returned instead
-    (tests).
+    `claude` / `codex` / `copilot` keep their usual directories; agy's login is
+    put back the same way. With '--limpet-plan' among the arguments nothing is
+    launched; the resolved plan is returned instead (tests).
     #>
     param(
         [Parameter(Mandatory)][string]$Command,
@@ -1239,21 +1505,19 @@ function Invoke-LimpetAgent {
     )
     $account = Resolve-LimpetAgentCommand -Command $Command
     if (-not $account) {
-        Write-Error "limpet: '$Command' is not an agent account (claude, claude1, claude2, ..., codex, codex1, ...)."
+        Write-Error "limpet: '$Command' is not an agent account (claude, claude1, ..., codex, codex1, ..., agy, agy1, ..., copilot, copilot1, ...)."
         return
     }
     New-Item -ItemType Directory -Force -Path $account.ConfigDir | Out-Null
-    $envName = if ($account.Kind -eq 'codex') { 'CODEX_HOME' } else { 'CLAUDE_CONFIG_DIR' }
-    if ($account.Kind -eq 'claude') {
-        # Wire up every account, not just this one, so plain claude's history
-        # lands in the shared store too.
-        Sync-LimpetClaudeHistory | Out-Null
+    $envName = $script:LimpetAgentKinds[$account.Kind]
+    # Wire up every account of this agent, not just this one, so the plain
+    # account's history is in the shared store too.
+    switch ($account.Kind) {
+        'claude' { Sync-LimpetClaudeHistory | Out-Null }
+        'codex' { Sync-LimpetCodexHistory | Out-Null }
+        'copilot' { Sync-LimpetCopilotHistory | Out-Null }
     }
-    else {
-        # Likewise every numbered Codex home into plain codex's.
-        Sync-LimpetCodexHistory | Out-Null
-    }
-    $exe = if ($account.Kind -eq 'codex') { Get-LimpetCodexExe } else { Get-LimpetClaudeExe }
+    $exe = Get-LimpetAgentExe $account.Kind
     if ($Arguments -contains '--limpet-plan') {
         return [pscustomobject]@{
             Command = $Command; Kind = $account.Kind; ConfigDir = $account.ConfigDir; EnvName = $envName; Exe = $exe
@@ -1261,19 +1525,21 @@ function Invoke-LimpetAgent {
         }
     }
     if (-not $exe) {
-        $what = if ($account.Kind -eq 'codex') { 'codex CLI (npm i -g @openai/codex)' } else { 'claude CLI (Claude Code)' }
+        $what = @{ claude = 'claude CLI (Claude Code)'; codex = 'codex CLI (npm i -g @openai/codex)'; agy = 'agy CLI (Antigravity)'; copilot = 'copilot CLI (npm i -g @github/copilot)' }[$account.Kind]
         Write-Warning "limpet: the $what is not on PATH. Install it, then rerun $Command."
         return
     }
-    $prev = [Environment]::GetEnvironmentVariable($envName, 'Process')
-    $note = if ($account.Kind -eq 'codex') { Set-LimpetAgentLaunch $account.Command }
+    if ($account.Kind -eq 'agy' -and -not (Enter-LimpetAgyAccount $account.Command)) { return }
+    $prev = if ($envName) { [Environment]::GetEnvironmentVariable($envName, 'Process') }
+    $note = if ($account.Kind -ne 'claude') { Set-LimpetAgentLaunch $account.Command }
     try {
-        [Environment]::SetEnvironmentVariable($envName, $account.ConfigDir, 'Process')
+        if ($envName) { [Environment]::SetEnvironmentVariable($envName, $account.ConfigDir, 'Process') }
         & $exe @Arguments
     }
     finally {
-        [Environment]::SetEnvironmentVariable($envName, $prev, 'Process')
+        if ($envName) { [Environment]::SetEnvironmentVariable($envName, $prev, 'Process') }
         if ($note) { Remove-Item -LiteralPath $note -Force -ErrorAction SilentlyContinue }
+        if ($account.Kind -eq 'agy') { Exit-LimpetAgyAccount $account.Command }
     }
 }
 
@@ -1286,14 +1552,24 @@ foreach ($acct in @(Get-LimpetAgentAccounts | Where-Object { $_.Number -gt 0 }))
     $script:LimpetAgentFunctions += $acct.Command
 }
 
-# Any other claudeN / codexN is caught by PowerShell's command-not-found hook
-# and dispatched the same way (its directory gets created on first run). A hook
-# that was already installed still sees everything else; both are put back on
-# Remove-Module.
+# Plain agy goes through the wrapper too, unlike plain claude / codex /
+# copilot: it has to find its own login in Credential Manager, which an agyN
+# may have swapped out, and must not start while another agy account runs.
+function agy { Invoke-LimpetAgent -Command 'agy' -Arguments $args }
+$script:LimpetAgentFunctions += 'agy'
+
+# Finish any agyN launch whose shell was closed before it could put plain
+# agy's login back.
+try { Repair-LimpetAgyLogin } catch { }
+
+# Any other claudeN / codexN / agyN / copilotN is caught by PowerShell's
+# command-not-found hook and dispatched the same way (its directory gets
+# created on first run). A hook that was already installed still sees
+# everything else; both are put back on Remove-Module.
 $script:LimpetPreviousCommandNotFound = $ExecutionContext.InvokeCommand.CommandNotFoundAction
 $ExecutionContext.InvokeCommand.CommandNotFoundAction = {
     param($CommandName, $EventArgs)
-    if ($CommandName -match '^(claude|codex)[1-9]\d*$') {
+    if ($CommandName -match '^(claude|codex|agy|copilot)[1-9]\d*$') {
         $EventArgs.CommandScriptBlock = [scriptblock]::Create("Invoke-LimpetAgent -Command '$CommandName' -Arguments `$args")
         $EventArgs.StopSearch = $true
         return
@@ -1358,6 +1634,6 @@ $ExecutionContext.SessionState.Module.OnRemove = {
 }
 
 Export-ModuleMember -Function (@('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'reels', 'limpet',
-    'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'Sync-LimpetClaudeHistory', 'Sync-LimpetCodexHistory',
+    'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'Sync-LimpetClaudeHistory', 'Sync-LimpetCodexHistory', 'Sync-LimpetCopilotHistory',
     'Enable-LimpetHello', 'Disable-LimpetHello', 'Get-LimpetHelloStatus', 'Get-LimpetHelloPassphrase', 'Test-LimpetHelloEnrolled', 'Protect-LimpetSecret', 'Unprotect-LimpetSecret', 'Get-LimpetAskpass', 'Get-LimpetKeyPath') +
     $script:LimpetAgentFunctions)

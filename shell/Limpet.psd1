@@ -9,10 +9,10 @@
     # Runs in the caller's session state: rewrites the stale AllScope copies
     # of ls/rm/cp/mv/cat that pre-existing scopes hold (see the script).
     ScriptsToProcess  = @('limpet-aliases.ps1')
-    # 'claude*' / 'codex*' cover the numbered account commands (claude1, codex2, ...),
-    # which the module defines for whichever ~/.claude-N / ~/.codex-N dirs exist.
+    # 'claude*' / 'codex*' / 'agy*' / 'copilot*' cover the numbered account commands
+    # (claude1, codex2, ...), which the module defines for whichever ~/.<agent>-N dirs exist.
     FunctionsToExport = @('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'reels', 'limpet',
-                          'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'claude*', 'codex*', 'Sync-LimpetClaudeHistory', 'Sync-LimpetCodexHistory',
+                          'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'claude*', 'codex*', 'agy*', 'copilot*', 'Sync-LimpetClaudeHistory', 'Sync-LimpetCodexHistory', 'Sync-LimpetCopilotHistory',
                           'Enable-LimpetHello', 'Disable-LimpetHello', 'Get-LimpetHelloStatus', 'Get-LimpetHelloPassphrase', 'Test-LimpetHelloEnrolled', 'Protect-LimpetSecret', 'Unprotect-LimpetSecret', 'Get-LimpetAskpass', 'Get-LimpetKeyPath')
     CmdletsToExport   = @()
     AliasesToExport   = @('ls', 'rm', 'cp', 'mv', 'cat')

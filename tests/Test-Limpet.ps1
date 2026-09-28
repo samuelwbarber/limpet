@@ -352,6 +352,100 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
+# copilot / copilot1 / ...: numbered homes share plain copilot's session-state.
+# ---------------------------------------------------------------------------
+$y = Join-Path $env:TEMP ("limpet_copilot_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+try {
+    $hub = "$y\.copilot"; $p1 = "$y\.copilot-1"; $p2 = "$y\.copilot-2"
+    $chatA = 'aaaaaaaa-0000-4000-8000-000000000001'; $chatB = 'bbbbbbbb-0000-4000-8000-000000000002'
+    New-Item -ItemType Directory -Force -Path "$hub\session-state\$chatA", "$p1\session-state\$chatB", "$p1\session-state\$chatA", "$p1\session-state\.session-operation-locks" | Out-Null
+    Set-Content "$hub\session-state\$chatA\events.jsonl" 'e1'
+    Set-Content "$p1\session-state\$chatA\events.jsonl" 'e1', 'e2'   # the same chat, continued in copilot1
+    Set-Content "$p1\session-state\$chatB\events.jsonl" 'b1'
+    Set-Content "$p1\session-state\.session-operation-locks\$chatB.lock" ''
+    $ok = Sync-LimpetCopilotHistory -CopilotHome $p1, $p2 -Hub $hub
+    Check 'copilot sync reports every account shared' ($ok -eq $true)
+    foreach ($p in $p1, $p2) {
+        $it = Get-Item -LiteralPath "$p\session-state" -Force
+        Check "copilot sync junctions $(Split-Path -Leaf $p)\session-state to plain copilot's" (
+            ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (@($it.Target)[0] -like '*\.copilot\session-state'))
+    }
+    Check "copilot sync folds copilot1's chats in, keeping the continued one" ((Test-Path "$hub\session-state\$chatB\events.jsonl") -and
+        ((Get-Content "$hub\session-state\$chatA\events.jsonl") -join ',' -eq 'e1,e2') -and (Test-Path "$p1\session-state\$chatB\events.jsonl"))
+    Check 'copilot sync is idempotent' ((Sync-LimpetCopilotHistory -CopilotHome $p1, $p2 -Hub $hub) -eq $true)
+
+    # A chat open in the home (Copilot's in-use mark with a live pid): left alone until it closes.
+    $p3 = "$y\.copilot-3"
+    New-Item -ItemType Directory -Force -Path "$p3\session-state\$chatB" | Out-Null
+    Set-Content "$p3\session-state\$chatB\inuse.$PID.lock" "$PID"
+    $busy = Sync-LimpetCopilotHistory -CopilotHome $p3 -Hub $hub 3>$null
+    Check 'copilot sync leaves a home with a chat open alone' ($busy -eq $false -and -not ((Get-Item "$p3\session-state" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint))
+    Remove-Item "$p3\session-state\$chatB\inuse.$PID.lock"
+    Check 'copilot sync completes once the chat is closed' ((Sync-LimpetCopilotHistory -CopilotHome $p3 -Hub $hub) -eq $true)
+}
+finally {
+    Get-ChildItem -LiteralPath $y -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+        ForEach-Object { [IO.Directory]::Delete($_.FullName) }
+    Remove-Item -Recurse -Force $y -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
+# agy / agy1 / ...: one Credential Manager login, swapped per launch. Runs
+# against a throwaway credential name and home; agy's real login is untouched.
+# ---------------------------------------------------------------------------
+$g = Join-Path $env:TEMP ("limpet_agy_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$saved = @{ home = $env:LIMPET_AGENT_HOME; target = $env:LIMPET_AGY_CRED_TARGET; proc = $env:LIMPET_AGY_PROCESS; run = $env:LIMPET_AGENT_RUN; path = $env:PATH }
+$m = Get-Module Limpet
+try {
+    $env:LIMPET_AGENT_HOME = $g
+    $env:LIMPET_AGY_CRED_TARGET = 'limpet-test:agy-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $env:LIMPET_AGY_PROCESS = 'limpet-no-such-agy'
+    New-Item -ItemType Directory -Force -Path $g | Out-Null
+    $jwt = { param($email) 'x.' + ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{ email = $email } | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_')) + '.y' }
+    $login = { param($email) [Text.Encoding]::UTF8.GetBytes((@{ token = @{ access_token = "at-$email" }; auth_method = 'oauth'; id_token = (& $jwt $email) } | ConvertTo-Json -Compress)) }
+    $inCM = { $c = & $m { [LimpetCredentials]::Read((Get-LimpetAgyTarget)) }; if ($c) { [Text.Encoding]::UTF8.GetString([byte[]]$c[2]) } else { $null } }
+    & $m { Initialize-LimpetCredentials }
+    $plainLogin = & $login 'plain@example.com'
+    & $m { param($b) [LimpetCredentials]::Write((Get-LimpetAgyTarget), 'antigravity', 2, $b) } $plainLogin
+    $plainText = [Text.Encoding]::UTF8.GetString($plainLogin)
+
+    Check 'agy1 (never signed in) starts with the login cleared, so agy asks to sign in' ((& $m { Enter-LimpetAgyAccount 'agy1' }) -eq $true -and $null -eq (& $inCM))
+    Check "plain agy's login is set aside first, email noted for the menu" ((Test-Path "$g\.agy\login.dat") -and
+        ((Get-Content "$g\.agy\account.json" -Raw | ConvertFrom-Json).email -eq 'plain@example.com') -and (Get-Content "$g\.agy\active") -eq 'agy1')
+    & $m { param($b) [LimpetCredentials]::Write((Get-LimpetAgyTarget), 'antigravity', 2, $b) } (& $login 'one@example.com')   # signs in as another account
+    & $m { Exit-LimpetAgyAccount 'agy1' }
+    Check "on exit agy1's login is kept and plain agy's is back" ((& $inCM) -eq $plainText -and (Test-Path "$g\.agy-1\login.dat") -and
+        ((Get-Content "$g\.agy-1\account.json" -Raw | ConvertFrom-Json).email -eq 'one@example.com') -and -not (Test-Path "$g\.agy\active"))
+    Check 'agy1 comes back signed in next time' ((& $m { Enter-LimpetAgyAccount 'agy1' }) -eq $true -and (& $inCM) -like '*at-one@example.com*')
+    $env:LIMPET_AGY_PROCESS = [IO.Path]::GetFileNameWithoutExtension((Get-Process -Id $PID).Path)   # "agy is running"
+    Check 'another agy account is refused while one runs' ((& $m { Enter-LimpetAgyAccount 'agy2' } 3>$null) -eq $false -and (& $inCM) -like '*at-one@example.com*')
+    $env:LIMPET_AGY_PROCESS = 'limpet-no-such-agy'
+    & $m { Exit-LimpetAgyAccount 'agy1' }
+    Check 'plain agy is back after the second run too' ((& $inCM) -eq $plainText)
+
+    # A tab closed while agy1 ran: its shell never got to put plain agy back.
+    $null = & $m { Enter-LimpetAgyAccount 'agy1' }
+    & $m { param($b) [LimpetCredentials]::Write((Get-LimpetAgyTarget), 'antigravity', 2, $b) } (& $login 'one-refreshed@example.com')
+    & $m { Repair-LimpetAgyLogin }
+    Check "an interrupted agy1 is finished off later: its refreshed login kept, plain agy's back" ((& $inCM) -eq $plainText -and
+        -not (Test-Path "$g\.agy\active") -and ((Get-Content "$g\.agy-1\account.json" -Raw | ConvertFrom-Json).email -eq 'one-refreshed@example.com'))
+
+    # The whole launch, against a stand-in agy that reports which login it found.
+    $fakeBin = "$g\bin"; $env:LIMPET_AGENT_RUN = "$g\run"
+    New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+    Set-Content -LiteralPath "$fakeBin\agy.cmd" -Encoding Ascii -Value '@echo off', 'echo AGY_RAN %*'
+    $env:PATH = "$fakeBin;$env:PATH"
+    $out = (agy1 --conversation abc) -join "`n"
+    Check 'agy1 launches agy with arguments intact and puts plain agy back after' ($out -like '*AGY_RAN --conversation abc*' -and (& $inCM) -eq $plainText -and -not (Test-Path "$g\.agy\active"))
+}
+finally {
+    try { & $m { [LimpetCredentials]::Delete((Get-LimpetAgyTarget)) } } catch { }
+    $env:LIMPET_AGENT_HOME = $saved.home; $env:LIMPET_AGY_CRED_TARGET = $saved.target; $env:LIMPET_AGY_PROCESS = $saved.proc; $env:LIMPET_AGENT_RUN = $saved.run; $env:PATH = $saved.path
+    Remove-Item -Recurse -Force $g -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
 # Any number of accounts: discovery from the home dir, numbered commands (real
 # functions for dirs that exist, the command-not-found hook for the rest) and
 # CLAUDE_CONFIG_DIR / CODEX_HOME routing. Nothing is launched (--limpet-plan)
@@ -360,14 +454,23 @@ finally {
 $ah = Join-Path $env:TEMP ("limpet_agents_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $savedAgentHome = $env:LIMPET_AGENT_HOME
 try {
-    New-Item -ItemType Directory -Force -Path "$ah\.claude-2", "$ah\.claude-10", "$ah\.codex-1", "$ah\.claude-x", "$ah\.claude-01", "$ah\Documents" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$ah\.claude-2", "$ah\.claude-10", "$ah\.codex-1", "$ah\.agy-3", "$ah\.copilot-2", "$ah\.claude-x", "$ah\.claude-01", "$ah\Documents" | Out-Null
     $env:LIMPET_AGENT_HOME = $ah
     $accts = @(Get-LimpetAgentAccounts)
-    Check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' (($accts | ForEach-Object Command) -join ',' -eq 'claude,claude2,claude10,codex,codex1')
-    Check 'each account maps to its own config dir' (($accts | Where-Object Command -eq 'codex1').ConfigDir -eq "$ah\.codex-1")
+    Check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' (($accts | ForEach-Object Command) -join ',' -eq 'claude,claude2,claude10,codex,codex1,agy,agy3,copilot,copilot2')
+    Check 'each account maps to its own config dir' (($accts | Where-Object Command -eq 'codex1').ConfigDir -eq "$ah\.codex-1" -and
+        ($accts | Where-Object Command -eq 'copilot2').ConfigDir -eq "$ah\.copilot-2")
 
     Import-Module $module -Force   # re-import: the numbered dirs become commands
-    Check 'numbered accounts whose dir exists are real commands' (@(Get-Command claude2, claude10, codex1 -ErrorAction SilentlyContinue).Count -eq 3)
+    Check 'numbered accounts whose dir exists are real commands' (@(Get-Command claude2, claude10, codex1, agy3, copilot2 -ErrorAction SilentlyContinue).Count -eq 5)
+    $plan = copilot2 --limpet-plan --resume abc
+    Check 'copilot2 runs Copilot with COPILOT_HOME at ~/.copilot-2' (
+        $plan.Kind -eq 'copilot' -and $plan.EnvName -eq 'COPILOT_HOME' -and $plan.ConfigDir -eq "$ah\.copilot-2" -and (($plan.Arguments -join ' ') -eq '--resume abc'))
+    $plan = agy5 --limpet-plan --conversation abc
+    Check 'agy5 runs Antigravity with no directory variable (its login is swapped instead), through the hook' (
+        $plan.Kind -eq 'agy' -and -not $plan.EnvName -and $plan.ConfigDir -eq "$ah\.agy-5" -and (Test-Path "$ah\.agy-5"))
+    Check 'a Copilot launch shares its history with plain copilot' (
+        ((Get-Item "$ah\.copilot-2\session-state" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path "$ah\.copilot\session-state"))
     $plan = claude10 --limpet-plan --resume abc
     Check 'claude10 runs Claude with CLAUDE_CONFIG_DIR at ~/.claude-10, arguments intact' (
         $plan.Kind -eq 'claude' -and $plan.EnvName -eq 'CLAUDE_CONFIG_DIR' -and $plan.ConfigDir -eq "$ah\.claude-10" -and (($plan.Arguments -join ' ') -eq '--resume abc'))
@@ -404,7 +507,8 @@ try {
     finally { $env:PATH = $savedPath; $env:LIMPET_AGENT_RUN = $savedRun }
     Check 'a leading zero is not an account' ($(try { Invoke-LimpetAgent -Command 'claude01' -Arguments @('--limpet-plan') -ErrorAction Stop; 'ran' } catch { 'refused' }) -eq 'refused')
     Check 'other unknown commands still fail normally' ($(try { nosuchlimpetcommand } catch { 'gone' }) -eq 'gone')
-    Check 'plain claude and codex are never shadowed' (@(Get-Command claude, codex -CommandType Function -ErrorAction SilentlyContinue).Count -eq 0)
+    Check 'plain claude, codex and copilot are never shadowed' (@(Get-Command claude, codex, copilot -CommandType Function -ErrorAction SilentlyContinue).Count -eq 0)
+    Check 'plain agy goes through the wrapper (its login may be swapped out)' ((Get-Command agy -CommandType Function -ErrorAction SilentlyContinue).Definition -match "Invoke-LimpetAgent -Command 'agy'")
 }
 finally {
     if ($null -eq $savedAgentHome) { Remove-Item Env:\LIMPET_AGENT_HOME -ErrorAction SilentlyContinue } else { $env:LIMPET_AGENT_HOME = $savedAgentHome }
