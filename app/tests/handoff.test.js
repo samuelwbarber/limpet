@@ -2,9 +2,37 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  parseClaudeTranscript, parseCodexRollout, renderMarkdown, continuePrompt,
+  parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseTranscript, renderMarkdown, continuePrompt,
   buildClaudeTranscript, claudeProjectDirName, titleFromTurns, cleanUserText,
 } = require('../src/handoff');
+
+test('parseAgyTranscript reads Antigravity steps: the request inside <USER_REQUEST>, replies, tool calls and their outputs', () => {
+  const text = jsonl([
+    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nrename the helper\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: now.\n</ADDITIONAL_METADATA>' },
+    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'Looking for it.', tool_calls: [{ name: 'run_command', args: { CommandLine: '"rg helper"' } }] },
+    { step_index: 2, source: 'MODEL', type: 'RUN_COMMAND', content: 'Created At: 2026-09-28T10:00:00Z\nCompleted At: 2026-09-28T10:00:01Z\nsrc/a.js' },
+    { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', thinking: 'private', content: 'Renamed it in src/a.js.' },
+  ]);
+  const turns = parseAgyTranscript(text);
+  assert.deepStrictEqual(turns.map((t) => [t.role, t.text]), [['user', 'rename the helper'], ['assistant', 'Looking for it.\nRenamed it in src/a.js.']]);
+  assert.deepStrictEqual(turns[1].tools, [{ name: 'run_command', input: 'rg helper', output: 'src/a.js' }]);
+  assert.deepStrictEqual(parseTranscript('agy', text), turns);
+});
+
+test('parseCopilotEvents reads Copilot events: user and assistant messages, tool requests and their results', () => {
+  const text = jsonl([
+    { type: 'session.start', data: { sessionId: SID } },
+    { type: 'user.message', data: { content: 'rename the helper', transformedContent: '<current_datetime>x</current_datetime>\n\nrename the helper' } },
+    { type: 'system.message', data: { role: 'system', content: 'You are the GitHub Copilot CLI' } },
+    { type: 'assistant.message', data: { content: 'Looking for it.', toolRequests: [{ toolCallId: 't1', name: 'powershell', arguments: { command: 'rg helper' } }] } },
+    { type: 'tool.execution_complete', data: { toolCallId: 't1', success: true, result: { content: 'src/a.js' } } },
+    { type: 'assistant.message', data: { content: 'Renamed it.', toolRequests: [] } },
+  ]);
+  const turns = parseCopilotEvents(text);
+  assert.deepStrictEqual(turns.map((t) => [t.role, t.text]), [['user', 'rename the helper'], ['assistant', 'Looking for it.\nRenamed it.']]);
+  assert.deepStrictEqual(turns[1].tools, [{ name: 'powershell', input: 'rg helper', output: 'src/a.js' }]);
+  assert.deepStrictEqual(parseTranscript('copilot', text), turns);
+});
 
 const SID = '11111111-2222-4333-8444-555555555555';
 const jsonl = (rows) => `${rows.map((r) => JSON.stringify(r)).join('\n')}\n`;

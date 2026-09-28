@@ -63,6 +63,7 @@ async function get(fetchImpl, url, headers, timeoutMs) {
 
 // `account` is one of describeAccounts()'s rows (kind, cmd, configDir).
 async function readUsage(account, io, { fetchImpl = globalThis.fetch, timeoutMs = 8000, now = Date.now() } = {}) {
+  if (account.kind === 'agy' || account.kind === 'copilot') return { error: 'limpet has no way to read this agent\'s limits' };
   if (account.kind === 'codex') {
     const auth = io.readJson(path.join(account.configDir, 'auth.json'));
     const tokens = auth && auth.tokens;

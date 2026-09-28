@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const path = require('path');
 const {
   accountFor, listAccounts, describeAccounts, signInHints, descendants, findClaudeSession, findCodexSession, findSession,
-  launchCommand, psQuote, jwtEmail,
+  findCopilotSession, findAgySession, launchCommand, psQuote, jwtEmail,
 } = require('../src/accounts');
 
 const procs = [
@@ -46,8 +46,35 @@ test('accountFor maps any claudeN / codexN name to its kind and config dir', () 
 
 test('listAccounts discovers numbered config dirs, plain ones always first', () => {
   const io = { listDir: (p) => (p === 'C:\\h' ? ['.claude', '.claude-10', '.claude-2', '.codex-1', '.codex-01', '.claude-x', 'Documents', '.claude.json'] : []) };
-  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1']);
-  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex']);
+  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1', 'agy', 'copilot']);
+  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex', 'agy', 'copilot']);
+  const more = { listDir: () => ['.agy-2', '.copilot-1', '.copilot-12', '.agy-02', '.gemini'] };
+  assert.deepStrictEqual(listAccounts('C:\\h', more).map((a) => a.cmd), ['claude', 'codex', 'agy', 'agy2', 'copilot', 'copilot1', 'copilot12']);
+  assert.deepStrictEqual(accountFor('agy3'), { cmd: 'agy3', kind: 'agy', number: 3, dir: '.agy-3' });
+  assert.deepStrictEqual(accountFor('copilot'), { cmd: 'copilot', kind: 'copilot', number: 0, dir: '.copilot' });
+});
+
+test('describeAccounts: agy accounts by their kept login, Copilot ones once Copilot has run in their home', () => {
+  const home = 'C:\\h';
+  const files = new Set([
+    path.join(home, '.gemini', 'antigravity-cli'),          // plain agy has been used here
+    path.join(home, '.agy-1'), path.join(home, '.agy-1', 'login.dat'),
+    path.join(home, '.agy-2'),                               // made, never signed in
+    path.join(home, '.copilot-1'), path.join(home, '.copilot-1', 'config.json'),
+    path.join(home, '.copilot-2'),
+  ]);
+  const io = {
+    listDir: (p) => (p === home ? ['.agy-1', '.agy-2', '.copilot-1', '.copilot-2'] : []),
+    exists: (p) => files.has(p),
+    readJson: (p) => (p === path.join(home, '.agy-1', 'account.json') ? { email: 'one@example.com' } : null),
+  };
+  const by = Object.fromEntries(describeAccounts(home, io).map((a) => [a.cmd, a]));
+  assert.deepStrictEqual([by.agy.loggedIn, by.agy1.loggedIn, by.agy1.email, by.agy2.loggedIn, by.agy2.present], [true, true, 'one@example.com', false, true]);
+  assert.deepStrictEqual([by.copilot.loggedIn, by.copilot.present, by.copilot1.loggedIn, by.copilot2.loggedIn], [false, false, true, false]);
+  assert.deepStrictEqual(signInHints(Object.values(by)), ['claude', 'claude1', 'codex', 'codex1', 'agy2', 'agy3', 'copilot', 'copilot2', 'copilot3']);
+  // agy and Copilot aren't suggested until one of their accounts is in use.
+  const bare = describeAccounts(home, { listDir: () => [], exists: () => false, readJson: () => null });
+  assert.deepStrictEqual(signInHints(bare), ['claude', 'claude1', 'codex', 'codex1']);
 });
 
 test('descendants walks the whole subtree and survives the pid-0 self-parent', () => {
@@ -163,6 +190,42 @@ test('launchCommand builds resume, handoff-prompt and fresh-start lines per agen
   assert.strictEqual(psQuote("a'b"), "'a''b'");
 });
 
+test('launchCommand speaks agy and Copilot too: their resume flags, -i for a first prompt, --add-dir', () => {
+  assert.strictEqual(launchCommand('agy2', { resume: SID_A }), `agy2 --conversation ${SID_A}`);
+  assert.strictEqual(launchCommand('copilot', { resume: SID_A }), `copilot --resume ${SID_A}`);
+  assert.strictEqual(launchCommand('agy', { prompt: "it's here", addDir: 'C:\\h o' }), "agy --add-dir 'C:\\h o' -i 'it''s here'");
+  assert.strictEqual(launchCommand('copilot3', { prompt: 'go on', addDir: 'C:\\h' }), "copilot3 --add-dir 'C:\\h' -i 'go on'");
+  assert.strictEqual(launchCommand('copilot1'), 'copilot1');
+});
+
+test('findCopilotSession takes the chat marked in use by the tab\'s copilot; findAgySession the conversation its agy holds', () => {
+  const tree = [...procs,
+    { pid: 500, ppid: 100, name: 'powershell.exe', startedAt: 2000 },   // tab D: copilot
+    { pid: 510, ppid: 500, name: 'node.exe', startedAt: 60000 },
+    { pid: 520, ppid: 510, name: 'copilot.exe', startedAt: 60100 },
+    { pid: 600, ppid: 100, name: 'powershell.exe', startedAt: 2000 },   // tab E: agy
+    { pid: 610, ppid: 600, name: 'agy.EXE', startedAt: 70000 },
+    { pid: 620, ppid: 610, name: 'agy.EXE', startedAt: 70100 }];
+  const chats = [
+    { cmd: '', id: SID_A, path: 'C:\\s\\a\\events.jsonl', cwd: 'C:\\a', mtimeMs: 90000, pids: [999] },   // another process
+    { cmd: '', id: SID_B, path: 'C:\\s\\b\\events.jsonl', cwd: 'C:\\b', mtimeMs: 61000, pids: [520] },
+  ];
+  const c = findCopilotSession(chats, tree, 500, [{ pid: 500, cmd: 'copilot2', startedAt: 59000 }]);
+  assert.deepStrictEqual({ kind: c.kind, cmd: c.cmd, pid: c.pid, sessionId: c.sessionId, cwd: c.cwd, rolloutPath: c.rolloutPath },
+    { kind: 'copilot', cmd: 'copilot2', pid: 520, sessionId: SID_B, cwd: 'C:\\b', rolloutPath: 'C:\\s\\b\\events.jsonl' });
+  assert.strictEqual(findCopilotSession(chats, tree, 500).cmd, 'copilot');
+  assert.strictEqual(findCopilotSession(chats, tree, 400), null);   // tab C runs codex, not copilot
+  const convs = [
+    { cmd: '', id: SID_A, path: 'C:\\g\\a.jsonl', cwd: 'C:\\a', mtimeMs: 99000, pids: [] },            // left open by nobody
+    { cmd: '', id: SID_B, path: 'C:\\g\\b.jsonl', cwd: 'C:\\b', mtimeMs: 71000, pids: [620] },         // agy's worker holds it
+  ];
+  const a = findAgySession(convs, tree, 600, [], 'agy1');
+  assert.deepStrictEqual({ kind: a.kind, cmd: a.cmd, pid: a.pid, sessionId: a.sessionId }, { kind: 'agy', cmd: 'agy1', pid: 610, sessionId: SID_B });
+  assert.strictEqual(findAgySession(convs.map(({ pids, ...rest }) => rest), tree, 600).sessionId, SID_A);   // holders unknown: newest
+  const all = findSession({ copilotChats: chats, agyConversations: convs }, tree, 600);
+  assert.strictEqual(all.kind, 'agy');
+});
+
 test('describeAccounts reports login state and email per discovered config dir, including codex ones', () => {
   const home = 'C:\\h';
   const token = `x.${Buffer.from(JSON.stringify({ email: 'codex@example.com' })).toString('base64url')}.y`;
@@ -177,7 +240,7 @@ test('describeAccounts reports login state and email per discovered config dir, 
     },
   };
   const list = describeAccounts(home, io);
-  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3']);
+  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3', 'agy', 'copilot']);
   const one = list.find((a) => a.cmd === 'claude1');
   assert.deepStrictEqual({ loggedIn: one.loggedIn, email: one.email, configDir: one.configDir },
     { loggedIn: true, email: 'one@example.com', configDir: path.join(home, '.claude-1') });

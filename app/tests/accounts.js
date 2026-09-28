@@ -9,6 +9,10 @@
 //   codex   -> codex1    the rollout copied into the other home, resumed
 //   codex1  -> codex     homes sharing one sessions folder: the account comes
 //                        from the shell's launch note, the thread just resumes
+//   copilot1 -> copilot  the chat Copilot marks in use, resumed by id
+//   copilot -> claude1   a synthesized Claude transcript
+//   agy     -> agy1      the conversation whose database agy holds, resumed
+//   agy     -> codex     a handoff file
 // The agents are stood in for by nested PowerShells (detection needs a live
 // pid under the tab's shell plus the files the real agents leave behind), the
 // launch line is captured instead of run, and usage comes from a fixture.
@@ -95,11 +99,14 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   const userData = await electronApp.evaluate(({ app }) => app.getPath('userData'));
 
   // Stand in for an agent: a nested process under the tab's shell that prints
-  // its pid, holding `lock` open the way Codex holds the thread it has loaded.
-  async function standIn(exe, lock = '') {
+  // its pid, holding `lock` open the way Codex holds the thread it has loaded
+  // (and agy its conversation), and dropping Copilot's in-use mark into
+  // `markDir` if given.
+  async function standIn(exe, lock = '', markDir = '') {
     await page.locator('.term-pane.active').click();
     const hold = lock ? `$l=[IO.File]::Open(''${lock}'',''OpenOrCreate'',''ReadWrite'',''None''); ` : '';
-    await type(page, `& '${exe}' -NoProfile -Command '${hold}Write-Output SESSPID_$PID; Start-Sleep 120'`);
+    const mark = markDir ? `Set-Content -LiteralPath (Join-Path ''${markDir}'' (''inuse.'' + $PID + ''.lock'')) -Value $PID; ` : '';
+    await type(page, `& '${exe}' -NoProfile -Command '${hold}${mark}Write-Output SESSPID_$PID; Start-Sleep 120'`);
     const seen = new Set();
     for (const m of (await screenText(page)).matchAll(/SESSPID_(\d+)/g)) seen.add(m[1]);
     return waitFor(async () => {
@@ -190,8 +197,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await electronApp.evaluate(() => { global.__limpetCodexImport = async () => { throw new Error('importer unavailable'); }; });
   pid = await claudeStandIn(sid);
   check('claude1 -> codex (fallback): move completes', !!(await swapTo('codex')));
-  check('claude1 -> codex (fallback): codex starts with a continue prompt', !!(await seenOnScreen('SWAPPED_codex_PROMPT')));
-  const handoffs = fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('claude1-to-codex')) : [];
+  check('claude1 -> codex (fallback): codex starts with a continue prompt', !!(await seenOnScreen('SWAPPED_codex_PROMPT')));  const handoffs = fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('claude1-to-codex')) : [];
   check('claude1 -> codex (fallback): a handoff file was written', handoffs.length >= 1);
   if (handoffs.length) {
     const md = fs.readFileSync(path.join(userData, 'handoff', handoffs[handoffs.length - 1]), 'utf8');
@@ -287,6 +293,65 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     !(await screenText(page)).includes(`SWAPPED_codex_${otherThread}`));
   try { other.kill(); } catch (_) { /* gone */ }
   fs.unlinkSync(launchNote);
+
+  // ---- Copilot: the chat its process marks in use; copilot1 -> copilot resumes it, copilot -> claude1 converts it ----
+  const copilotHome = (n) => path.join(home, n ? `.copilot-${n}` : '.copilot');
+  for (const n of [0, 1]) { fs.mkdirSync(copilotHome(n), { recursive: true }); fs.writeFileSync(path.join(copilotHome(n), 'config.json'), '{}'); }
+  const copilotChat = '22222222-3333-4444-8555-666666666666';
+  const chatDir = path.join(copilotHome(0), 'session-state', copilotChat);
+  fs.mkdirSync(chatDir, { recursive: true });
+  fs.writeFileSync(path.join(chatDir, 'workspace.yaml'), `id: ${copilotChat}\ncwd: ${home}\n`);
+  fs.writeFileSync(path.join(chatDir, 'events.jsonl'), [
+    { type: 'session.start', data: { sessionId: copilotChat } },
+    { type: 'user.message', data: { content: 'COPILOT_ASK tidy the readme' } },
+    { type: 'assistant.message', data: { content: 'COPILOT_REPLY tidied', toolRequests: [] } },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  fs.copyFileSync(path.join(bin, 'codex.exe'), path.join(bin, 'copilot.exe'));
+  fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'copilot1', pid: shellPid, startedAt: Date.now() }));
+  pid = await standIn(path.join(bin, 'copilot.exe'), '', chatDir);
+  check('copilot: stand-in runs under the tab', !!pid);
+  menu = await openMenu();
+  check('copilot: the menu marks copilot1 as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="copilot1"]').count().then((n) => n === 1), 15000)));
+  await page.keyboard.press('Escape');
+  check('copilot1 -> copilot: move completes', !!(await swapTo('copilot')));
+  check('copilot1 -> copilot: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('copilot1 -> copilot: the same chat is resumed', !!(await seenOnScreen(`SWAPPED_copilot_${copilotChat}`)));
+  fs.unlinkSync(launchNote);
+  for (const n of fs.readdirSync(chatDir)) if (n.startsWith('inuse.')) fs.unlinkSync(path.join(chatDir, n));
+  pid = await standIn(path.join(bin, 'copilot.exe'), '', chatDir);
+  check('copilot -> claude1: move completes', !!(await swapTo('claude1')));
+  const fromCopilot = await waitFor(async () => { const m = /SWAPPED_claude1_([0-9a-f-]{36})/.exec((await screenText(page)).split(`SWAPPED_copilot_${copilotChat}`).pop()); return m ? m[1] : null; }, 15000);
+  const carried = fromCopilot && path.join(projectDir, `${fromCopilot}.jsonl`);
+  check('copilot -> claude1: the chat becomes a Claude transcript', !!carried && fs.existsSync(carried) &&
+    fs.readFileSync(carried, 'utf8').includes('COPILOT_ASK tidy the readme') && fs.readFileSync(carried, 'utf8').includes('COPILOT_REPLY tidied'));
+
+  // ---- agy: the conversation whose database its process holds; agy -> agy1 resumes it, agy -> codex hands it over ----
+  const agyRoot = path.join(home, '.gemini', 'antigravity-cli');
+  const conv = '33333333-4444-4555-8666-777777777777';
+  fs.mkdirSync(path.join(agyRoot, 'conversations'), { recursive: true });
+  fs.writeFileSync(path.join(agyRoot, 'conversations', `${conv}.db-wal`), '');
+  const agyLog = path.join(agyRoot, 'brain', conv, '.system_generated', 'logs');
+  fs.mkdirSync(agyLog, { recursive: true });
+  fs.writeFileSync(path.join(agyLog, 'transcript.jsonl'), [
+    { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nAGY_ASK make it faster\n</USER_REQUEST>' },
+    { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'AGY_REPLY it is faster now' },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  fs.mkdirSync(path.join(home, '.agy-1'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.agy-1', 'login.dat'), 'x'); // agy1 has a kept login
+  fs.copyFileSync(path.join(bin, 'codex.exe'), path.join(bin, 'agy.exe'));
+  pid = await standIn(path.join(bin, 'agy.exe'), path.join(agyRoot, 'conversations', `${conv}.db`));
+  menu = await openMenu();
+  check('agy: the menu marks plain agy as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="agy"]').count().then((n) => n === 1), 15000)));
+  await page.keyboard.press('Escape');
+  check('agy -> agy1: move completes', !!(await swapTo('agy1')));
+  check('agy -> agy1: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('agy -> agy1: the same conversation is resumed', !!(await seenOnScreen(`SWAPPED_agy1_${conv}`)));
+  pid = await standIn(path.join(bin, 'agy.exe'), path.join(agyRoot, 'conversations', `${conv}.db`));
+  check('agy -> codex: move completes', !!(await swapTo('codex')));
+  const agyHandoffs = await waitFor(() => (fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('agy-to-codex')) : []).find(Boolean), 15000);
+  check('agy -> codex: codex starts with a continue prompt from a handoff file', !!(await seenOnScreen('SWAPPED_codex_PROMPT')) && !!agyHandoffs &&
+    fs.readFileSync(path.join(userData, 'handoff', agyHandoffs), 'utf8').includes('AGY_ASK make it faster'));
+  if (agyHandoffs) fs.unlinkSync(path.join(userData, 'handoff', agyHandoffs));
 
   // ---- background picker: standard limpet colour by default, swatches, generative ----
   const paneColor = () => page.evaluate(() => getComputedStyle(document.querySelector('.term-pane.active')).backgroundColor);

@@ -1,8 +1,9 @@
 // What the agents on this machine are doing, for the tab menu's "which chat is
-// this tab on": the process tree, the Codex threads on disk and which Codex
-// process holds each one open, and the notes the shell's codexN wrapper leaves.
-// Pure reads, no Electron; main.js supplies where to look and accounts.js
-// decides. Codex homes are given as [{ cmd, home }] (codex -> ~/.codex, ...).
+// this tab on": the process tree, the Codex threads, Copilot chats and
+// Antigravity conversations open right now and which process has each, and
+// the notes the shell's account wrappers leave. Pure reads, no Electron;
+// main.js supplies where to look and accounts.js decides. Agent homes are
+// given as [{ cmd, home }] (codex -> ~/.codex, copilot1 -> ~/.copilot-1, ...).
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -110,6 +111,63 @@ function listCodexWriters(homes) {
   return out;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const mtime = (p) => { try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; } };
+
+// The Copilot chats some process has open right now: Copilot marks a chat's
+// folder (<home>/session-state/<id>) with inuse.<pid>.lock while a process
+// has it. [{ cmd, id, path, cwd, mtimeMs, pids }], path being its
+// events.jsonl and cmd the account whose folder it is ('' when shared).
+function listCopilotChats(homes) {
+  const out = [];
+  for (const { dir, cmd } of codexFolders(homes, 'session-state')) {
+    for (const id of listDir(dir)) {
+      if (!UUID.test(id)) continue;
+      const chatDir = path.join(dir, id);
+      const pids = listDir(chatDir).map((n) => /^inuse\.(\d+)\.lock$/.exec(n)).filter(Boolean).map((m) => Number(m[1]));
+      if (!pids.length) continue;
+      let cwd = '';
+      try { const m = /^cwd:\s*(.+)$/m.exec(fs.readFileSync(path.join(chatDir, 'workspace.yaml'), 'utf8')); if (m) cwd = m[1].trim().replace(/^(['"])(.*)\1$/, '$2'); } catch (_) { /* none */ }
+      const events = path.join(chatDir, 'events.jsonl');
+      out.push({ cmd, id, path: events, cwd, mtimeMs: mtime(events), pids });
+    }
+  }
+  return out;
+}
+
+// The Antigravity conversations that may be open right now: agy keeps each in
+// <gemini>/antigravity-cli/conversations/<id>.db and holds it open (with a
+// -wal beside it) while loaded; which process holds it is asked separately
+// (fileHolders on `lock`). [{ id, lock, path, cwd, mtimeMs }], path being the
+// readable transcript and cwd the workspace its prompts were typed in.
+function listAgyConversations(geminiDir) {
+  const root = path.join(geminiDir, 'antigravity-cli');
+  const convDir = path.join(root, 'conversations');
+  const ids = new Set();
+  for (const name of listDir(convDir)) {
+    const m = /^([0-9a-f-]{36})\.db-(wal|shm)$/i.exec(name);
+    if (m && UUID.test(m[1])) ids.add(m[1]);
+  }
+  if (!ids.size) return [];
+  const workspace = {};
+  try {
+    for (const line of fs.readFileSync(path.join(root, 'history.jsonl'), 'utf8').split('\n')) {
+      try { const h = JSON.parse(line); if (h && ids.has(h.conversationId) && h.workspace) workspace[h.conversationId] = h.workspace; } catch (_) { /* skip */ }
+    }
+  } catch (_) { /* no history */ }
+  return [...ids].map((id) => {
+    const transcript = path.join(root, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
+    const lock = path.join(convDir, `${id}.db`);
+    return { cmd: '', id, lock, path: transcript, cwd: workspace[id] || '', mtimeMs: Math.max(mtime(`${lock}-wal`), mtime(transcript)) };
+  });
+}
+
+// Which account's login agy has in Credential Manager now, as the shell notes
+// it in ~/.agy/active (plain agy when there's no note).
+function readAgyActive(agyActiveFile) {
+  try { const cmd = fs.readFileSync(agyActiveFile, 'utf8').trim(); return /^agy([1-9]\d*)?$/.test(cmd) ? cmd : 'agy'; } catch (_) { return 'agy'; }
+}
+
 // Run a hidden PowerShell and hand back its stdout, or null if it failed or
 // took longer than `timeoutMs`.
 function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
@@ -168,25 +226,30 @@ function readCodexLaunches(dir) {
 }
 
 // Everything accounts.findSession needs to tell what runs under `shellPid`.
-// The process list and the lock holders are fetched side by side, since each
-// takes about a second.
-async function scanAgents({ shellPid, claudeSessionFiles = [], codexHomes = [], runDir }) {
+// The process list and the lock holders (Codex threads, agy conversations)
+// are fetched side by side, since each takes about a second.
+async function scanAgents({ shellPid, claudeSessionFiles = [], codexHomes = [], copilotHomes = [], geminiDir = '', agyActiveFile = '', runDir }) {
   const writers = listCodexWriters(codexHomes);
-  const [procs, holders] = await Promise.all([listProcesses(), fileHolders(writers.map((w) => w.lock))]);
+  const conversations = geminiDir ? listAgyConversations(geminiDir) : [];
+  const [procs, holders] = await Promise.all([listProcesses(), fileHolders([...writers, ...conversations].map((w) => w.lock))]);
   const shell = procs.find((p) => p.pid === shellPid);
   const since = shell && shell.startedAt ? shell.startedAt - 5000 : Date.now() - 7 * 24 * 3600 * 1000;
+  const withHolders = (list) => (holders ? list.map((w) => ({ ...w, pids: holders[w.lock] || [] })) : null);
   return {
     procs,
     input: {
       sessionFiles: claudeSessionFiles,
       rollouts: listCodexRollouts(codexHomes, since),
       launches: readCodexLaunches(runDir),
-      writers: holders ? writers.map((w) => ({ ...w, pids: holders[w.lock] || [] })) : null,
+      writers: withHolders(writers),
+      copilotChats: listCopilotChats(copilotHomes),
+      agyConversations: withHolders(conversations) || conversations,
+      agyActive: agyActiveFile ? readAgyActive(agyActiveFile) : 'agy',
     },
   };
 }
 
 module.exports = {
   realPath, readFirstJsonLine, codexFolders, codexRolloutFiles, codexRollout, listCodexRollouts, listCodexWriters,
-  fileHolders, listProcesses, readCodexLaunches, scanAgents,
+  listCopilotChats, listAgyConversations, readAgyActive, fileHolders, listProcesses, readCodexLaunches, scanAgents,
 };

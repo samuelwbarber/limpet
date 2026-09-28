@@ -626,18 +626,20 @@ async function runBackdropQueue() {
 
 // ---- Agent switching (right-click a tab) ----
 // Which agent/account is this tab's chat on, and move it to another. Between
-// Claude accounts it is `--resume <id>` in the same shell (their projects/
-// folders are one shared store, see Sync-LimpetClaudeHistory); between Codex
-// accounts `resume <id>` (they share plain codex's sessions folder, see
-// Sync-LimpetCodexHistory; a home not wired up yet gets the rollout copied in
-// first). Claude -> Codex goes through Codex's own importer
-// (codex-import.js); Codex -> Claude writes a Claude transcript from the
-// rollout (handoff.js) and resumes it. If a conversion fails, the
-// chat is rendered to a Markdown handoff file and the new agent is started
-// with a one-line prompt to continue from it.
+// accounts of one agent it is resuming the same chat by id in the same shell:
+// Claude's projects/ folders are one shared store (Sync-LimpetClaudeHistory),
+// Codex, Copilot and agy accounts share plain codex's / copilot's / agy's
+// chats (Sync-LimpetCodexHistory, Sync-LimpetCopilotHistory; agy has one
+// store anyway), and a Codex home not wired up yet gets the rollout copied in
+// first. Claude -> Codex goes through Codex's own importer (codex-import.js);
+// anything -> Claude writes a Claude transcript from the other agent's
+// (handoff.js) and resumes it. Any other pair, or a conversion that fails,
+// renders the chat to a Markdown handoff file and starts the new agent with a
+// one-line prompt to continue from it.
 //
-// Accounts (claude, claude1, ..., codex, codex1, ...) are whatever config
-// directories exist under the home (accounts.listAccounts); nothing is fixed.
+// Accounts (claude, claude1, ..., codex1, ..., agy1, ..., copilot1, ...) are
+// whatever config directories exist under the home (accounts.listAccounts);
+// nothing is fixed.
 const claudeHome = () => process.env.LIMPET_CLAUDE_HOME || os.homedir();
 const accountIo = {
   exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
@@ -646,7 +648,7 @@ const accountIo = {
 };
 const knownAccounts = () => accounts.listAccounts(claudeHome(), accountIo);
 const claudeAccounts = () => knownAccounts().filter((a) => a.kind === 'claude');
-const codexAccounts = () => knownAccounts().filter((a) => a.kind === 'codex');
+const agentHomes = (kind) => knownAccounts().filter((a) => a.kind === kind).map(({ cmd, dir }) => ({ cmd, home: path.join(claudeHome(), dir) }));
 
 // The session file Claude Code keeps for every live process, tagged by account.
 function readClaudeSessionFiles() {
@@ -674,7 +676,10 @@ async function detectAgentSession(sess) {
   const { procs, input } = await agentScan.scanAgents({
     shellPid,
     claudeSessionFiles: readClaudeSessionFiles(),
-    codexHomes: codexAccounts().map(({ cmd, dir }) => ({ cmd, home: path.join(claudeHome(), dir) })),
+    codexHomes: agentHomes('codex'),
+    copilotHomes: agentHomes('copilot'),
+    geminiDir: path.join(claudeHome(), '.gemini'),
+    agyActiveFile: path.join(claudeHome(), '.agy', 'active'),
     runDir: agentRunDir(),
   });
   return accounts.findSession(input, procs, shellPid);
@@ -715,18 +720,29 @@ async function stopAgent(sess, pid) {
 
 const handoffDir = () => path.join(app.getPath('userData'), 'handoff');
 
-// Convert the stopped agent's chat for the other kind of agent. Returns the
-// launch options for accounts.launchCommand and how it was done.
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', copilot: 'Copilot' };
+
+// Carry the stopped agent's chat over to another account (of another agent,
+// or of Codex, Copilot or agy). Returns the launch options for
+// accounts.launchCommand and how it was done.
 async function carryAcross(current, target, note) {
-  const source = current.kind === 'claude' ? `Claude Code (${current.cmd})` : 'Codex';
+  const source = `${AGENT_NAMES[current.kind] || current.kind} (${current.cmd})`;
+  // Copilot and agy accounts share one chat store (agy only has one), so the
+  // chat is already where the other account looks.
+  if (current.kind === target.kind && (target.kind === 'copilot' || target.kind === 'agy')) {
+    note(36, `resuming ${current.sessionId} under ${target.cmd} (shared history).`);
+    return { launch: { resume: current.sessionId }, how: 'resume' };
+  }
   const transcript = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
   if (!transcript) {
     note(33, `couldn't find the ${current.cmd} transcript; starting ${target.cmd} fresh.`);
     return { launch: {}, how: 'fresh' };
   }
-  // Native first: Codex imports Claude transcripts itself; Claude resumes a
-  // transcript we write in its own format.
-  try {
+  // Native where there's a way in: Codex resumes its own threads and imports
+  // Claude transcripts; Claude resumes a transcript we write in its format
+  // from any agent's. The rest go by handoff file.
+  const native = target.kind === 'claude' || (target.kind === 'codex' && (current.kind === 'codex' || current.kind === 'claude'));
+  if (native) try {
     if (target.kind === 'codex') {
       const codexHome = path.join(claudeHome(), target.dir);
       if (current.kind === 'codex') {
@@ -757,21 +773,20 @@ async function carryAcross(current, target, note) {
       note(36, `chat imported into Codex as thread ${threadId}.`);
       return { launch: { resume: threadId }, how: 'import' };
     }
-    const turns = handoff.parseCodexRollout(fs.readFileSync(transcript, 'utf8'));
+    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
     const cwd = current.cwd || process.env.USERPROFILE || os.homedir();
     const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
     const dir = path.join(claudeHome(), target.dir, 'projects', handoff.claudeProjectDirName(cwd));
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${built.sessionId}.jsonl`), built.jsonl);
-    note(36, `chat carried over from Codex as Claude session ${built.sessionId}.`);
+    note(36, `chat carried over from ${AGENT_NAMES[current.kind]} as Claude session ${built.sessionId}.`);
     return { launch: { resume: built.sessionId }, how: 'transcript' };
   } catch (e) {
     note(33, `native handover failed (${e.message}); using a handoff file instead.`);
   }
-  // Fallback: the chat as Markdown plus a one-line prompt to continue from it.
+  // Otherwise: the chat as Markdown plus a one-line prompt to continue from it.
   try {
-    const text = fs.readFileSync(transcript, 'utf8');
-    const turns = current.kind === 'claude' ? handoff.parseClaudeTranscript(text) : handoff.parseCodexRollout(text);
+    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
     const dir = handoffDir();
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${current.cmd}-to-${target.cmd}.md`);

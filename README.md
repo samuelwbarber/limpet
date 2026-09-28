@@ -107,12 +107,13 @@ machine; it updates as the conversation moves on.
 
 <p align="center"><img src="docs/media/backdrop.gif" width="840" alt="background demo: picking a colour, then the generative backdrop appearing" /></p>
 
-## Any number of Claude and Codex accounts
+## Any number of Claude, Codex, Antigravity and Copilot accounts
 
-Keep as many [Claude Code](https://www.claude.com/product/claude-code) and
-[Codex](https://github.com/openai/codex) logins as you have subscriptions, each
-behind its own command, and share each agent's session history across all of
-its accounts.
+Keep as many [Claude Code](https://www.claude.com/product/claude-code),
+[Codex](https://github.com/openai/codex), Antigravity (`agy`) and
+[GitHub Copilot CLI](https://github.com/github/copilot-cli) logins as you have
+subscriptions, each behind its own command, and share each agent's session
+history across all of its accounts.
 
 ```powershell
 claude         # your usual account       (config in ~/.claude)
@@ -121,11 +122,26 @@ claude2        # and another              (~/.claude-2)
 claude7        # any number works         (~/.claude-7, created on first run)
 codex          # your usual Codex         (~/.codex)
 codex1         # another Codex login      (~/.codex-1)
+agy1           # another Antigravity login (kept in ~/.agy-1)
+copilot1       # another Copilot login    (~/.copilot-1)
 ```
 
 `claudeN` runs Claude Code with `CLAUDE_CONFIG_DIR` pointed at `~/.claude-N`;
-`codexN` runs Codex with `CODEX_HOME` at `~/.codex-N`. Each holds a separate
-login: `/login` once in each and it stays signed in. There is no list to edit.
+`codexN` runs Codex with `CODEX_HOME` at `~/.codex-N`; `copilotN` runs Copilot
+with `COPILOT_HOME` at `~/.copilot-N`. Each holds a separate login: `/login`
+once in each and it stays signed in. There is no list to edit.
+
+Antigravity has no such setting: `agy` keeps a single login in Windows
+Credential Manager. So limpet keeps each `agyN` account's login in `~/.agy-N`
+(encrypted for your Windows user) and swaps it in for the length of the
+launch, setting plain `agy`'s own login aside in `~/.agy` and putting it back
+when `agyN` exits. Sign in once inside `agy1` and it stays signed in. Because
+Credential Manager holds one login at a time, a second `agy` account is refused
+while one is running (the same account in two tabs is fine), and plain `agy`
+goes through limpet too, so it always gets its own login back. If a tab is
+closed while `agyN` runs, plain `agy`'s login is put back the next time a tab
+opens or `agy` starts. Every `agy` account already shares one chat history,
+since agy keeps all of it in `~/.gemini`.
 Type a number that doesn't exist yet and limpet creates the directory and runs
 the agent there (a numbered command whose directory already exists is a real
 function, so it tab-completes). Any arguments pass straight through
@@ -161,27 +177,34 @@ runs (or by hand with `Sync-LimpetCodexHistory`); a home with a chat open is
 left until a later launch. Logins, the rest of the config and the up-arrow
 history stay per account.
 
+Copilot accounts share plain `copilot`'s the same way: each `~/.copilot-N` gets
+its `session-state/` (one folder per chat, which Copilot's resume list is built
+from) junctioned to `~/.copilot`'s.
+
 ### Switch account, or agent, mid-chat
 
 In the limpet app, right-click a tab to see every account that is signed in,
-Claude and Codex alike, each with how much of its 5-hour and weekly limit is
-left (`5h 88% · wk 70%`, hover for the reset times; green, amber and red as it
-runs out). The account the tab's chat is running on is marked. Accounts that
-aren't signed in are left out, and the footer names the commands to run to add
-one (`Sign in to more: claude3, codex1`). Pick another and limpet exits the
+of every agent, Claude and Codex ones with how much of their 5-hour and weekly
+limit is left (`5h 88% · wk 70%`, hover for the reset times; green, amber and
+red as it runs out; agy and Copilot show `usage n/a`). The account the tab's
+chat is running on is marked. Accounts that aren't signed in are left out, and
+the footer names the commands to run to add one (`Sign in to more: claude3,
+codex1`). An `agy` account counts once its login is kept (plain `agy` once agy
+has been used) and a Copilot one once Copilot has run in its home, since both
+keep their tokens where limpet can't look. Pick another and limpet exits the
 running agent and brings the same conversation up under the pick, in the same
 shell:
 
-- **Claude to Claude**: `<account> --resume <session id>`. Nothing is copied;
-  the transcript is shared.
-- **Codex to Codex**: `<account> resume <thread id>`. Nothing is copied; the
-  thread is shared (into a home that isn't wired up yet, its rollout file is
-  copied first).
+- **Between accounts of one agent**: the same chat, resumed by id
+  (`claude1 --resume`, `codex2 resume`, `agy1 --conversation`,
+  `copilot2 --resume`). Nothing is copied; the history is shared (into a Codex
+  home that isn't wired up yet, the rollout file is copied first).
 - **Claude to Codex**: Codex's own importer turns the transcript into a thread
   in that Codex account, then `<account> resume <thread id>`.
-- **Codex to Claude**: limpet writes the chat out as a Claude transcript and
+- **Anything to Claude**: limpet writes the chat out as a Claude transcript and
   resumes it, so Claude remembers it natively.
-- If a conversion fails, the chat is rendered to a Markdown handoff file and
+- **Anything else** (to agy or Copilot, or from them to Codex), or a
+  conversion that fails: the chat is rendered to a Markdown handoff file and
   the new agent starts with a one-line "continue from here" prompt pointing at
   it.
 

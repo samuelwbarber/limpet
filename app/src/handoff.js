@@ -1,5 +1,6 @@
-// Moving a chat between agents: read either agent's transcript into plain
-// turns, and write those turns back out as (a) a Claude Code transcript that
+// Moving a chat between agents: read any agent's transcript (Claude Code,
+// Codex, Antigravity, Copilot) into plain turns, and write those turns back
+// out as (a) a Claude Code transcript that
 // `claude --resume` loads as if the chat had always been Claude's, or (b) a
 // Markdown handoff file plus a one-line "continue from here" prompt for
 // whichever agent can't import natively. Pure functions, no Electron; unit
@@ -40,10 +41,15 @@ function cleanUserText(text) {
   return t;
 }
 
+// The argument that says most about a tool call, by name in any case (agy
+// writes CommandLine, AbsolutePath, TargetFile, ...).
+const TOOL_INPUT_KEYS = ['command', 'commandline', 'cmd', 'file_path', 'absolutepath', 'targetfile', 'path', 'pattern', 'query', 'url', 'description', 'prompt'];
 function summarizeToolInput(name, input) {
   if (input && typeof input === 'object') {
-    for (const key of ['command', 'cmd', 'file_path', 'path', 'pattern', 'query', 'url', 'description', 'prompt']) {
-      if (typeof input[key] === 'string' && input[key].trim()) return clip(input[key], TOOL_INPUT_CHARS);
+    const byKey = new Map(Object.entries(input).map(([k, v]) => [k.toLowerCase(), v]));
+    for (const key of TOOL_INPUT_KEYS) {
+      const v = byKey.get(key);
+      if (typeof v === 'string' && v.trim()) return clip(v, TOOL_INPUT_CHARS);
     }
     try { return clip(JSON.stringify(input), TOOL_INPUT_CHARS); } catch (_) { return ''; }
   }
@@ -134,6 +140,89 @@ function parseCodexRollout(text) {
   return turns;
 }
 
+// Antigravity transcript (~/.gemini/antigravity-cli/brain/<conversation>/
+// .system_generated/logs/transcript.jsonl) -> turns. Each step is one line:
+// USER_INPUT (the request wrapped in <USER_REQUEST>), PLANNER_RESPONSE (reply
+// text and tool_calls), then one step per tool call with its output.
+function parseAgyTranscript(text) {
+  const turns = [];
+  const pending = []; // tool entries awaiting their output step, in call order
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    let o;
+    try { o = JSON.parse(line); } catch (_) { continue; }
+    if (!o || typeof o !== 'object') continue;
+    if (o.type === 'USER_INPUT') {
+      const raw = String(o.content || '');
+      const m = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i.exec(raw);
+      const t = cleanUserText(m ? m[1] : raw);
+      if (t) pushTurn(turns, 'user', t);
+      pending.length = 0;
+    } else if (o.type === 'PLANNER_RESPONSE') {
+      const tools = (Array.isArray(o.tool_calls) ? o.tool_calls : []).map((c) => {
+        let input = c && c.args;
+        if (input && typeof input === 'object') {
+          // agy stores each argument JSON-encoded ("\"ls\"").
+          input = Object.fromEntries(Object.entries(input).map(([k, v]) => { try { return [k, JSON.parse(v)]; } catch (_) { return [k, v]; } }));
+        }
+        return { name: String((c && c.name) || 'tool'), input: summarizeToolInput(c && c.name, input), output: '' };
+      });
+      const t = String(o.content || '').trim();
+      if (t || tools.length) pushTurn(turns, 'assistant', t, tools);
+      pending.push(...tools);
+    } else if (pending.length && o.source === 'MODEL' && typeof o.content === 'string') {
+      // A tool's output: drop the "Created At / Completed At" header.
+      pending.shift().output = o.content.replace(/^(Created At|Completed At):.*\n/gm, '').trim();
+    }
+  }
+  return turns;
+}
+
+// Copilot CLI chat (<COPILOT_HOME>/session-state/<session>/events.jsonl) ->
+// turns: user.message, assistant.message (text and toolRequests) and
+// tool.execution_complete carrying each result.
+function parseCopilotEvents(text) {
+  const turns = [];
+  const pending = new Map(); // toolCallId -> tool entry awaiting its result
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    let o;
+    try { o = JSON.parse(line); } catch (_) { continue; }
+    const d = o && o.data;
+    if (!d || typeof d !== 'object') continue;
+    if (o.type === 'user.message') {
+      const t = cleanUserText(blocksText(d.content));
+      if (t) pushTurn(turns, 'user', t);
+    } else if (o.type === 'assistant.message') {
+      const tools = [];
+      for (const r of Array.isArray(d.toolRequests) ? d.toolRequests : []) {
+        let input = r && r.arguments;
+        if (typeof input === 'string') { try { input = JSON.parse(input); } catch (_) { /* keep raw */ } }
+        const tool = { name: String((r && r.name) || 'tool'), input: summarizeToolInput(r && r.name, input), output: '' };
+        tools.push(tool);
+        if (r && r.toolCallId) pending.set(r.toolCallId, tool);
+      }
+      const t = blocksText(d.content).trim();
+      if (t || tools.length) pushTurn(turns, 'assistant', t, tools);
+    } else if (o.type === 'tool.execution_complete') {
+      const tool = pending.get(d.toolCallId);
+      if (tool) tool.output = blocksText(d.result && d.result.content) || (d.error && d.error.message) || '';
+    }
+  }
+  return turns;
+}
+
+// A transcript of any agent -> turns.
+function parseTranscript(kind, text) {
+  switch (kind) {
+    case 'claude': return parseClaudeTranscript(text);
+    case 'codex': return parseCodexRollout(text);
+    case 'agy': return parseAgyTranscript(text);
+    case 'copilot': return parseCopilotEvents(text);
+    default: return [];
+  }
+}
+
 // The turns as Markdown for a handoff file. When it would be too long, the
 // opening request is kept and the oldest turns after it are dropped, so the
 // recent state of the work survives intact.
@@ -212,6 +301,6 @@ function titleFromTurns(turns) {
 }
 
 module.exports = {
-  HANDOFF_MAX_BYTES, parseClaudeTranscript, parseCodexRollout, renderMarkdown,
-  continuePrompt, buildClaudeTranscript, claudeProjectDirName, titleFromTurns, cleanUserText,
+  HANDOFF_MAX_BYTES, parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseTranscript,
+  renderMarkdown, continuePrompt, buildClaudeTranscript, claudeProjectDirName, titleFromTurns, cleanUserText,
 };
