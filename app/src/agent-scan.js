@@ -168,8 +168,10 @@ function readAgyActive(agyActiveFile) {
   try { const cmd = fs.readFileSync(agyActiveFile, 'utf8').trim(); return /^agy([1-9]\d*)?$/.test(cmd) ? cmd : 'agy'; } catch (_) { return 'agy'; }
 }
 
-// Run a hidden PowerShell and hand back its stdout, or null if it failed or
-// took longer than `timeoutMs`.
+// Run a hidden PowerShell and hand back its stdout, or null if it couldn't
+// start or took longer than `timeoutMs`. The exit code is left to the caller
+// to judge by the output: a process that exits mid-listing makes
+// Get-CimInstance report an error, and PowerShell exit 1, after a complete list.
 function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
   return new Promise((resolve) => {
     let done = false;
@@ -181,17 +183,17 @@ function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
     let out = '';
     ps.stdout.on('data', (d) => { out += d; });
     ps.on('error', () => finish(null));
-    ps.on('close', (code) => finish(code === 0 ? out : null));
+    ps.on('close', () => finish(out));
   });
 }
 
 // Which pids hold each of these files open: { path: [pid, ...] }, or null if
 // that couldn't be found out. Asks the Windows Restart Manager through
-// lock-holders.ps1 (about half a second per file that is held).
+// lock-holders.ps1 (about a second, the files asked about side by side).
 async function fileHolders(paths) {
   if (!paths.length) return {};
   const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'lock-holders.ps1')],
-    { env: { ...process.env, LIMPET_LOCKS: JSON.stringify(paths) } });
+    { env: { ...process.env, LIMPET_LOCKS: JSON.stringify(paths) }, timeoutMs: 20000 });
   try {
     const map = JSON.parse(out);
     const holders = {};
@@ -231,7 +233,13 @@ function readCodexLaunches(dir) {
 async function scanAgents({ shellPid, claudeSessionFiles = [], codexHomes = [], copilotHomes = [], geminiDir = '', agyActiveFile = '', runDir }) {
   const writers = listCodexWriters(codexHomes);
   const conversations = geminiDir ? listAgyConversations(geminiDir) : [];
-  const [procs, holders] = await Promise.all([listProcesses(), fileHolders([...writers, ...conversations].map((w) => w.lock))]);
+  // A process list without the tab's own shell in it is a failed listing
+  // (CIM does fail now and then); one more try before concluding anything.
+  const processes = async () => {
+    const first = await listProcesses();
+    return first.some((p) => p.pid === shellPid) ? first : listProcesses();
+  };
+  const [procs, holders] = await Promise.all([processes(), fileHolders([...writers, ...conversations].map((w) => w.lock))]);
   const shell = procs.find((p) => p.pid === shellPid);
   const since = shell && shell.startedAt ? shell.startedAt - 5000 : Date.now() - 7 * 24 * 3600 * 1000;
   const withHolders = (list) => (holders ? list.map((w) => ({ ...w, pids: holders[w.lock] || [] })) : null);
