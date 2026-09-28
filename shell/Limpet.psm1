@@ -646,12 +646,12 @@ function limpet {
     Write-Host '  Upload   : wput <files>     (client-side scp to your last xssh host)' -ForegroundColor DarkGray
     Write-Host '  Images   : peek <file>      (show an image inline)' -ForegroundColor DarkGray
     Write-Host '  Reels    : reels [url]      (dock a page on the right; default Instagram reels)' -ForegroundColor DarkGray
-    Write-Host '  Agents   : claude1, claude2, ... / codex1, codex2, ... (separate logins; Claude shares one /resume history)' -ForegroundColor DarkGray
+    Write-Host '  Agents   : claude1, claude2, ... / codex1, codex2, ... (separate logins; one /resume history per agent)' -ForegroundColor DarkGray
     Write-Host '  Docs     : see README.md / docs/COMMANDS.md' -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
-# Any number of Claude Code and Codex accounts; one synced Claude /resume history.
+# Any number of Claude Code and Codex accounts; one /resume history per agent.
 #
 # `claude1`, `claude2`, `claude3`, ... each launch the Claude Code CLI against
 # their own config directory (~/.claude-1, ~/.claude-2, ...), so each stays
@@ -677,7 +677,19 @@ function limpet {
 #
 # Only `projects/` is shared. The up-arrow prompt history (history.jsonl)
 # stays per account: Claude Code refuses to read that file through a link.
-# Codex accounts share nothing; the app copies a thread across when asked.
+#
+# Codex accounts share plain ~/.codex's history. Codex keeps each chat as a
+# rollout file under <CODEX_HOME>/sessions and builds its resume list by
+# scanning that folder (its sqlite index catches up by itself), so each
+# numbered home's `sessions` and `archived_sessions` are junctioned to
+# ~/.codex's. `thread-writer-locks` goes with them: it is how Codex refuses a
+# second writer on a thread, which only holds across accounts if they all look
+# in one place. Thread names live in session_index.jsonl, which Codex only
+# appends to, so a hard link shares it. Logins, config, prompt history and the
+# sqlite state stay per account. ~/.codex itself is the hub rather than a new
+# store: the Codex app and editor extensions use it directly and its data
+# never has to move. A numbered home's own chats are folded in on its first
+# sync; a home with a chat open right now is left alone until the next launch.
 # ---------------------------------------------------------------------------
 
 # Where the account directories live. Tests point this at a temp folder.
@@ -739,12 +751,34 @@ function Test-LimpetSamePath([string]$A, [string]$B) {
     return [string]::Equals($na, $nb, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-LimpetPrefixHash {
+    # SHA-256 of the first $Length bytes of a file; $null if it is shorter.
+    param([string]$Path, [long]$Length)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+    try {
+        $buf = New-Object byte[] 1048576
+        $left = $Length
+        while ($left -gt 0) {
+            $n = $fs.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $left))
+            if ($n -le 0) { return $null }
+            [void]$sha.TransformBlock($buf, 0, $n, $null, 0)
+            $left -= $n
+        }
+        [void]$sha.TransformFinalBlock($buf, 0, 0)
+        return [BitConverter]::ToString($sha.Hash)
+    }
+    finally { $fs.Dispose(); $sha.Dispose() }
+}
+
 function Merge-LimpetDirectory {
     # Move everything under $Source into $Dest, recursing where a folder
-    # already exists on both sides. Same-name files: identical -> the extra
-    # copy is dropped; different -> the larger one keeps the real name and
-    # the other is kept alongside as <name>.conflict-<stamp> (no longer a
-    # *.jsonl, so /resume doesn't list it, but nothing is lost). Anything
+    # already exists on both sides. Same-name files: identical, or one is the
+    # other with more appended (a transcript copied to another account and
+    # continued there) -> the longer one keeps the real name and the other is
+    # dropped; otherwise the larger one keeps the real name and the other is
+    # kept alongside as <name>.conflict-<stamp> (no longer a *.jsonl, so
+    # /resume doesn't list it, but nothing is lost). Anything
     # that can't be moved (a file open in a running session) stays put and
     # is counted; the count is returned. Source folders emptied by the merge
     # are removed. Same volume throughout, so every move is a rename.
@@ -768,10 +802,11 @@ function Merge-LimpetDirectory {
                 continue
             }
             $existing = Get-Item -LiteralPath $target -Force
-            if ($existing.Length -eq $item.Length -and
-                (Get-FileHash -LiteralPath $existing.FullName -Algorithm SHA256).Hash -eq
-                (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash) {
-                Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop   # exact duplicate
+            $common = [Math]::Min($item.Length, $existing.Length)
+            if ((Get-LimpetPrefixHash $item.FullName $common) -eq (Get-LimpetPrefixHash $existing.FullName $common)) {
+                # Duplicate, or one continues the other: keep the longer.
+                if ($item.Length -gt $existing.Length) { [IO.File]::Replace($item.FullName, $existing.FullName, [NullString]::Value) }
+                else { Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop }
                 continue
             }
             $conflict = Join-Path $Dest ('{0}.conflict-{1}' -f $item.Name, $Stamp)
@@ -790,43 +825,50 @@ function Merge-LimpetDirectory {
     return $left
 }
 
-function Sync-LimpetClaudeConfigDir {
-    # Wire one config dir's projects/ to the shared store. Returns $true when
-    # that account is fully synced.
-    param([string]$ConfigDir, [string]$Shared, [string]$Stamp)
-    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-    $link = Join-Path $ConfigDir 'projects'
-    $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+function Connect-LimpetSharedFolder {
+    # Make the folder $Link a junction to $Shared. Returns $true when it is,
+    # with nothing left over. $Agent names the CLI in warnings. With -Discard
+    # a folder already there holds nothing worth keeping (lock files) and is
+    # deleted rather than merged.
+    param([string]$Link, [string]$Shared, [string]$Stamp, [string]$Agent, [switch]$Discard)
+    $parent = Split-Path -Parent $Link
+    $leaf = Split-Path -Leaf $Link
+    New-Item -ItemType Directory -Force -Path $parent, $Shared | Out-Null
+    $item = Get-Item -LiteralPath $Link -Force -ErrorAction SilentlyContinue
     if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         $target = @($item.Target)[0]
         if (-not $target -or -not (Test-LimpetSamePath $target $Shared)) {
-            Write-Warning "limpet: $link already links to '$target', not the shared store; leaving it alone (history not synced for this account)."
+            Write-Warning "limpet: $Link already links to '$target', not the shared store; leaving it alone (history not synced for this account)."
             return $false
         }
         # Already junctioned; fall through to fold in any leftovers.
     }
     elseif ($item) {
-        # A real folder from solo use. Swap it out from under Claude with one
-        # atomic rename so the junction goes in straight away (a live session
-        # keeps appending, now into the shared store), then fold the old
-        # contents in. If the rename is refused nothing has changed.
-        $staging = "projects.migrating-$Stamp"
-        try { Rename-Item -LiteralPath $link -NewName $staging -ErrorAction Stop }
+        # A real folder from solo use. Swap it out from under the agent with
+        # one atomic rename so the junction goes in straight away (a live
+        # session keeps appending, now into the shared store), then fold the
+        # old contents in. If the rename is refused nothing has changed.
+        try { Rename-Item -LiteralPath $Link -NewName "$leaf.migrating-$Stamp" -ErrorAction Stop }
         catch {
-            Write-Warning "limpet: couldn't move $link aside ($($_.Exception.Message)). Is a Claude session open there? History isn't synced for this account yet; it'll be retried next launch."
+            Write-Warning "limpet: couldn't move $Link aside ($($_.Exception.Message)). Is a $Agent session open there? History isn't synced for this account yet; it'll be retried next launch."
             return $false
         }
     }
-    if (-not (Test-Path -LiteralPath $link)) {
-        try { New-Item -ItemType Junction -Path $link -Target $Shared -ErrorAction Stop | Out-Null }
+    if (-not (Test-Path -LiteralPath $Link)) {
+        try { New-Item -ItemType Junction -Path $Link -Target $Shared -ErrorAction Stop | Out-Null }
         catch {
-            Write-Warning "limpet: couldn't create the junction $link -> $Shared ($($_.Exception.Message)); history not synced for this account."
+            Write-Warning "limpet: couldn't create the junction $Link -> $Shared ($($_.Exception.Message)); history not synced for this account."
             return $false
         }
     }
     # Fold in anything set aside, now or by an earlier interrupted run.
     $ok = $true
-    foreach ($stage in @(Get-ChildItem -LiteralPath $ConfigDir -Directory -Filter 'projects.migrating-*' -Force -ErrorAction SilentlyContinue)) {
+    foreach ($stage in @(Get-ChildItem -LiteralPath $parent -Directory -Filter "$leaf.migrating-*" -Force -ErrorAction SilentlyContinue)) {
+        if ($Discard) {
+            # Still in use? Then it goes next time; the junction is in already.
+            Remove-Item -LiteralPath $stage.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
         $left = Merge-LimpetDirectory -Source $stage.FullName -Dest $Shared -Stamp $Stamp
         if ($left -gt 0) {
             Write-Warning "limpet: $left item(s) under $($stage.FullName) couldn't be moved into the shared store (open in a running session?). They'll be folded in next launch."
@@ -861,9 +903,184 @@ function Sync-LimpetClaudeHistory {
     New-Item -ItemType Directory -Force -Path $Shared | Out-Null
     $ok = $true
     foreach ($dir in $ConfigDir) {
-        if (-not (Sync-LimpetClaudeConfigDir -ConfigDir $dir -Shared $Shared -Stamp $stamp)) { $ok = $false }
+        if (-not (Connect-LimpetSharedFolder -Link (Join-Path $dir 'projects') -Shared $Shared -Stamp $stamp -Agent 'Claude')) { $ok = $false }
     }
     return $ok
+}
+
+# Plain codex's home: the history every other Codex account shares.
+function Get-LimpetCodexHub { Join-Path (Get-LimpetAgentHome) '.codex' }
+
+# What a numbered Codex home shares with the hub. The lock folder goes last:
+# while it is still the home's own, a chat open in that home shows up in it,
+# which is what Test-LimpetCodexBusy looks for.
+$script:LimpetCodexSharedFolders = @('sessions', 'archived_sessions', 'thread-writer-locks')
+
+function Test-LimpetCodexBusy([string]$CodexHome) {
+    # Is a chat open in this home right now? Codex holds
+    # thread-writer-locks/<thread>.lock open while a thread is loaded and
+    # deletes it after, so a lock file that can't be opened exclusively is in
+    # use. Once the folder is shared there is nothing home-specific to see.
+    $locks = Join-Path $CodexHome 'thread-writer-locks'
+    $item = Get-Item -LiteralPath $locks -Force -ErrorAction SilentlyContinue
+    if (-not $item -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+    foreach ($f in @(Get-ChildItem -LiteralPath $locks -File -Filter '*.lock' -Force -ErrorAction SilentlyContinue)) {
+        try { [IO.File]::Open($f.FullName, 'Open', 'Read', 'None').Dispose() }
+        catch { return $true }
+    }
+    return $false
+}
+
+function Test-LimpetHardLinked([string]$A, [string]$B) {
+    # Are $A and $B one file under two names?
+    $item = Get-Item -LiteralPath $A -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.LinkType -ne 'HardLink') { return $false }
+    $names = @($item.Target | Where-Object { $_ })
+    if (-not $names.Count) {
+        # Windows PowerShell lists a hard link's other names; pwsh 7 doesn't.
+        $drive = Split-Path -Qualifier $item.FullName
+        $names = @(fsutil hardlink list $item.FullName 2>$null | ForEach-Object { "$drive$_" })
+    }
+    foreach ($n in $names) { if (Test-LimpetSamePath $n $B) { return $true } }
+    return $false
+}
+
+function Read-LimpetLines([string]$Path) {
+    # A text file's non-empty lines, read without blocking a writer that has it open.
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite, Delete')
+    try { $text = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd() }
+    finally { $fs.Dispose() }
+    return @($text -split "`r?`n" | Where-Object { $_.Trim() })
+}
+
+function Connect-LimpetCodexIndex {
+    # Share thread names: <home>/session_index.jsonl becomes a hard link to the
+    # hub's. Codex only appends to that file and a thread's last line wins, so
+    # this home's own names are appended to the hub's first -- just the ones
+    # newer than the hub's name for that thread, oldest first.
+    param([string]$CodexHome, [string]$Hub, [string]$Stamp)
+    $hubFile = Join-Path $Hub 'session_index.jsonl'
+    $file = Join-Path $CodexHome 'session_index.jsonl'
+    if (-not (Test-Path -LiteralPath $hubFile)) { New-Item -ItemType File -Force -Path $hubFile | Out-Null }
+    if (Test-LimpetHardLinked $file $hubFile) { return $true }
+    $when = {
+        param($line)
+        $t = [DateTimeOffset]::MinValue
+        if ($line -match '"updated_at"\s*:\s*"([^"]+)"') {
+            [void][DateTimeOffset]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$t)
+        }
+        $t
+    }
+    $idOf = { param($line) if ($line -match '"id"\s*:\s*"([^"]+)"') { $Matches[1] } else { '' } }
+    $aside = "$file.migrating-$Stamp"
+    try {
+        if (Test-Path -LiteralPath $file) {
+            $hubLines = Read-LimpetLines $hubFile
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+            $latest = @{}
+            foreach ($line in $hubLines) {
+                [void]$seen.Add($line)
+                $id = & $idOf $line; $t = & $when $line
+                if (-not $latest.ContainsKey($id) -or $t -gt $latest[$id]) { $latest[$id] = $t }
+            }
+            $new = @(Read-LimpetLines $file | Where-Object {
+                    -not $seen.Contains($_) -and (-not $latest.ContainsKey((& $idOf $_)) -or (& $when $_) -gt $latest[(& $idOf $_)]) } |
+                Sort-Object { & $when $_ })
+            if ($new.Count) {
+                $text = ($new -join "`n") + "`n"
+                $size = (Get-Item -LiteralPath $hubFile -Force).Length
+                if ($size -gt 0) {
+                    $fs = [IO.File]::Open($hubFile, 'Open', 'Read', 'ReadWrite, Delete')
+                    try { [void]$fs.Seek(-1, 'End'); if ($fs.ReadByte() -ne 10) { $text = "`n$text" } } finally { $fs.Dispose() }
+                }
+                [IO.File]::AppendAllText($hubFile, $text, (New-Object Text.UTF8Encoding($false)))
+            }
+            Rename-Item -LiteralPath $file -NewName (Split-Path -Leaf $aside) -ErrorAction Stop
+        }
+        New-Item -ItemType HardLink -Path $file -Target $hubFile -ErrorAction Stop | Out-Null
+        Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    catch {
+        if (-not (Test-Path -LiteralPath $file) -and (Test-Path -LiteralPath $aside)) { Rename-Item -LiteralPath $aside -NewName (Split-Path -Leaf $file) -ErrorAction SilentlyContinue }
+        Write-Warning "limpet: couldn't share thread names from $file ($($_.Exception.Message)); they'll be retried next launch."
+        return $false
+    }
+}
+
+function Sync-LimpetCodexHome {
+    # Wire one numbered Codex home to the hub. Returns $true when it is fully shared.
+    param([string]$CodexHome, [string]$Hub, [string]$Stamp)
+    New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null
+    if (Test-LimpetCodexBusy $CodexHome) {
+        $cmd = (Split-Path -Leaf $CodexHome) -replace '^\.codex-', 'codex'
+        Write-Warning "limpet: a chat is open in $cmd right now, so its history isn't shared yet; it will be the next time $cmd starts with none open."
+        return $false
+    }
+    foreach ($name in $script:LimpetCodexSharedFolders) {
+        $ok = Connect-LimpetSharedFolder -Link (Join-Path $CodexHome $name) -Shared (Join-Path $Hub $name) -Stamp $Stamp -Agent 'Codex' -Discard:($name -eq 'thread-writer-locks')
+        if (-not $ok) { return $false }
+    }
+    return (Connect-LimpetCodexIndex -CodexHome $CodexHome -Hub $Hub -Stamp $Stamp)
+}
+
+function Sync-LimpetCodexHistory {
+    <#
+    .SYNOPSIS
+    Share plain codex's /resume history (~/.codex) with codex1, codex2, ...
+    .DESCRIPTION
+    Runs automatically whenever a numbered codex command launches. Each
+    ~/.codex-N gets its sessions, archived_sessions and thread-writer-locks
+    folders junctioned to ~/.codex's and its session_index.jsonl (thread
+    names) hard-linked to ~/.codex's, after folding in whatever it had of its
+    own. A home with a chat open is skipped with a warning and picked up on a
+    later launch. Returns $true when every Codex account is shared.
+    #>
+    [CmdletBinding()]
+    param(
+        # Numbered Codex homes to wire up. Default: every ~/.codex-N that exists.
+        [string[]]$CodexHome,
+        # The home they share with.
+        [string]$Hub = (Get-LimpetCodexHub)
+    )
+    if (-not $CodexHome) {
+        $CodexHome = @(Get-LimpetAgentAccounts | Where-Object { $_.Kind -eq 'codex' -and $_.Number -gt 0 } | ForEach-Object { $_.ConfigDir })
+    }
+    $stamp = '{0:yyyyMMdd-HHmmss}-{1}' -f (Get-Date), ([guid]::NewGuid().ToString('N').Substring(0, 4))
+    New-Item -ItemType Directory -Force -Path $Hub | Out-Null
+    $ok = $true
+    foreach ($dir in $CodexHome) {
+        if (Test-LimpetSamePath $dir $Hub) { continue }
+        if (-not (Sync-LimpetCodexHome -CodexHome $dir -Hub $Hub -Stamp $stamp)) { $ok = $false }
+    }
+    return $ok
+}
+
+# Where a shell notes which Codex account it launched, for the limpet app:
+# <dir>/<shell pid>.json. Claude Code leaves a per-process file of its own;
+# Codex doesn't, and with the history shared a rollout no longer shows which
+# account wrote it. LIMPET_AGENT_RUN overrides the folder (tests).
+function Get-LimpetAgentRunDir { if ($env:LIMPET_AGENT_RUN) { $env:LIMPET_AGENT_RUN } else { Join-Path $env:APPDATA 'limpet\agents' } }
+
+function Set-LimpetAgentLaunch([string]$Command) {
+    # Note that this shell is launching $Command; returns the note's path
+    # ($null if it couldn't be written). Notes left by shells that were
+    # closed mid-launch are cleared on the way.
+    try {
+        $dir = Get-LimpetAgentRunDir
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        foreach ($old in @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            if ($old.BaseName -match '^\d+$' -and -not (Get-Process -Id ([int]$old.BaseName) -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+        $note = Join-Path $dir "$PID.json"
+        $json = '{{"cmd":"{0}","pid":{1},"startedAt":{2}}}' -f $Command, $PID, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        [IO.File]::WriteAllText($note, $json)
+        return $note
+    }
+    catch { return $null }
 }
 
 function Invoke-LimpetAgent {
@@ -873,7 +1090,7 @@ function Invoke-LimpetAgent {
     CLAUDE_CONFIG_DIR=~/.claude-3, codex2 -> Codex with CODEX_HOME=~/.codex-2.
     .DESCRIPTION
     What the numbered commands call. The directory is created if missing, a
-    Claude launch first wires every Claude account into the shared history,
+    launch first wires every account of that agent into its shared history,
     and Arguments go to the CLI untouched (`claude3 -c`, `codex2 resume <id>`).
     The env var is set for this launch only and put back afterwards, so plain
     `claude` / `codex` keep their usual directories. With '--limpet-plan' among
@@ -896,6 +1113,10 @@ function Invoke-LimpetAgent {
         # lands in the shared store too.
         Sync-LimpetClaudeHistory | Out-Null
     }
+    else {
+        # Likewise every numbered Codex home into plain codex's.
+        Sync-LimpetCodexHistory | Out-Null
+    }
     $exe = if ($account.Kind -eq 'codex') { Get-LimpetCodexExe } else { Get-LimpetClaudeExe }
     if ($Arguments -contains '--limpet-plan') {
         return [pscustomobject]@{
@@ -909,12 +1130,14 @@ function Invoke-LimpetAgent {
         return
     }
     $prev = [Environment]::GetEnvironmentVariable($envName, 'Process')
+    $note = if ($account.Kind -eq 'codex') { Set-LimpetAgentLaunch $account.Command }
     try {
         [Environment]::SetEnvironmentVariable($envName, $account.ConfigDir, 'Process')
         & $exe @Arguments
     }
     finally {
         [Environment]::SetEnvironmentVariable($envName, $prev, 'Process')
+        if ($note) { Remove-Item -LiteralPath $note -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -999,6 +1222,6 @@ $ExecutionContext.SessionState.Module.OnRemove = {
 }
 
 Export-ModuleMember -Function (@('NixLs', 'NixRm', 'NixCp', 'NixMv', 'NixCat', 'mkdir', 'touch', 'head', 'tail', 'grep', 'find', 'which', 'du', 'df', 'chmod', 'xssh', 'wput', 'peek', 'peak', 'reels', 'limpet',
-    'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'Sync-LimpetClaudeHistory',
+    'Invoke-LimpetAgent', 'Get-LimpetAgentAccounts', 'Sync-LimpetClaudeHistory', 'Sync-LimpetCodexHistory',
     'Enable-LimpetHello', 'Disable-LimpetHello', 'Get-LimpetHelloStatus', 'Get-LimpetHelloPassphrase', 'Test-LimpetHelloEnrolled', 'Protect-LimpetSecret', 'Unprotect-LimpetSecret', 'Get-LimpetAskpass', 'Get-LimpetKeyPath') +
     $script:LimpetAgentFunctions)

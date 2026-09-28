@@ -626,10 +626,12 @@ async function runBackdropQueue() {
 // ---- Agent switching (right-click a tab) ----
 // Which agent/account is this tab's chat on, and move it to another. Between
 // Claude accounts it is `--resume <id>` in the same shell (their projects/
-// folders are one shared store, see Sync-LimpetClaudeHistory). Claude -> Codex
-// goes through Codex's own importer (codex-import.js); Codex -> Claude writes
-// a Claude transcript from the rollout (handoff.js) and resumes it. Codex ->
-// Codex copies the rollout into the other home. If a conversion fails, the
+// folders are one shared store, see Sync-LimpetClaudeHistory); between Codex
+// accounts `resume <id>` (they share plain codex's sessions folder, see
+// Sync-LimpetCodexHistory; a home not wired up yet gets the rollout copied in
+// first). Claude -> Codex goes through Codex's own importer
+// (codex-import.js); Codex -> Claude writes a Claude transcript from the
+// rollout (handoff.js) and resumes it. If a conversion fails, the
 // chat is rendered to a Markdown handoff file and the new agent is started
 // with a one-line prompt to continue from it.
 //
@@ -673,11 +675,24 @@ function readFirstJsonLine(file) {
   } catch (_) { return null; }
 }
 
+const realPath = (p) => { try { return fs.realpathSync.native(p); } catch (_) { return null; } };
+
 // Codex rollouts written since `sinceMs`, across every codex account: { cmd,
 // id, path, cwd, mtimeMs }. They live under <codex home>/sessions/YYYY/MM/DD/,
-// so only files touched recently are read.
+// so only files touched recently are read. Homes whose sessions folder is the
+// same place (junctioned together) are walked once, and their rollouts carry
+// cmd '' since the folder no longer says which account wrote them.
 function listCodexRollouts(sinceMs) {
   const out = [];
+  const folders = new Map(); // real sessions folder -> { dir, cmds }
+  for (const { cmd, dir } of codexAccounts()) {
+    const sessions = path.join(claudeHome(), dir, 'sessions');
+    const real = realPath(sessions);
+    if (!real) continue;
+    const key = real.toLowerCase();
+    if (folders.has(key)) folders.get(key).cmds.push(cmd);
+    else folders.set(key, { dir: sessions, cmds: [cmd] });
+  }
   const walk = (cmd, dir, depth) => {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
@@ -694,8 +709,21 @@ function listCodexRollouts(sinceMs) {
       out.push({ cmd, id: payload.id || (fromName ? fromName[1] : ''), path: p, cwd: payload.cwd || '', mtimeMs: st.mtimeMs });
     }
   };
-  for (const { cmd, dir } of codexAccounts()) walk(cmd, path.join(claudeHome(), dir, 'sessions'), 0);
+  for (const { dir, cmds } of folders.values()) walk(cmds.length === 1 ? cmds[0] : '', dir, 0);
   return out;
+}
+
+// Which codex account each shell launched: the shell's codexN wrapper
+// (Invoke-LimpetAgent in shell/Limpet.psm1) leaves <run dir>/<shell pid>.json
+// while it runs. LIMPET_AGENT_RUN moves the folder (tests).
+const agentRunDir = () => process.env.LIMPET_AGENT_RUN || path.join(app.getPath('appData'), 'limpet', 'agents');
+function readCodexLaunches() {
+  const dir = agentRunDir();
+  return accountIo.listDir(dir)
+    .filter((name) => /^\d+\.json$/.test(name))
+    .map((name) => accountIo.readJson(path.join(dir, name)))
+    .filter((l) => l && Number.isInteger(l.pid) && typeof l.cmd === 'string')
+    .map((l) => ({ pid: l.pid, cmd: l.cmd, startedAt: Number(l.startedAt) || 0 }));
 }
 
 // pid, parent pid, name and start time of every process. Node has no
@@ -723,7 +751,7 @@ async function detectAgentSession(sess) {
   const procs = await listProcesses();
   const shell = procs.find((p) => p.pid === shellPid);
   const since = shell && shell.startedAt ? shell.startedAt - 5000 : Date.now() - 7 * 24 * 3600 * 1000;
-  return accounts.findSession({ sessionFiles: readClaudeSessionFiles(), rollouts: listCodexRollouts(since) }, procs, shellPid);
+  return accounts.findSession({ sessionFiles: readClaudeSessionFiles(), rollouts: listCodexRollouts(since), launches: readCodexLaunches() }, procs, shellPid);
 }
 
 // The transcript file behind a Claude session id, wherever its project folder is.
@@ -776,11 +804,18 @@ async function carryAcross(current, target, note) {
     if (target.kind === 'codex') {
       const codexHome = path.join(claudeHome(), target.dir);
       if (current.kind === 'codex') {
-        // Same agent, other login: the rollout file is the thread. Copy it into
-        // the other home at the same dated path and resume it there.
-        const currentHome = path.join(claudeHome(), accounts.accountFor(current.cmd).dir);
-        let rel = path.relative(currentHome, transcript);
-        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+        // Same agent, other login: the rollout file is the thread. Homes that
+        // share plain codex's sessions folder already have it, so just resume.
+        const targetSessions = realPath(path.join(codexHome, 'sessions'));
+        const rollout = realPath(transcript);
+        if (targetSessions && rollout && rollout.toLowerCase().startsWith(`${targetSessions.toLowerCase()}${path.sep}`)) {
+          note(36, `resuming thread ${current.sessionId} under ${target.cmd} (shared history).`);
+          return { launch: { resume: current.sessionId }, how: 'resume' };
+        }
+        // Otherwise copy it into the other home at the same dated path.
+        const at = transcript.toLowerCase().lastIndexOf(`${path.sep}sessions${path.sep}`);
+        let rel = at === -1 ? '' : transcript.slice(at + 1);
+        if (!rel) {
           const d = new Date();
           rel = path.join('sessions', String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'), path.basename(transcript));
         }

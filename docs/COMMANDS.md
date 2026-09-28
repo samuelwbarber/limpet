@@ -68,8 +68,9 @@ directory can't be detected client-side; pass `-Dest` for a specific folder.
 
 Run the [Claude Code](https://www.claude.com/product/claude-code) and
 [Codex](https://github.com/openai/codex) CLIs under any number of separate
-accounts, each with its own persistent login, while sharing one Claude
-`/resume` history between all of them, plain `claude` included.
+accounts, each with its own persistent login, while each agent keeps one
+`/resume` history shared by all of its accounts, plain `claude` and `codex`
+included.
 
 ```powershell
 claude                    # your usual account     (config in ~/.claude)
@@ -81,6 +82,7 @@ claude1 --resume          # args pass straight through
 codex2 resume <thread>    # likewise
 Get-LimpetAgentAccounts   # every account with a config dir, and where it is
 Sync-LimpetClaudeHistory  # wire the shared history by hand (numbered claude commands do it on launch)
+Sync-LimpetCodexHistory   # likewise for Codex (numbered codex commands do it on launch)
 Invoke-LimpetAgent claude3 -Arguments @('-p', 'hi')   # what the numbered commands call
 ```
 
@@ -99,16 +101,28 @@ The junctions are set up automatically whenever a numbered `claude` command
 runs, folding any existing `projects/` folder into the shared store file by
 file without overwriting; a folder held open by a running session is left for
 the next launch. The up-arrow prompt history is not shared (Claude Code won't
-read it through a link). Codex accounts share nothing between them.
+read it through a link).
+
+Every numbered Codex home shares plain `~/.codex`'s history: its `sessions/`,
+`archived_sessions/` and `thread-writer-locks/` are junctioned to `~/.codex`'s
+and its `session_index.jsonl` (thread names) is hard-linked to `~/.codex`'s.
+Codex builds its resume list by scanning `sessions/`, so every account lists
+the same threads; the shared locks keep one thread from being written by two
+accounts at once. A home's own threads are folded in on first sync (a thread
+that was copied across and continued keeps the longer copy), and a home with a
+chat open is skipped until a later launch. While a `codexN` runs, the shell
+notes it in `%APPDATA%\limpet\agents\<shell pid>.json` (`LIMPET_AGENT_RUN`
+overrides the folder) so the app can tell which account a tab's Codex is on.
 
 In the limpet app, right-click a tab to see the signed-in accounts with the
 5-hour and weekly usage each has left, and to move the tab's chat to another:
 the running agent is exited (Ctrl+C, then a kill if it lingers) and the
 conversation is resumed under the pick in the same shell. Claude to Claude is
-`--resume`; Codex to Codex copies the rollout into the other home; Claude to
-Codex uses Codex's session importer; Codex to Claude writes a Claude transcript
-and resumes it; if a conversion fails the chat becomes a Markdown handoff file
-plus a "continue from here" prompt.
+`--resume`; Codex to Codex is `resume` (copying the rollout first only into a
+home that isn't wired up yet); Claude to Codex uses Codex's session importer;
+Codex to Claude writes a Claude transcript and resumes it; if a conversion
+fails the chat becomes a Markdown handoff file plus a "continue from here"
+prompt.
 
 ## Restoring the original aliases
 

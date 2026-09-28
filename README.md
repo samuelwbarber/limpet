@@ -111,8 +111,8 @@ machine; it updates as the conversation moves on.
 
 Keep as many [Claude Code](https://www.claude.com/product/claude-code) and
 [Codex](https://github.com/openai/codex) logins as you have subscriptions, each
-behind its own command, and share your Claude session history across all of
-them.
+behind its own command, and share each agent's session history across all of
+its accounts.
 
 ```powershell
 claude         # your usual account       (config in ~/.claude)
@@ -143,8 +143,21 @@ file by file, never overwritten. A folder that a running session still has
 open is left alone and picked up on the next launch.
 
 Only the transcripts are shared. The up-arrow prompt history stays per account,
-because Claude Code refuses to read that file through a link. Codex accounts
-share nothing between them; the app copies a thread across when you move it.
+because Claude Code refuses to read that file through a link.
+
+Codex accounts share plain `codex`'s history the same way: every `~/.codex-N`
+gets its `sessions/`, `archived_sessions/` and `thread-writer-locks/` junctioned
+to `~/.codex`'s, and its `session_index.jsonl` (the thread names) hard-linked to
+`~/.codex`'s, so `/resume` in `codex1` lists the same threads, names included,
+as plain `codex`. Sharing the writer locks keeps Codex's own guard working
+across accounts: a thread that is open in one account can't be opened for
+writing in another at the same time. `~/.codex` stays where it is (the Codex
+app and editor extensions keep using it directly); a numbered home's own
+threads are folded into it on the first sync, and a thread copied to another
+account and continued there keeps the longer copy. The wiring happens whenever
+a numbered `codex` command runs (or by hand with `Sync-LimpetCodexHistory`); a
+home with a chat open is left until a later launch. Logins, config, the
+up-arrow history and Codex's sqlite state stay per account.
 
 ### Switch account, or agent, mid-chat
 
@@ -159,8 +172,9 @@ shell:
 
 - **Claude to Claude**: `<account> --resume <session id>`. Nothing is copied;
   the transcript is shared.
-- **Codex to Codex**: the thread's rollout file is copied into the other
-  account's home, then `<account> resume <thread id>`.
+- **Codex to Codex**: `<account> resume <thread id>`. Nothing is copied; the
+  thread is shared (into a home that isn't wired up yet, its rollout file is
+  copied first).
 - **Claude to Codex**: Codex's own importer turns the transcript into a thread
   in that Codex account, then `<account> resume <thread id>`.
 - **Codex to Claude**: limpet writes the chat out as a Claude transcript and

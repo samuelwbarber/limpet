@@ -14,12 +14,15 @@
 // so the Claude session in a tab is the one whose pid descends from that tab's
 // shell. Codex keeps no such file: its session is the rollout file
 // (<codex home>/sessions/YYYY/MM/DD/rollout-*.jsonl) most recently written
-// since the codex process under the shell started.
+// since the codex process under the shell started, and its account is the
+// one the shell's codexN wrapper noted it launched (Codex homes share one
+// sessions folder, so the rollout's location doesn't tell).
 //
 // Moving a chat: between Claude accounts it is `--resume <id>` (their
-// projects/ folders are one shared store). Between Codex accounts the rollout
-// is copied into the other home and resumed. Across agents the transcript is
-// converted (see handoff.js and codex-import.js) and resumed on the other side.
+// projects/ folders are one shared store); between Codex accounts likewise
+// `resume <id>`, the rollout being copied across first only if the other home
+// isn't sharing yet. Across agents the transcript is converted (see
+// handoff.js and codex-import.js) and resumed on the other side.
 
 const path = require('path');
 
@@ -150,12 +153,31 @@ function findClaudeSession(sessionFiles, procs, shellPid) {
   return best;
 }
 
+// The Codex account that launched `proc`: the nearest shell above it (up to
+// the tab's) that noted a codexN launch. `launches` is [{ pid, cmd,
+// startedAt }] with pid the noting shell's. A note must predate the process
+// and postdate its shell, so one left by a shell that was killed mid-launch
+// can't be picked up by a later shell that got the same pid.
+const LAUNCH_SLACK_MS = 2000;
+function codexLauncher(proc, procs, shellPid, launches) {
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const seen = new Set();
+  for (let p = byPid.get(proc.ppid); p && !seen.has(p.pid); p = p.pid === shellPid ? null : byPid.get(p.ppid)) {
+    seen.add(p.pid);
+    const hit = launches.find((l) => l.pid === p.pid && accountFor(l.cmd) && accountFor(l.cmd).kind === 'codex' &&
+      l.startedAt <= (proc.startedAt || 0) + LAUNCH_SLACK_MS && l.startedAt >= (p.startedAt || 0));
+    if (hit) return hit.cmd;
+  }
+  return '';
+}
+
 // The Codex session running under a tab's shell: a codex process under the
 // shell (procs carry { pid, ppid, name, startedAt }) plus the rollout written
 // most recently since it started. `rollouts` is [{ cmd, id, path, cwd,
-// mtimeMs }], cmd being the codex account whose home holds the file. With no
-// rollout the account can't be told apart, so plain `codex` is assumed.
-function findCodexSession(rollouts, procs, shellPid) {
+// mtimeMs }], cmd being the codex account whose home alone holds the file, or
+// '' when homes share it. The account is the launch noted for it
+// (codexLauncher), else the rollout's home, else plain `codex`.
+function findCodexSession(rollouts, procs, shellPid, launches = []) {
   const under = descendants(procs, shellPid);
   const proc = procs
     .filter((p) => under.has(p.pid) && /^codex(\.exe)?$/i.test(String(p.name || '')))
@@ -166,7 +188,7 @@ function findCodexSession(rollouts, procs, shellPid) {
     .filter((r) => UUID_RE.test(String(r.id || '')) && (r.mtimeMs || 0) >= since)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
   return {
-    kind: 'codex', cmd: (rollout && rollout.cmd) || 'codex', pid: proc.pid, status: '',
+    kind: 'codex', cmd: codexLauncher(proc, procs, shellPid, launches) || (rollout && rollout.cmd) || 'codex', pid: proc.pid, status: '',
     sessionId: rollout ? rollout.id : null, cwd: rollout ? rollout.cwd || '' : '',
     rolloutPath: rollout ? rollout.path : null,
   };
@@ -175,8 +197,8 @@ function findCodexSession(rollouts, procs, shellPid) {
 // Whatever agent is running under the tab's shell, Claude first (a Claude
 // launched from inside Codex, or vice versa, is rare; prefer the one with a
 // session id we can act on).
-function findSession({ sessionFiles = [], rollouts = [] }, procs, shellPid) {
-  return findClaudeSession(sessionFiles, procs, shellPid) || findCodexSession(rollouts, procs, shellPid);
+function findSession({ sessionFiles = [], rollouts = [], launches = [] }, procs, shellPid) {
+  return findClaudeSession(sessionFiles, procs, shellPid) || findCodexSession(rollouts, procs, shellPid, launches);
 }
 
 // A PowerShell single-quoted literal: only the quote itself needs escaping and

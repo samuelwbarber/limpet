@@ -89,6 +89,31 @@ test('findCodexSession pairs the codex process under the tab with the rollout wr
   assert.deepStrictEqual({ cmd: noRollout.cmd, pid: noRollout.pid, sessionId: noRollout.sessionId }, { cmd: 'codex', pid: 420, sessionId: null });
 });
 
+test('findCodexSession takes the account from the launch the shell noted, since shared homes hide it', () => {
+  const shared = rollouts.map((r) => ({ ...r, cmd: '' })); // every home junctioned to one sessions folder
+  assert.strictEqual(findCodexSession(shared, procs, 400).cmd, 'codex'); // no note: plain codex
+  const noted = [{ pid: 400, cmd: 'codex3', startedAt: 49000 }];
+  const c = findCodexSession(shared, procs, 400, noted);
+  assert.deepStrictEqual({ cmd: c.cmd, sessionId: c.sessionId }, { cmd: 'codex3', sessionId: T_NEW });
+  assert.strictEqual(findCodexSession(rollouts, procs, 400, noted).cmd, 'codex3'); // the note beats the rollout's home
+  // A note from a nested shell counts too; the nearest one wins.
+  const nested = [...procs.slice(0, -2),
+    { pid: 405, ppid: 400, name: 'powershell.exe', startedAt: 30000 },
+    { pid: 410, ppid: 405, name: 'node.exe', startedAt: 50000 },
+    { pid: 420, ppid: 410, name: 'codex.exe', startedAt: 50100 }];
+  assert.strictEqual(findCodexSession(shared, nested, 400, [{ pid: 400, cmd: 'codex3', startedAt: 20000 }, { pid: 405, cmd: 'codex1', startedAt: 49000 }]).cmd, 'codex1');
+});
+
+test('findCodexSession ignores notes that cannot be about this codex', () => {
+  const shared = rollouts.map((r) => ({ ...r, cmd: '' }));
+  const pick = (launches) => findCodexSession(shared, procs, 400, launches).cmd;
+  assert.strictEqual(pick([{ pid: 400, cmd: 'codex3', startedAt: 90000 }]), 'codex');   // written after codex started
+  assert.strictEqual(pick([{ pid: 400, cmd: 'codex3', startedAt: 1000 }]), 'codex');    // before its shell existed: an old shell's pid
+  assert.strictEqual(pick([{ pid: 300, cmd: 'codex3', startedAt: 49000 }]), 'codex');   // another tab's shell
+  assert.strictEqual(pick([{ pid: 400, cmd: 'claude3', startedAt: 49000 }]), 'codex');  // not a codex account
+  assert.strictEqual(pick([{ pid: 400, cmd: 'codex01', startedAt: 49000 }]), 'codex');  // not an account at all
+});
+
 test('findSession reports whichever agent runs under the shell, Claude first', () => {
   const input = { sessionFiles: files, rollouts };
   assert.strictEqual(findSession(input, procs, 200).kind, 'claude');

@@ -207,6 +207,8 @@ try {
     Set-Content "$c2\projects\C--proj\bbb.jsonl" 'b'
     Set-Content "$c2\projects\C--proj\dup.jsonl" 'same'
     Set-Content "$c2\projects\C--proj\clash.jsonl" 'longer content here'
+    Set-Content "$c0\projects\C--proj\cont.jsonl" 'turn 1'
+    Set-Content "$c2\projects\C--proj\cont.jsonl" 'turn 1', 'turn 2'   # the same chat, continued
 
     $ok = Sync-LimpetClaudeHistory -ConfigDir $c0, $c1, $c2 -Shared $shared
     Check 'sync reports every account synced' ($ok -eq $true)
@@ -221,6 +223,8 @@ try {
         @(Get-ChildItem "$shared\C--proj" -Filter 'dup.jsonl*').Count -eq 1)
     Check 'sync keeps the fuller transcript and preserves the other' ((Get-Content "$shared\C--proj\clash.jsonl") -eq 'longer content here' -and
         @(Get-ChildItem "$shared\C--proj" -Filter 'clash.jsonl.conflict-*').Count -eq 1)
+    Check 'sync keeps a continued transcript without a conflict copy' ((Get-Content "$shared\C--proj\cont.jsonl") -join ',' -eq 'turn 1,turn 2' -and
+        @(Get-ChildItem "$shared\C--proj" -Filter 'cont.jsonl*').Count -eq 1)
     Check 'sync leaves no staging folder behind' (@(Get-ChildItem $c0, $c2 -Filter 'projects.migrating-*' -Directory -Force).Count -eq 0)
     Check 'sync is idempotent' ((Sync-LimpetClaudeHistory -ConfigDir $c0, $c1, $c2 -Shared $shared) -eq $true)
 
@@ -252,6 +256,84 @@ finally {
         Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
         ForEach-Object { [IO.Directory]::Delete($_.FullName) }
     Remove-Item -Recurse -Force $h -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------------------------
+# codex / codex1 / codex2: numbered homes share plain codex's history. Temp
+# dirs only; the real ~/.codex* are never touched.
+# ---------------------------------------------------------------------------
+$x = Join-Path $env:TEMP ("limpet_codex_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+try {
+    $hub = "$x\.codex"; $k1 = "$x\.codex-1"; $k2 = "$x\.codex-2"
+    $day = 'sessions\2026\09\27'
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    New-Item -ItemType Directory -Force -Path "$hub\$day", "$k1\$day", "$k1\sessions\2026\09\28", "$k1\archived_sessions", "$k1\thread-writer-locks", $k2 | Out-Null
+    [IO.File]::WriteAllText("$hub\$day\rollout-a.jsonl", "a`n", $utf8)
+    [IO.File]::WriteAllText("$hub\$day\rollout-moved.jsonl", "one`n", $utf8)
+    [IO.File]::WriteAllText("$k1\$day\rollout-moved.jsonl", "one`ntwo`n", $utf8)   # copied to codex1, then continued
+    [IO.File]::WriteAllText("$k1\$day\rollout-b.jsonl", "b`n", $utf8)
+    [IO.File]::WriteAllText("$k1\sessions\2026\09\28\rollout-c.jsonl", "c`n", $utf8)
+    [IO.File]::WriteAllText("$k1\archived_sessions\rollout-old.jsonl", "old`n", $utf8)
+    [IO.File]::WriteAllText("$k1\thread-writer-locks\.coordination.lock", '', $utf8)
+    [IO.File]::WriteAllText("$k1\thread-writer-locks\01a0dead-0000-7000-8000-000000000000.lock", '', $utf8)   # left by a crash
+    [IO.File]::WriteAllText("$hub\session_index.jsonl", (@(
+        '{"id":"t1","thread_name":"hub one","updated_at":"2026-09-10T10:00:00Z"}'
+        '{"id":"t2","thread_name":"hub two","updated_at":"2026-09-20T10:00:00Z"}') -join "`n") + "`n", $utf8)
+    [IO.File]::WriteAllText("$k1\session_index.jsonl", (@(
+        '{"id":"t1","thread_name":"renamed in codex1","updated_at":"2026-09-15T10:00:00.5Z"}'
+        '{"id":"t2","thread_name":"stale in codex1","updated_at":"2026-09-01T10:00:00Z"}'
+        '{"id":"t3","thread_name":"only in codex1","updated_at":"2026-09-05T10:00:00Z"}') -join "`n") + "`n", $utf8)
+
+    $ok = Sync-LimpetCodexHistory -CodexHome $k1, $k2 -Hub $hub
+    Check 'codex sync reports every account shared' ($ok -eq $true)
+    foreach ($k in $k1, $k2) {
+        foreach ($name in 'sessions', 'archived_sessions', 'thread-writer-locks') {
+            $it = Get-Item -LiteralPath "$k\$name" -Force
+            Check "codex sync junctions $(Split-Path -Leaf $k)\$name to plain codex's" (
+                ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (@($it.Target)[0] -like "*\.codex\$name"))
+        }
+        Check "codex sync hard-links $(Split-Path -Leaf $k)\session_index.jsonl to plain codex's" ((Get-Item -LiteralPath "$k\session_index.jsonl" -Force).LinkType -eq 'HardLink')
+    }
+    Check "codex sync folds codex1's chats into plain codex's" ((Test-Path "$hub\$day\rollout-a.jsonl") -and (Test-Path "$hub\$day\rollout-b.jsonl") -and
+        (Test-Path "$hub\sessions\2026\09\28\rollout-c.jsonl") -and (Test-Path "$hub\archived_sessions\rollout-old.jsonl") -and (Test-Path "$k1\$day\rollout-b.jsonl"))
+    Check 'codex sync keeps the continued copy of a moved thread and drops the stale one' (
+        [IO.File]::ReadAllText("$hub\$day\rollout-moved.jsonl") -eq "one`ntwo`n" -and @(Get-ChildItem "$hub\$day" -Filter 'rollout-moved.jsonl*').Count -eq 1)
+    Check "codex sync doesn't carry old lock files over" (@(Get-ChildItem "$hub\thread-writer-locks" -Force).Count -eq 0 -and
+        @(Get-ChildItem $k1 -Filter '*.migrating-*' -Force).Count -eq 0)
+    $names = @(Get-Content "$hub\session_index.jsonl" | Where-Object { $_ })
+    Check "codex sync adds codex1's newer thread names, oldest first, and skips stale ones" ($names.Count -eq 4 -and
+        $names[2] -like '*only in codex1*' -and $names[3] -like '*renamed in codex1*' -and -not ($names -like '*stale in codex1*'))
+    Check 'codex sync is idempotent' ((Sync-LimpetCodexHistory -CodexHome $k1, $k2 -Hub $hub) -eq $true -and
+        @(Get-Content "$hub\session_index.jsonl" | Where-Object { $_ }).Count -eq 4)
+    Add-Content -LiteralPath "$k1\session_index.jsonl" -Value '{"id":"t4","thread_name":"named later in codex1","updated_at":"2026-09-28T10:00:00Z"}'
+    Check 'a name given in codex1 afterwards shows up in plain codex too' ((Get-Content "$hub\session_index.jsonl" -Tail 1) -like '*named later in codex1*')
+
+    # A chat open in the home (its thread lock held): nothing is moved until it closes.
+    $k3 = "$x\.codex-3"
+    New-Item -ItemType Directory -Force -Path "$k3\$day", "$k3\thread-writer-locks" | Out-Null
+    [IO.File]::WriteAllText("$k3\$day\rollout-live.jsonl", "live`n", $utf8)
+    $lock = [IO.File]::Open("$k3\thread-writer-locks\01a0beef-0000-7000-8000-000000000000.lock", 'Create', 'ReadWrite', 'None')
+    try {
+        $busy = Sync-LimpetCodexHistory -CodexHome $k3 -Hub $hub 3>$null
+        Check 'codex sync leaves a home with a chat open alone' ($busy -eq $false -and -not ((Get-Item "$k3\sessions" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+            (Test-Path "$k3\$day\rollout-live.jsonl") -and -not (Test-Path "$hub\$day\rollout-live.jsonl"))
+    }
+    finally { $lock.Dispose() }
+    Check 'codex sync completes once the chat is closed' ((Sync-LimpetCodexHistory -CodexHome $k3 -Hub $hub) -eq $true -and
+        (Test-Path "$hub\$day\rollout-live.jsonl") -and ((Get-Item "$k3\sessions" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint))
+
+    # A sessions junction that already points somewhere else is respected.
+    $k4 = "$x\.codex-4"; $elsewhere = "$x\elsewhere"
+    New-Item -ItemType Directory -Force -Path $k4, $elsewhere | Out-Null
+    New-Item -ItemType Junction -Path "$k4\sessions" -Target $elsewhere | Out-Null
+    $foreign = Sync-LimpetCodexHistory -CodexHome $k4 -Hub $hub 3>$null
+    Check 'codex sync leaves a foreign junction alone' ($foreign -eq $false -and (@((Get-Item "$k4\sessions" -Force).Target)[0] -like '*elsewhere'))
+}
+finally {
+    Get-ChildItem -LiteralPath $x -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+        ForEach-Object { [IO.Directory]::Delete($_.FullName) }
+    Remove-Item -Recurse -Force $x -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------------------
@@ -287,6 +369,24 @@ try {
         ((Get-Item "$ah\.claude-7\projects" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
         ((Get-Item "$ah\.claude-2\projects" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path "$ah\.claude-shared\projects"))
     Check 'a Codex launch leaves the Claude wiring alone' (-not (Test-Path "$ah\.codex-42\projects"))
+    Check "a Codex launch wires every numbered Codex home into plain codex's history" (
+        ((Get-Item "$ah\.codex-42\sessions" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        ((Get-Item "$ah\.codex-1\sessions" -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path "$ah\.codex\sessions"))
+
+    # A real launch, against a stand-in codex that reports what it was given.
+    $fakeBin = "$ah\bin"; $run = "$ah\run"
+    New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+    Set-Content -LiteralPath "$fakeBin\codex.cmd" -Encoding Ascii -Value @(
+        '@echo off', 'echo HOME=%CODEX_HOME% ARGS=%*', 'for %%f in ("%LIMPET_AGENT_RUN%\*.json") do (echo NOTE=%%~nxf & type "%%f")')
+    $savedPath = $env:PATH; $savedRun = $env:LIMPET_AGENT_RUN; $savedCodexHome = $env:CODEX_HOME
+    try {
+        $env:PATH = "$fakeBin;$env:PATH"; $env:LIMPET_AGENT_RUN = $run
+        $out = (codex1 resume xyz) -join "`n"
+        Check 'codex1 launches Codex with CODEX_HOME at ~/.codex-1, arguments intact' ($out -like "*HOME=$ah\.codex-1 ARGS=resume xyz*")
+        Check 'while it runs, the shell notes that it launched codex1 (for the app)' ($out -like "*NOTE=$PID.json*" -and $out -like '*"cmd":"codex1"*')
+        Check 'the note goes and CODEX_HOME is put back when it exits' (-not (Test-Path "$run\$PID.json") -and $env:CODEX_HOME -eq $savedCodexHome)
+    }
+    finally { $env:PATH = $savedPath; $env:LIMPET_AGENT_RUN = $savedRun }
     Check 'a leading zero is not an account' ($(try { Invoke-LimpetAgent -Command 'claude01' -Arguments @('--limpet-plan') -ErrorAction Stop; 'ran' } catch { 'refused' }) -eq 'refused')
     Check 'other unknown commands still fail normally' ($(try { nosuchlimpetcommand } catch { 'gone' }) -eq 'gone')
     Check 'plain claude and codex are never shadowed' (@(Get-Command claude, codex -CommandType Function -ErrorAction SilentlyContinue).Count -eq 0)

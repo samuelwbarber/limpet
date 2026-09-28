@@ -7,6 +7,8 @@
 //   claude1 -> codex     importer fails, so a handoff file
 //   codex   -> claude1   a synthesized Claude transcript, resumed
 //   codex   -> codex1    the rollout copied into the other home, resumed
+//   codex1  -> codex     homes sharing one sessions folder: the account comes
+//                        from the shell's launch note, the thread just resumes
 // The agents are stood in for by nested PowerShells (detection needs a live
 // pid under the tab's shell plus the files the real agents leave behind), the
 // launch line is captured instead of run, and usage comes from a fixture.
@@ -62,6 +64,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   fs.mkdirSync(codexHome(2), { recursive: true });
   const c1 = claudeDir(1);
   const codexDir = codexHome(0);
+  const runDir = path.join(home, 'run'); // where shells note which codex account they launched
   // Usage limits, as usage.js would report them, without going online.
   const fixture = path.join(home, 'usage.json');
   fs.writeFileSync(fixture, JSON.stringify({
@@ -78,7 +81,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   const electronApp = await _electron.launch({
     executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
     args: [APP], timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture },
+    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir },
   });
   const page = await electronApp.firstWindow();
   const pageErrors = [];
@@ -239,6 +242,30 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   check('codex -> codex1: the same thread is resumed under codex1', !!(await seenOnScreen(`SWAPPED_codex1_${thread2}`)));
   const copied = path.join(codexHome(1), 'sessions', '2026', '09', '04', rolloutName(thread2));
   check('codex -> codex1: the rollout was copied into ~/.codex-1 at the same dated path', fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(codexDir, 'sessions', '2026', '09', '04', rolloutName(thread2)), 'utf8'));
+
+  // ---- codex1 -> codex with shared history (as Sync-LimpetCodexHistory wires it) ----
+  // ~/.codex-1/sessions is a junction to ~/.codex/sessions, so the rollout's
+  // folder no longer says which account is running; the shell's note does.
+  fs.rmSync(path.join(codexHome(1), 'sessions'), { recursive: true, force: true });
+  fs.symlinkSync(path.join(codexDir, 'sessions'), path.join(codexHome(1), 'sessions'), 'junction');
+  await page.locator('.term-pane.active').click();
+  await type(page, 'Write-Output "SHELLPID_$PID"');
+  const shellPid = Number(await waitFor(async () => { const m = /SHELLPID_(\d+)/.exec(await screenText(page)); return m ? m[1] : null; }, 10000));
+  fs.mkdirSync(runDir, { recursive: true });
+  const launchNote = path.join(runDir, `${shellPid}.json`);
+  fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'codex1', pid: shellPid, startedAt: Date.now() }));
+  const thread3 = '01a00000-0000-7000-8000-0000000000cc';
+  pid = await standIn(path.join(bin, 'codex.exe'));
+  writeRollout(codexDir, thread3);
+  menu = await openMenu();
+  check('shared history: the menu tells the codex account from the shell\'s launch note', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex1"]').count().then((n) => n === 1), 15000)));
+  await page.keyboard.press('Escape');
+  check('codex1 -> codex (shared): move completes', !!(await swapTo('codex')));
+  check('codex1 -> codex (shared): the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
+  check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await seenOnScreen(`SWAPPED_codex_${thread3}`)));
+  check('codex1 -> codex (shared): nothing was copied', fs.readdirSync(path.join(codexDir, 'sessions'), { recursive: true }).filter((n) => String(n).includes(thread3)).length === 1 &&
+    fs.lstatSync(path.join(codexHome(1), 'sessions')).isSymbolicLink());
+  fs.unlinkSync(launchNote);
 
   // ---- background picker: standard limpet colour by default, swatches, generative ----
   const paneColor = () => page.evaluate(() => getComputedStyle(document.querySelector('.term-pane.active')).backgroundColor);
