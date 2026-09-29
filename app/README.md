@@ -115,8 +115,16 @@ three are adjustable in [Settings](#settings)).
 Drop files onto the window and limpet "pastes" them into the current session: it
 types a `base64 -d` here-doc that reconstructs each file in the shell's current
 directory. So inside an `xssh`/`ssh` session the file lands in your remote cwd,
-with nothing installed on the remote but coreutils. Limits: files only (folders
-skipped) and up to 20 MB per file — use `scp`/`wput` for anything larger.
+with nothing installed on the remote but coreutils. Pasting is for files up to
+20 MB. Folders and bigger files are copied with `scp` (`-r`, `BatchMode=yes`,
+your `~/.ssh/id_ed25519` if present) to `host:<remote cwd>/`, running beside
+the shell with a status line when it starts and ends. That needs an `xssh`
+session in the tab: xssh reports the host and port (`5379;xssh`), and the
+injected helpers report each bash prompt's `$PWD` and hop depth (`5379;cwd`),
+both carrying the app's token. limpet refuses, saying why, when there's no
+xssh connection, the prompt is past an `xssh` hop (scp can't reach it), the
+directory has spaces or shell characters (older scp would mangle them), or
+the helpers run under plain `sh`; `wput` covers those.
 
 ## Predictive echo (laggy links)
 

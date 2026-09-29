@@ -547,7 +547,16 @@ function xssh {
 
     $dnsHost = if ($hostTok) { ($hostTok -split '@')[-1] } else { $null }
     $hadSession = $false
+    # Inside the limpet app, tell it which host this tab is on (and, when ssh
+    # ends, that it isn't any more), so a folder or big file dropped on the
+    # window can go over scp to the directory the remote prompt reports.
+    $e = [char]27; $bel = [char]7
+    $tellApp = $hostTok -and $env:LIMPET_TOKEN -match '^[0-9a-f]{32}$'
     try {
+        if ($tellApp) {
+            $t64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($hostTok))
+            Write-Host -NoNewline ("{0}]5379;xssh;{1};{2};{3}{4}" -f $e, $t64, $sshPort, $env:LIMPET_TOKEN, $bel)
+        }
         while ($true) {
             $start = Get-Date
             ssh @sshArgs
@@ -584,6 +593,7 @@ function xssh {
         }
     }
     finally {
+        if ($tellApp) { Write-Host -NoNewline ("{0}]5379;xssh;;;{1}{2}" -f $e, $env:LIMPET_TOKEN, $bel) }
         # Wipe the cached passphrase/password and askpass wiring from this process.
         if ($helloActive -or $passCached) {
             $env:LIMPET_ASKPASS = $null

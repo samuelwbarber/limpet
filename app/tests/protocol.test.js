@@ -35,6 +35,8 @@ test('looksLikeVerb accepts limpet verbs and their prefixes only', () => {
   assert.equal(looksLikeVerb('reels;'), true);
   assert.equal(looksLikeVerb('peek;d;AAAA'), true);      // chunked image: must keep buffering
   assert.equal(looksLikeVerb('dl;d;AAAA'), true);        // streamed download chunk: keep buffering
+  assert.equal(looksLikeVerb('xssh;aG9zdA==;22'), true); // connection report, split mid-sequence
+  assert.equal(looksLikeVerb('cwd;L2hvbWU='), true);      // prompt directory report
   assert.equal(looksLikeVerb('down'), true);             // incomplete: keep buffering
   assert.equal(looksLikeVerb(''), true);
   assert.equal(looksLikeVerb('notaverb;x'), false);

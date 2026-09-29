@@ -21,7 +21,7 @@ sh -n shell/limpet-remote.sh;   check 'POSIX sh syntax' $?
 # xssh prepends the app's token to the script; stand in for that here.
 export LIMPET_TOKEN=0123456789abcdef0123456789abcdef
 . shell/limpet-remote.sh
-for fn in peek download upload reels xssh _limpet_img_rows _limpet_b64; do
+for fn in peek download upload reels xssh _limpet_img_rows _limpet_b64 _limpet_cwd; do
   type "$fn" >/dev/null 2>&1; check "defines $fn" $?
 done
 bash -c 'type peek >/dev/null 2>&1 && type download >/dev/null 2>&1'
@@ -109,6 +109,23 @@ case "$out" in *']5379;reels;aHR0cHM6Ly94;'"$LIMPET_TOKEN$BEL"*) check 'reels se
 out=$(reels)
 case "$out" in *']5379;reels;;'"$LIMPET_TOKEN$BEL"*) check 'bare reels toggles' 0;; *) check 'bare reels toggles' 1;; esac
 
+# ---- prompt directory report (aims the app's scp for dropped folders) ----
+# Every bash prompt reports cwd;<b64 $PWD>;<xssh hop depth>;<token>.
+case "$PROMPT_COMMAND" in *_limpet_cwd*) check 'cwd: hooked into PROMPT_COMMAND' 0;; *) check 'cwd: hooked into PROMPT_COMMAND' 1;; esac
+out=$(cd "$TMP" && _limpet_cwd)
+case "$out" in *']5379;cwd;'"$pwd64;0;$LIMPET_TOKEN$BEL"*) check 'cwd: reports $PWD, depth 0 and the token' 0;; *) check 'cwd: reports $PWD, depth 0 and the token' 1;; esac
+(exit 3); _limpet_cwd >/dev/null; [ $? = 3 ]; check 'cwd: keeps $? for the prompt' $?
+tout=$(TMUX=/fake,0,0 _limpet_cwd 2>/dev/null)
+case "$tout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;cwd;"*) check 'tmux: cwd report is wrapped' 0;; *) check 'tmux: cwd report is wrapped' 1;; esac
+pc=$(HOME=$TMP bash -c 'PROMPT_COMMAND="echo mine"; . shell/limpet-remote.sh; . shell/limpet-remote.sh; printf %s "$PROMPT_COMMAND"')
+[ "$pc" = "echo mine"$'\n'"_limpet_cwd" ]; check 'cwd: appended to an existing PROMPT_COMMAND, once' $?
+pc=$(HOME=$TMP LIMPET_TOKEN= bash -c '. shell/limpet-remote.sh; printf %s "${PROMPT_COMMAND:-}"')
+[ -z "$pc" ]; check 'cwd: no report without the token' $?
+iout=$(printf 'cd /\nexit\n' | HOME=$TMP bash --rcfile shell/limpet-remote.sh -i 2>/dev/null)
+case "$iout" in *']5379;cwd;Lw==;0;'"$LIMPET_TOKEN$BEL"*) check 'cwd: an interactive prompt reports after cd' 0;; *) check 'cwd: an interactive prompt reports after cd' 1;; esac
+dout=$(LIMPET_DEPTH=2 HOME=$TMP bash -c '. shell/limpet-remote.sh; cd /; _limpet_cwd')
+case "$dout" in *']5379;cwd;Lw==;2;'*) check 'cwd: carries LIMPET_DEPTH' 0;; *) check 'cwd: carries LIMPET_DEPTH' 1;; esac
+
 # ---- remote xssh hop (ssh stubbed on PATH) ----
 mkdir -p "$TMP/bin"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$SSH_CAPTURE"\n' > "$TMP/bin/ssh"
@@ -125,6 +142,9 @@ xssh host2 >/dev/null 2>&1
 grep -qx -- '-t' "$SSH_CAPTURE"; check 'hop forces a tty' $?
 grep -q 'base64 -d' "$SSH_CAPTURE"; check 'hop re-injects the helpers' $?
 grep -q 'LIMPET_SH' "$SSH_CAPTURE"; check 'hop chains LIMPET_SH onward' $?
+grep -q 'LIMPET_DEPTH=1;' "$SSH_CAPTURE"; check 'hop: next host reports depth 1' $?
+LIMPET_DEPTH=1 xssh host3 >/dev/null 2>&1
+grep -q 'LIMPET_DEPTH=2;' "$SSH_CAPTURE"; check 'hop: depth counts up per hop' $?
 
 # ---- the real bootstrap templates out of Limpet.psm1 ----
 mapfile -t TPLS < <(sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" shell/Limpet.psm1 | sed "s/''/'/g")

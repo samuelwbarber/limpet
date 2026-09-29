@@ -137,15 +137,36 @@ xssh() {
     return
   fi
   _b64=$(base64 < "$LIMPET_SH" | tr -d '\n')
-  command ssh -t "$@" "f=\$(mktemp); printf %s '$_b64' | base64 -d > \$f; export LIMPET_SH=\$f; if command -v bash >/dev/null 2>&1; then bash --rcfile \$f -i; else ENV=\$f sh -i; fi; rm -f \$f"
-  unset _b64
+  _d=$(( ${LIMPET_DEPTH:-0} + 1 ))
+  command ssh -t "$@" "f=\$(mktemp); printf %s '$_b64' | base64 -d > \$f; export LIMPET_SH=\$f LIMPET_DEPTH=$_d; if command -v bash >/dev/null 2>&1; then bash --rcfile \$f -i; else ENV=\$f sh -i; fi; rm -f \$f"
+  unset _b64 _d
 }
+
+# Tell the app which directory each prompt is in, so a folder (or a file too
+# big to paste) dropped on the window can be scp'd straight there. The app's
+# scp only reaches the host the PC's xssh connected to, so the report carries
+# LIMPET_DEPTH too: 0 there, one more per xssh hop above. Bash only (it runs
+# from PROMPT_COMMAND; plain sh has no such hook), appended to any existing
+# PROMPT_COMMAND, and it hands back $? so the user's prompt still sees it.
+LIMPET_DEPTH=${LIMPET_DEPTH:-0}
+_limpet_cwd() {
+  local s=$?
+  _limpet_emit "$(printf '\033]5379;cwd;%s;%s;%s\007' "$(printf '%s' "$PWD" | _limpet_b64)" "$LIMPET_DEPTH" "${LIMPET_TOKEN:-}")"
+  return $s
+}
+if [ -n "${BASH_VERSION:-}" ] && [ -n "${LIMPET_TOKEN:-}" ]; then
+  case "${PROMPT_COMMAND:-}" in
+    *_limpet_cwd*) ;;
+    *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND
+}_limpet_cwd" ;;
+  esac
+fi
 
 # In bash, export the functions so they survive child shells on the same
 # environment: tmux, a nested `bash`, or `srun --pty bash` (slurm forwards the
 # environment, BASH_FUNC_* included, to the compute node).
 if [ -n "$BASH_VERSION" ]; then
-  export _LIMPET_ESC
+  export _LIMPET_ESC LIMPET_DEPTH
   [ -n "${LIMPET_TOKEN:-}" ] && export LIMPET_TOKEN
-  export -f _limpet_b64 _limpet_emit _limpet_img_rows peek download upload reels xssh 2>/dev/null
+  export -f _limpet_b64 _limpet_emit _limpet_img_rows peek download upload reels xssh _limpet_cwd 2>/dev/null
 fi

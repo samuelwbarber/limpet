@@ -19,6 +19,7 @@ const codexImport = require('./codex-import');
 const usage = require('./usage');
 const settings = require('./settings');
 const failover = require('./failover');
+const remoteCopy = require('./remote-copy');
 const {
   MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -456,6 +457,14 @@ function handleLimpetOsc(sess, seq) {
     if (!tokenOk(parts[2])) untrusted(sess, 'reels');
     else if (url && !isWebUrl(url)) sendData(sess, '\r\n\x1b[31m[limpet] reels: only http(s) URLs\x1b[0m\r\n');
     else sendToSession(sess, 'reels:toggle', url);
+  } else if (parts[0] === 'xssh') {
+    // xssh (the PowerShell function) connecting / done: where scp can reach.
+    // Silently ignored without the token: nothing here is worth a warning.
+    if (tokenOk(parts[3])) { sess.remote = remoteCopy.parseXssh(parts.slice(1)); sess.remoteCwd = null; }
+  } else if (parts[0] === 'cwd') {
+    // Every remote prompt reports its directory; sent once per prompt, so an
+    // untokened one is dropped quietly rather than warned about each time.
+    if (tokenOk(parts[3])) sess.remoteCwd = remoteCopy.parseCwd(parts.slice(1));
   } else if (parts[0] === 'peek') {
     const sub = parts[1];
     if (sub === 'h') {
@@ -652,9 +661,10 @@ function buildDropPayload(localPath) {
 }
 
 // "Paste" one or more PC files into the current session by base64-streaming them
-// into the live prompt. Used by drag-drop and by the in-session `upload` command
-// (whose prompt is already in the target remote directory). Folders and oversized
-// files are skipped with a note.
+// into the live prompt. Used by drag-drop (dropFiles, which sends folders and
+// oversized files over scp instead) and by the in-session `upload` command
+// (whose prompt is already in the target remote directory). Folders and
+// oversized files that reach here are skipped with a note.
 async function injectFiles(sess, paths) {
   if (!sess || !sess.proc) return { ok: false };
   const files = [];
@@ -720,6 +730,32 @@ function appSettings() {
 function backdropLimits() {
   const b = appSettings().get().backdrop;
   return { firstChars: b.firstChars, updateChars: b.updateChars, minMs: b.minIntervalMinutes * 60 * 1000 };
+}
+
+// Drag-and-drop: small files are pasted through the shell as before; folders
+// and files over MAX_DROP_BYTES go over scp to the directory of the remote
+// prompt, when xssh told us the host and that prompt is on it (see
+// remote-copy.js). Otherwise they're refused with the reason.
+async function dropFiles(sess, paths) {
+  if (!sess || !sess.proc) return { ok: false };
+  const entries = [];
+  for (const p of paths) {
+    try {
+      const st = fs.statSync(p);
+      entries.push({ path: p, isDir: st.isDirectory(), size: st.size });
+    } catch (_) { entries.push({ path: p, isDir: false, size: 0 }); } // injectFiles reports it
+  }
+  const { paste, copy } = remoteCopy.splitDrop(entries, MAX_DROP_BYTES);
+  const say = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
+  let copied = null;
+  if (copy.length) {
+    const plan = remoteCopy.planDrop(sess.remote, sess.remoteCwd);
+    const names = copy.map((p) => path.basename(p)).join(', ');
+    if (!plan.ok) say(33, `can't send ${names} (folders and files over ${MAX_DROP_BYTES / 1048576} MB go over scp): ${plan.reason}. Use wput instead.`);
+    else copied = remoteCopy.runScp({ ...plan, paths: copy, key: remoteCopy.defaultKey() }, say);
+  }
+  const pasted = paste.length ? await injectFiles(sess, paste) : { ok: true, sent: [] };
+  return { ...pasted, copying: !!copied }; // scp carries on in the background
 }
 
 function backdropStatus(sess, state, message = '') {
@@ -1289,7 +1325,7 @@ function registerIpc() {
   });
   ipcMain.handle('term:drop-files', (event, { id, paths }) => {
     const sess = ownedSession(event, id);
-    return sess ? injectFiles(sess, paths) : { ok: false };
+    return sess ? dropFiles(sess, paths) : { ok: false };
   });
   ipcMain.handle('claude:accounts', (event, id) => {
     if (!ownedSession(event, id)) return { accounts: [], more: [] };

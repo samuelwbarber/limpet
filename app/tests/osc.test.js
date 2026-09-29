@@ -1,5 +1,6 @@
 // Unit tests for the OSC 5379 handling in src/main.js: requests that act on this
-// PC (dl, upload, reels) need the app's token, upload always asks, and a held
+// PC (dl, upload, reels) and the xssh/cwd reports that aim a dropped folder's
+// scp need the app's token, upload always asks, and a held
 // sequence can neither freeze the tab nor overwrite Downloads. main.js is loaded
 // with Electron stubbed out and its internals exported for the test.
 const test = require('node:test');
@@ -9,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const { EventEmitter } = require('events');
 const { createTopicProfile } = require('../src/backdrop');
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-osc-'));
@@ -34,11 +36,12 @@ function loadMain() {
   m.paths = Module._nodeModulePaths(path.dirname(file));
   const quiet = console.error; console.error = () => {};
   try {
-    m._compile(`${fs.readFileSync(file, 'utf8')}\nmodule.exports = { forwardOutput, oscToken };`, file);
+    m._compile(`${fs.readFileSync(file, 'utf8')}\nmodule.exports = { forwardOutput, oscToken, dropFiles };`, file);
   } finally { Module._load = load; console.error = quiet; }
   return { ...m.exports, restoreHome: () => { os.homedir = savedHome; } };
 }
-const { forwardOutput, oscToken } = loadMain();
+const { forwardOutput, oscToken, dropFiles } = loadMain();
+const remoteCopy = require('../src/remote-copy');
 const tok = oscToken();
 const dl = path.join(home, 'Downloads');
 const E = '\x1b';
@@ -155,3 +158,44 @@ test('a large held sequence is cheap, and an endless one is dropped', () => {
 });
 
 test.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+test("xssh/cwd reports need the token, and aim a dropped folder's scp", async () => {
+  const saved = remoteCopy.io.spawn;
+  const calls = [];
+  remoteCopy.io.spawn = (cmd, args) => {
+    const c = new EventEmitter();
+    c.stderr = new EventEmitter();
+    calls.push({ cmd, args });
+    setImmediate(() => c.emit('close', 0));
+    return c;
+  };
+  try {
+    const folder = fs.mkdtempSync(path.join(home, 'drop-'));
+    // untokened reports are ignored, quietly
+    let s = mk();
+    forwardOutput(s, `${E}]5379;xssh;${b64('evil@box')};22${B}${E}]5379;cwd;${b64('/tmp')};0${B}`);
+    assert.strictEqual(screen(s), '');
+    assert.ok(!s.remote && !s.remoteCwd);
+    await dropFiles(s, [folder]);
+    assert.match(screen(s), /isn't in an xssh session.*wput/);
+    // a real xssh session: host + prompt directory -> scp there
+    s = mk();
+    forwardOutput(s, `${E}]5379;xssh;${b64('me@box')};2222;${tok}${B}${E}]5379;cwd;${b64('/srv/in')};0;${tok}${B}$ `);
+    assert.strictEqual(screen(s), '$ ');
+    await dropFiles(s, [folder]);
+    assert.ok(await waitFor(() => /done: 1 item in me@box:\/srv\/in/.test(screen(s))), screen(s));
+    assert.strictEqual(calls.length, 1);
+    assert.deepStrictEqual(calls[0].args.slice(-3), ['--', folder, 'me@box:/srv/in/']);
+    assert.ok(calls[0].args.includes('BatchMode=yes') && calls[0].args.join(' ').includes('-P 2222'));
+    // a prompt one xssh hop further in: refused
+    forwardOutput(s, `${E}]5379;cwd;${b64('/scratch')};1;${tok}${B}`);
+    await dropFiles(s, [folder]);
+    assert.match(screen(s), /1 xssh hop/);
+    // ssh ended: back to the local shell, nothing to scp to
+    forwardOutput(s, `${E}]5379;xssh;;;${tok}${B}`);
+    assert.strictEqual(s.remote, null);
+    await dropFiles(s, [folder]);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(typed.length, 0); // nothing was typed into the shell
+  } finally { remoteCopy.io.spawn = saved; }
+});
