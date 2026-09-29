@@ -1,7 +1,7 @@
 {
   "name": "limpet",
   "productName": "limpet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "limpet - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
   "author": "samuelwbarber",
   "main": "src/main.js",
@@ -79,7 +79,8 @@
     "publish": {
       "provider": "github",
       "owner": "samuelwbarber",
-      "repo": "limpet"
+      "repo": "limpet",
+      "releaseType": "release"
     }
   }
 }

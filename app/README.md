@@ -51,10 +51,14 @@ that. When a release for a newer version carries electron-builder's update
 files (`latest.yml` plus the installer and its `.blockmap`, all written to
 `app\dist` by `npm run dist`), limpet downloads it in the background and then
 asks whether to restart now; **Later** installs it the next time limpet quits.
-Being offline, or there being no such release yet, is only logged. Publishing
-those releases is a separate step for the maintainer to set up; nothing in this
-repo uploads them. The feed is `build.publish` in `package.json`, and the
-update client is `src/updater.js`.
+Being offline, or there being no such release yet, is only logged. The feed is
+`build.publish` in `package.json`, and the update client is `src/updater.js`.
+
+To release: bump `version` in `package.json` (and `package-lock.json`), commit,
+then push a matching tag, e.g. `git tag v0.1.2 && git push origin v0.1.2`. The
+Release workflow (`.github/workflows/release.yml`) builds the installer and
+publishes it with `latest.yml` and the `.blockmap` as a GitHub Release, signed
+if the `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` repo secrets are set.
 
 ## Tabs, clipboard, and links
 
