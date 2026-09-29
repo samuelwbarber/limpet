@@ -7,14 +7,14 @@ Anything after `--` is treated as a path.
 | Command | Flags handled | Maps to | Notes |
 |---------|---------------|---------|-------|
 | `ls`    | `-a -l -R -t -S -r` | `Get-ChildItem` | `-a`=hidden, `-l`=long table, `-t/-S`=sort by time/size, `-r`=reverse |
-| `rm`    | `-r -f` | `Remove-Item` | `-f` also silences errors |
-| `cp`    | `-r -f` | `Copy-Item` | last path = destination |
+| `rm`    | `-r -f -i -I` | own tree walk (`FileSystemInfo.Delete`) | never follows junctions/symlinks (removes the link only); a directory needs `-r`; `-f` only silences "not found"; `-i` asks per file, `-I` once |
+| `cp`    | `-r -f -n -i` | `Copy-Item` | last path = destination; `-n` never overwrites, `-i` asks first |
 | `mv`    | `-f` | `Move-Item` | last path = destination |
 | `mkdir` | `-p` | `New-Item -ItemType Directory` | `-p` creates parents / no error if exists |
 | `touch` | — | `New-Item` / set `LastWriteTime` | creates file or bumps timestamp |
 | `cat`   | `-n` | `Get-Content` | `-n` numbers lines; reads pipeline too |
-| `head`  | `-n N` / `-N` | `Select-Object -First` | default 10; pipeline or file |
-| `tail`  | `-n N` / `-N`, `-f` | `Get-Content -Tail` / `-Wait` | `-f` follows; pipeline or file |
+| `head`  | `-n N` / `-N`, `-n -N` | `Select-Object -First` / `-SkipLast` | default 10; `-n -N` = all but the last N; pipeline or file |
+| `tail`  | `-n N` / `-N`, `-n +N`, `-f` | `Get-Content -Tail` / `-Wait` | `-n +N` = from line N on; `-f` follows; pipeline or file |
 | `grep`  | `-i -v -r` | `Select-String` | case-sensitive by default; `-i` ignore case, `-v` invert, `-r` recurse files |
 | `find`  | `-name`, `-iname`, `-type f\|d` | `Get-ChildItem -Recurse` | subset of GNU find |
 | `which` | — | `Get-Command` | prints path / alias target |

@@ -26,7 +26,8 @@ function ConvertFrom-UnixArgs {
         [string[]] $Tokens,
         [string[]] $ValueFlags = @()   # short flags that consume a value, e.g. 'n'
     )
-    $flags  = @{}
+    # Case-sensitive, like Unix: -r and -R (or -i and -I) are different flags.
+    $flags  = New-Object System.Collections.Hashtable ([StringComparer]::Ordinal)
     $values = @{}
     $paths  = [System.Collections.Generic.List[string]]::new()
     if (-not $Tokens) { return [pscustomobject]@{ Flags = $flags; Values = $values; Paths = $paths } }
@@ -99,23 +100,93 @@ function NixLs {
 # Copy / move / remove / make
 # ---------------------------------------------------------------------------
 
+# Expand one rm/cp operand. Only operands with * or ? are globbed (like the
+# shell would); everything else is literal, so names like a[1].txt work.
+function Resolve-NixOperand {
+    param([string] $Arg)
+    if ($Arg -match '[*?]') {
+        @(Get-Item -Path $Arg -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    else { @($Arg) }
+}
+
+# Delete a file/dir tree WITHOUT following links. Windows PowerShell 5.1's
+# Remove-Item -Recurse descends into junctions/symlinks and empties the TARGET
+# (e.g. ~/.claude-N/projects -> ~/.claude-shared/projects), so walk the tree
+# ourselves: a reparse point is removed as a link and never descended into.
+function Remove-NixTree {
+    param([IO.FileSystemInfo] $Item, [bool] $Force)
+    $attr = $Item.Attributes
+    if (($attr -band [IO.FileAttributes]::Directory) -and -not ($attr -band [IO.FileAttributes]::ReparsePoint)) {
+        foreach ($child in ([IO.DirectoryInfo]$Item).GetFileSystemInfos()) { Remove-NixTree $child $Force }
+    }
+    try {
+        if ($Force -and ($attr -band [IO.FileAttributes]::ReadOnly)) {
+            $Item.Attributes = $attr -band -bnot [IO.FileAttributes]::ReadOnly
+        }
+        $Item.Delete()   # non-recursive: on a junction/symlink this removes just the link
+    }
+    catch {
+        $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }
+        Write-Error "rm: cannot remove '$($Item.FullName)': $($e.Message)"
+    }
+}
+
 function NixRm {
     $p = ConvertFrom-UnixArgs $args
     if (-not $p.Paths.Count) { Write-Error 'rm: missing operand'; return }
-    $rp = @{ Path = @($p.Paths) }
-    if ($p.Flags['r'] -or $p.Flags['R'] -or $p.Flags['recursive']) { $rp.Recurse = $true }
-    if ($p.Flags['f'] -or $p.Flags['force']) { $rp.Force = $true; $rp.ErrorAction = 'SilentlyContinue' }
-    Remove-Item @rp
+    $recurse = [bool]($p.Flags['r'] -or $p.Flags['R'] -or $p.Flags['recursive'])
+    $force   = [bool]($p.Flags['f'] -or $p.Flags['force'])
+    # -i: ask per operand; -I: ask once when recursive or more than 3 operands.
+    if ($p.Flags['I'] -and ($recurse -or $p.Paths.Count -gt 3)) {
+        $what = if ($recurse) { 'recursively ' } else { '' }
+        if ((Read-Host "rm: remove $($p.Paths.Count) argument(s) $what?") -notmatch '^[yY]') { return }
+    }
+    foreach ($a in $p.Paths) {
+        $targets = @(Resolve-NixOperand $a)
+        if (-not $targets.Count -and -not $force) { Write-Error "rm: cannot remove '$a': No such file or directory" }
+        foreach ($t in $targets) {
+            $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($t)
+            if ($full.Length -gt 3) { $full = $full.TrimEnd('\', '/') }
+            # FileInfo.Attributes does not follow links (a dangling link still
+            # "exists"); -1 means nothing is there.
+            $fi = New-Object IO.FileInfo $full
+            if ([int]$fi.Attributes -eq -1) {
+                if (-not $force) { Write-Error "rm: cannot remove '$t': No such file or directory" }
+                continue
+            }
+            $isLink = [bool]($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)
+            $isDir  = [bool]($fi.Attributes -band [IO.FileAttributes]::Directory)
+            if ($isDir -and -not $isLink -and -not $recurse) {
+                Write-Error "rm: cannot remove '$t': Is a directory"; continue
+            }
+            if ($p.Flags['i'] -and (Read-Host "rm: remove '$t'?") -notmatch '^[yY]') { continue }
+            $item = if ($isDir) { New-Object IO.DirectoryInfo $full } else { $fi }
+            Remove-NixTree $item $force
+        }
+    }
 }
 
 function NixCp {
     $p = ConvertFrom-UnixArgs $args
     $paths = @($p.Paths)
     if ($paths.Count -lt 2) { Write-Error 'cp: need source and destination'; return }
-    $cp = @{ Path = $paths[0..($paths.Count - 2)]; Destination = $paths[-1] }
+    $dest = $paths[-1]
+    $destIsDir = Test-Path -LiteralPath $dest -PathType Container
+    $noClobber = [bool]($p.Flags['n'] -or $p.Flags['no-clobber'])
+    $cp = @{ Destination = $dest }
     if ($p.Flags['r'] -or $p.Flags['R'] -or $p.Flags['recursive']) { $cp.Recurse = $true }
     if ($p.Flags['f'] -or $p.Flags['force']) { $cp.Force = $true }
-    Copy-Item @cp
+    foreach ($a in $paths[0..($paths.Count - 2)]) {
+        foreach ($src in @(Resolve-NixOperand $a)) {
+            $target = if ($destIsDir) { Join-Path $dest (Split-Path $src -Leaf) } else { $dest }
+            if (Test-Path -LiteralPath $target) {
+                if ($noClobber) { continue }
+                if ($p.Flags['i'] -and (Read-Host "cp: overwrite '$target'?") -notmatch '^[yY]') { continue }
+            }
+            Copy-Item -LiteralPath $src @cp
+        }
+    }
 }
 
 function NixMv {
@@ -162,13 +233,25 @@ function head {
     $p = ConvertFrom-UnixArgs $args -ValueFlags @('n')
     $count = if ($p.Values['n']) { [int]$p.Values['n'] } else { 10 }
     $src = if ($p.Paths.Count) { Get-Content -Path $p.Paths[0] } else { $pipe }
-    $src | Select-Object -First $count
+    # -n -N: everything except the last N lines
+    if ($count -lt 0) { $src | Select-Object -SkipLast (-$count) }
+    else { $src | Select-Object -First $count }
 }
 
 function tail {
     $pipe = @($input)
     $p = ConvertFrom-UnixArgs $args -ValueFlags @('n')
     $count = if ($p.Values['n']) { [int]$p.Values['n'] } else { 10 }
+    # -n +N: output starting at line N (not the last N lines)
+    if ([string]$p.Values['n'] -like '+*') {
+        $skip = [Math]::Max($count - 1, 0)
+        if ($p.Paths.Count) {
+            if ($p.Flags['f']) { Get-Content -Path $p.Paths[0] -Wait | Select-Object -Skip $skip }
+            else { Get-Content -Path $p.Paths[0] | Select-Object -Skip $skip }
+        }
+        else { $pipe | Select-Object -Skip $skip }
+        return
+    }
     if ($p.Paths.Count) {
         if ($p.Flags['f']) { Get-Content -Path $p.Paths[0] -Tail $count -Wait }
         else { Get-Content -Path $p.Paths[0] -Tail $count }
@@ -299,20 +382,36 @@ function xssh {
         $sshArgs = @('-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', '-o', 'TCPKeepAlive=yes') + $sshArgs
     }
 
-    # Remember the destination host so `wput` can default to it. Parse like ssh:
-    # skip options and their values (so -J jump@host is not mistaken for the
-    # destination); the first bare token is the host.
-    $noValueFlags = '-4','-6','-A','-a','-C','-f','-G','-g','-K','-k','-M','-N','-n','-q','-s','-T','-t','-V','-v','-X','-x','-Y','-y'
-    $hostTok = $null
+    # Remember the destination host (and port) so `wput` can default to it.
+    # Parse like ssh: skip options and their values (so -J jump@host is not
+    # mistaken for the destination); the first bare token is the host. An
+    # option token is a cluster of flag letters (-vv, -4A) that ends at the
+    # first value-taking letter, whose value is the rest of the token (-p2222)
+    # or else the next argument (-p 2222).
+    $valueLetters = 'BbcDEeFIiJLlmOoPpQRSWw'
+    $hostTok = $null; $sshPort = $null
     for ($hi = 0; $hi -lt $rest.Count; $hi++) {
         $tok = [string]$rest[$hi]
-        if ($tok.StartsWith('-')) {
-            if ($noValueFlags -notcontains $tok) { $hi++ }  # this flag consumes a value
+        if ($tok -eq '--') { if ($hi + 1 -lt $rest.Count) { $hostTok = [string]$rest[$hi + 1] }; break }
+        if ($tok.Length -gt 1 -and $tok.StartsWith('-')) {
+            for ($ci = 1; $ci -lt $tok.Length; $ci++) {
+                $ch = $tok[$ci]
+                if ($valueLetters.IndexOf($ch) -lt 0) { continue }   # plain flag
+                if ($ci + 1 -lt $tok.Length) { $val = $tok.Substring($ci + 1) }
+                else { $hi++; $val = if ($hi -lt $rest.Count) { [string]$rest[$hi] } else { '' } }
+                if ($ch -ceq 'p') { $sshPort = $val }
+                elseif ($ch -ceq 'o' -and $val -match '^\s*Port\s*[=\s]\s*(\d+)\s*$') { $sshPort = $Matches[1] }
+                break
+            }
             continue
         }
         $hostTok = $tok; break
     }
-    if ($hostTok) { Set-Content -Path (Join-Path $env:TEMP 'limpet-last-ssh.txt') -Value $hostTok -Encoding ascii }
+    # State file: line 1 = host, optional line 2 = port (absent -> wput uses 22).
+    if ($hostTok) {
+        $lastSsh = @($hostTok); if ($sshPort) { $lastSsh += $sshPort }
+        Set-Content -Path (Join-Path $env:TEMP 'limpet-last-ssh.txt') -Value $lastSsh -Encoding ascii
+    }
 
     # Windows Hello auth: if this host was enrolled (Enable-LimpetHello), unseal the
     # limpet key's passphrase with one Hello prompt and feed it to ssh via an
@@ -507,7 +606,7 @@ function xssh {
 # ---------------------------------------------------------------------------
 
 function wput {
-    $files = @(); $to = $null; $dest = ''; $port = 22
+    $files = @(); $to = $null; $dest = ''; $port = 22; $portSet = $false
     $key = (Join-Path $env:USERPROFILE '.ssh\id_ed25519')
 
     $a = @($args); $i = 0
@@ -515,7 +614,7 @@ function wput {
         switch -Regex ($a[$i]) {
             '^-To$'   { $to   = $a[++$i] }
             '^-Dest$' { $dest = $a[++$i] }
-            '^-Port$' { $port = $a[++$i] }
+            '^-Port$' { $port = $a[++$i]; $portSet = $true }
             '^-Key$'  { $key  = $a[++$i] }
             default   { $files += $a[$i] }
         }
@@ -526,7 +625,12 @@ function wput {
 
     if (-not $to) {
         $state = Join-Path $env:TEMP 'limpet-last-ssh.txt'
-        if (Test-Path $state) { $to = (Get-Content $state -Raw).Trim() }
+        if (Test-Path $state) {
+            # line 1 = host; line 2 (written by newer xssh) = port, if non-default
+            $lines = @(Get-Content $state | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($lines.Count) { $to = $lines[0] }
+            if (-not $portSet -and $lines.Count -gt 1) { $port = $lines[1] }
+        }
     }
     if (-not $to) { Write-Error 'wput: no target. Pass -To user@host, or connect with xssh first so wput can reuse that host.'; return }
 
