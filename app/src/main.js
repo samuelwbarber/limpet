@@ -18,6 +18,7 @@ const handoff = require('./handoff');
 const codexImport = require('./codex-import');
 const usage = require('./usage');
 const settings = require('./settings');
+const failover = require('./failover');
 const {
   MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -284,6 +285,7 @@ function flushBackdropAnalysis(sess) {
 
 function sendData(sess, data) {
   recordBackdropOutput(sess, data);
+  limitFailover.output(sess, data);
   sendToSession(sess, 'term:data', { id: sess.id, data });
 }
 
@@ -1023,17 +1025,18 @@ async function carryAcross(current, target, note) {
 // Usage left per signed-in account (usage.js), fetched in parallel and kept for
 // a minute so repeated right-clicks don't hammer the endpoints. Tests and demo
 // recordings point LIMPET_USAGE_FIXTURE at a JSON file of { cmd: result } to
-// stay offline.
+// stay offline. `fresh` names one account to re-read regardless (the one that
+// just hit its limit).
 const usageCache = new Map(); // cmd -> { at, result }
 const USAGE_TTL_MS = 60 * 1000;
-function readAllUsage() {
+function readAllUsage(fresh = null) {
   const signedIn = accounts.describeAccounts(claudeHome(), accountIo).filter((a) => a.loggedIn);
   const fixture = process.env.LIMPET_USAGE_FIXTURE ? accountIo.readJson(process.env.LIMPET_USAGE_FIXTURE) : null;
   const now = Date.now();
   return Promise.all(signedIn.map(async (a) => {
     if (fixture) return { cmd: a.cmd, usage: fixture[a.cmd] || { error: 'no fixture' } };
     const hit = usageCache.get(a.cmd);
-    if (hit && now - hit.at < USAGE_TTL_MS) return { cmd: a.cmd, usage: hit.result };
+    if (hit && now - hit.at < USAGE_TTL_MS && a.cmd !== fresh) return { cmd: a.cmd, usage: hit.result };
     const result = await usage.readUsage(a, accountIo);
     usageCache.set(a.cmd, { at: Date.now(), result });
     return { cmd: a.cmd, usage: result };
@@ -1092,6 +1095,29 @@ async function switchAgent(sess, cmd) {
     sess.switching = false;
   }
 }
+
+// ---- Failover: the tab's agent hit its usage limit (failover.js) ----
+// 'offer' puts up a banner over the tab offering the best other account,
+// 'auto' moves the chat there straight away with a note in the terminal,
+// 'off' does neither. Chosen on the settings page (agents.failoverMode);
+// LIMPET_FAILOVER overrides it (tests).
+function failoverMode() {
+  const env = process.env.LIMPET_FAILOVER;
+  if (failover.MODES.includes(env)) return env;
+  const mode = appSettings().get().agents.failoverMode;
+  return failover.MODES.includes(mode) ? mode : 'offer';
+}
+module.exports.failoverMode = failoverMode;
+
+const limitFailover = failover.createFailover({
+  mode: failoverMode,
+  detect: detectAgentSession,
+  accounts: () => accounts.describeAccounts(claudeHome(), accountIo),
+  usage: readAllUsage,
+  offer: (sess, payload) => sendToSession(sess, 'failover:offer', { id: sess.id, ...payload }),
+  note: (sess, text) => sendData(sess, `\r\n\x1b[33m[limpet] ${text}\x1b[0m\r\n`),
+  switchTo: switchAgent,
+});
 
 function stopSession(sess) {
   if (!sess || !sessions.has(sess.id)) return;
@@ -1274,13 +1300,25 @@ function registerIpc() {
       more: accounts.signInHints(described),
     };
   });
-  ipcMain.handle('claude:usage', (event, id) => (ownedSession(event, id) ? readAllUsage() : []));
+  ipcMain.handle('claude:usage', async (event, id) => {
+    const sess = ownedSession(event, id);
+    if (!sess) return [];
+    const rows = await readAllUsage();
+    limitFailover.usageSeen(sess, rows); // the tab's account at 0%?
+    return rows;
+  });
   ipcMain.handle('claude:session', async (event, id) => {
     const sess = ownedSession(event, id);
     const found = sess ? await detectAgentSession(sess) : null;
+    if (sess) limitFailover.sessionSeen(sess, found);
     return found ? { cmd: found.cmd, kind: found.kind, sessionId: found.sessionId, status: found.status } : null;
   });
-  ipcMain.handle('claude:switch', (event, { id, cmd } = {}) => switchAgent(ownedSession(event, id), String(cmd || '')));
+  ipcMain.handle('claude:switch', async (event, { id, cmd } = {}) => {
+    const sess = ownedSession(event, id);
+    const result = await switchAgent(sess, String(cmd || ''));
+    if (result.ok) limitFailover.switched(sess);
+    return result;
+  });
   ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot, title } = {}) => {
     const sess = ownedSession(event, id);
     if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };

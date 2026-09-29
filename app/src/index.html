@@ -99,6 +99,23 @@
     }
     .account-menu .gen:hover { background: #313244; color: #cdd6f4; }
     .account-menu .gen.selected { border-color: #a6e3a1; color: #a6e3a1; }
+    /* the tab's agent hit its usage limit: offer another account (failover-banner.js) */
+    .failover-banner {
+      position: absolute; right: 14px; bottom: 14px; z-index: 6; width: min(360px, calc(100% - 28px));
+      padding: 10px 12px; border-radius: 8px; box-sizing: border-box; user-select: none;
+      background: #181825; border: 1px solid #313244; border-left: 3px solid #f9e2af; color: #cdd6f4;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45); font: 12px 'Cascadia Mono', Consolas, monospace;
+    }
+    .failover-banner .text { line-height: 1.45; overflow-wrap: anywhere; }
+    .failover-banner .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+    .failover-banner button {
+      font: inherit; color: #cdd6f4; background: transparent; cursor: pointer;
+      border: 1px solid #45475a; border-radius: 6px; padding: 2px 10px;
+    }
+    .failover-banner button:hover { background: #313244; }
+    .failover-banner button.move { background: #89b4fa; border-color: #89b4fa; color: #11111b; }
+    .failover-banner button.move:hover { background: #b4befe; border-color: #b4befe; }
+    .failover-banner.busy button { pointer-events: none; opacity: 0.55; }
     /* Generative picked before its model is installed: ask, then show progress */
     .setup-overlay {
       position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
@@ -155,5 +172,6 @@
   <script src="predict.js"></script>
   <script src="settings-ui.js"></script>
   <script src="renderer.js"></script>
+  <script src="failover-banner.js"></script>
 </body>
 </html>

@@ -31,4 +31,5 @@ contextBridge.exposeInMainWorld('limpet', {
   getSettingsSync: () => ipcRenderer.sendSync('settings:get-sync'),
   setSettings: (partial) => ipcRenderer.invoke('settings:set', partial),
   onSettingsChanged: (cb) => ipcRenderer.on('settings:changed', (_e, values) => cb(values)),
+  onFailoverOffer: (cb) => ipcRenderer.on('failover:offer', (_e, p) => cb(p)),
 });

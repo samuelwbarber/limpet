@@ -227,6 +227,19 @@ stored login, from the same endpoints `/usage` (Claude) and `/status` (Codex)
 use, and nothing is written back; an expired login shows `usage n/a` until you
 run that account again.
 
+limpet also notices on its own. When the agent in a tab prints its limit
+message (Claude Code's `You've hit your session limit · resets 3pm`, Codex's
+`You've hit your usage limit`), or the tab's account shows 0% left when usage
+is read, a small banner in the tab's corner offers the best other account:
+`claude1 hit its 5-hour limit (resets 3:00 pm). Move this chat to claude2 (5h
+88% left)?` **Move** is the same move as picking it in the menu; **Not now**
+or Esc hides it until the next limit. It prefers another account of the same
+agent with the most left on the window that ran out, then another agent's,
+and only then one whose usage limit can't be read (agy, Copilot: `usage
+unknown`). The banner never takes the keyboard from the terminal. In the
+settings page (Ctrl+,), **When an account runs out** switches between this
+offer, moving the chat automatically, or doing nothing.
+
 ## Install
 
 ```powershell
