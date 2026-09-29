@@ -140,6 +140,25 @@ async function type(page, text) {
   check('untokened download is refused', !!refused && !fs.existsSync(dl));
   fs.rmSync(dl, { force: true });
 
+  // ---- settings page: Ctrl+, opens it, a font size change reaches the terminal ----
+  await page.locator('.term-pane.active .xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+Comma');
+  check('Ctrl+, opens the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 1), 5000)));
+  const fontSize = () => page.evaluate(() => tabs.get(activeId).term.options.fontSize);
+  const sizeBefore = await fontSize();
+  await page.locator('#setting-terminal-fontSize').fill(String(sizeBefore + 4));
+  await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
+  check('changing the font size updates the terminal', !!(await waitFor(async () => (await fontSize()) === sizeBefore + 4, 5000)));
+  await page.locator('#setting-terminal-fontSize').fill('99');
+  await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
+  check('an out-of-range font size is refused with a reason', !!(await waitFor(async () => /between 8 and 32/.test(await page.locator('#setting-terminal-fontSize-error').textContent()), 5000)) &&
+    (await fontSize()) === sizeBefore + 4);
+  await page.locator('.settings-section:has(#setting-terminal-fontSize) .settings-reset').click();
+  check('reset puts the default font size back', !!(await waitFor(async () => (await fontSize()) === 14, 5000)));
+  await page.keyboard.press('Escape');
+  check('Esc closes the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 0), 5000)));
+  check('focus goes back to the terminal', await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')));
+
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
 

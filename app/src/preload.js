@@ -27,4 +27,8 @@ contextBridge.exposeInMainWorld('limpet', {
   claudeUsage: (id) => ipcRenderer.invoke('claude:usage', id),
   claudeSession: (id) => ipcRenderer.invoke('claude:session', id),
   claudeSwitch: (id, cmd) => ipcRenderer.invoke('claude:switch', { id, cmd }),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  getSettingsSync: () => ipcRenderer.sendSync('settings:get-sync'),
+  setSettings: (partial) => ipcRenderer.invoke('settings:set', partial),
+  onSettingsChanged: (cb) => ipcRenderer.on('settings:changed', (_e, values) => cb(values)),
 });

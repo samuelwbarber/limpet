@@ -24,13 +24,56 @@ a Windows binary for.
 ## Tabs, clipboard, and links
 
 Use `Ctrl+Shift+T` for a new tab, `Ctrl+Shift+W` to close one, and `Ctrl+Tab`
-to cycle. Drag a tab beyond the current window to move its live shell into a
+to cycle (all rebindable in [Settings](#settings)). Drag a tab beyond the current window to move its live shell into a
 new limpet window; the PTY is handed over rather than restarted.
 
 `Ctrl+V` and `Ctrl+Shift+V` paste once, while `Ctrl+C` copies selected terminal
 text and remains the normal interrupt when nothing is selected. Plain web URLs
 and OSC 8 hyperlinks open in the Windows default browser, including agent login
 links.
+
+## Settings
+
+`Ctrl+,` (or **Settings…** at the foot of a tab's right-click menu) opens the
+settings page over the terminal. Changes apply as you make them, in every
+window: the font, size, line height, cursor and scrollback of every open tab
+change live, and a new tab opens with them. A value limpet can't use (a font
+size of 40, a reels page that isn't `https:`/`http:`, a shortcut another action
+already has) is refused with the reason under the field and the old value
+stays. Each section has **Reset to defaults**; `Esc` closes the page and hands
+the keyboard back to the terminal.
+
+| Section | Setting | Default |
+| --- | --- | --- |
+| Terminal | Font family | `'Cascadia Mono', Consolas, monospace` |
+| | Font size | 14 (8–32) |
+| | Line height | 1 (1–2) |
+| | Cursor style | block (block, underline, bar) |
+| | Blinking cursor | on |
+| | Scrollback lines | 1000 (1000–100000) |
+| Behaviour | Predictive echo | on |
+| | Copy on select | off |
+| Reels | Default page | `https://www.instagram.com/reels/` |
+| Generative backdrop | First picture after | 3000 characters of output |
+| | New picture after | 9000 more characters |
+| | At most one new picture every | 10 minutes |
+| Keyboard shortcuts | New tab / Close tab | `Ctrl+Shift+T` / `Ctrl+Shift+W` |
+| | Next / Previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| | Open settings | `Ctrl+,` |
+| Agents | When an account runs out | offer (offer, auto, off) |
+
+To rebind a shortcut, focus its field and press the new combination
+(Backspace unbinds it). It needs Ctrl or Alt, or an F key, so it can't swallow
+typing, and `Ctrl+C`, `Ctrl+V`, `Ctrl+Shift+C` and `Ctrl+Shift+V` stay copy and
+paste. The defaults are what limpet did before there was a settings page.
+
+The settings live in `%APPDATA%\limpet\settings.json`, which holds only what
+differs from the defaults and is replaced whole on each save (written beside it,
+then renamed over it). A file that isn't valid JSON is set aside as
+`settings.json.bad` and the defaults are used; a value in it that limpet
+wouldn't accept from the page falls back to its default. The store is
+`src/settings.js` (unit-tested in `tests/settings.test.js`), the page
+`src/settings-ui.js` and `src/settings.css`.
 
 ## Local conversation backdrops
 
@@ -64,7 +107,8 @@ calculated. Ambiguous fallback topic changes keep the existing scene until the
 new subject is clear. Neither terminal text, the title, nor the generated prompt
 is sent to an API. The first background is made after roughly 3,000 characters
 of output. Updates require another 9,000 characters and are limited to one every
-ten minutes, so the generator does not continually compete with the shell.
+ten minutes, so the generator does not continually compete with the shell (all
+three are adjustable in [Settings](#settings)).
 
 ## Drag-and-drop upload
 

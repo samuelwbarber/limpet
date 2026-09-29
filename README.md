@@ -97,6 +97,13 @@ Because sometimes the build takes a while. `reels` docks a vertical feed
 (Instagram Reels by default, or any URL you pass) on the right side of the
 terminal. `reels` again to dismiss.
 
+## Settings
+
+`Ctrl+,` in the app (or **Settings…** in a tab's right-click menu) opens a
+settings page: font, size, line height, cursor, scrollback, predictive echo,
+copy on select, the reels page, the backdrop pace and the keyboard shortcuts.
+Changes apply live to every tab. Details in [`app/README.md`](app/README.md#settings).
+
 ## Backgrounds
 
 Right-click a tab and pick a background: the standard limpet colour (the

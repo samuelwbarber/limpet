@@ -70,7 +70,7 @@ jobs:
       - name: Install dependencies (validates native modules on Windows)
         run: npm ci --no-audit --no-fund
       - name: Parse-check sources
-        run: foreach ($f in 'src/main.js', 'src/preload.js', 'src/renderer.js', 'src/protocol.js', 'src/predict.js', 'src/accounts.js', 'src/agent-scan.js', 'src/handoff.js', 'src/codex-import.js', 'src/usage.js', 'src/backdrop.js') { node --check $f; if ($LASTEXITCODE) { exit 1 } }
+        run: Get-ChildItem src -Filter *.js | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE) { exit 1 } }
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download)

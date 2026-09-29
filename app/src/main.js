@@ -17,8 +17,9 @@ const agentScan = require('./agent-scan');
 const handoff = require('./handoff');
 const codexImport = require('./codex-import');
 const usage = require('./usage');
+const settings = require('./settings');
 const {
-  MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
+  MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
   backendStatus, outputPath, generateLocalImage, setupProgress, runSetup, LOCAL_AI_DIR,
 } = require('./backdrop');
@@ -700,6 +701,25 @@ async function injectFiles(sess, paths) {
   return { ok: true, sent };
 }
 
+// ---- Settings (settings.js; the page itself is settings-ui.js) ----
+// One store for all windows, in userData/settings.json. Every window hears a
+// change so its terminals pick it up live.
+let settingsStore = null;
+function appSettings() {
+  if (!settingsStore) {
+    settingsStore = settings.createStore(path.join(app.getPath('userData'), 'settings.json'));
+    settingsStore.load();
+    settingsStore.subscribe((values) => broadcast('settings:changed', values));
+  }
+  return settingsStore;
+}
+
+// Backdrop thresholds, read at each decision so a change applies at once.
+function backdropLimits() {
+  const b = appSettings().get().backdrop;
+  return { firstChars: b.firstChars, updateChars: b.updateChars, minMs: b.minIntervalMinutes * 60 * 1000 };
+}
+
 function backdropStatus(sess, state, message = '') {
   sendToSession(sess, 'term:backdrop-status', { id: sess.id, state, message });
 }
@@ -710,9 +730,10 @@ function considerBackdrop(sess, snapshot, conversationTitle = '') {
   if (!backend.ready) return { status: 'not-installed' };
   if (sess.backdropQueued) return { status: 'busy' };
   const now = Date.now();
-  const nextAt = sess.backdropNextAt || MIN_OUTPUT_CHARS;
+  const limits = backdropLimits();
+  const nextAt = sess.backdropNextAt || limits.firstChars;
   if ((sess.backdropOutputChars || 0) < nextAt) return { status: 'waiting' };
-  if (sess.backdropLastAt && now - sess.backdropLastAt < MIN_UPDATE_MS) return { status: 'cooldown' };
+  if (sess.backdropLastAt && now - sess.backdropLastAt < limits.minMs) return { status: 'cooldown' };
   flushBackdropAnalysis(sess);
   const plan = buildBackdropPlan(snapshot, sess.backdropProfile, conversationTitle);
   if (!plan) return { status: 'not-enough-context' };
@@ -724,7 +745,7 @@ function considerBackdrop(sess, snapshot, conversationTitle = '') {
   sess.backdropQueued = true;
   // Reserve the next interval as soon as the job enters the queue, preventing
   // repeated idle snapshots from adding duplicate jobs.
-  sess.backdropNextAt = (sess.backdropOutputChars || 0) + UPDATE_OUTPUT_CHARS;
+  sess.backdropNextAt = (sess.backdropOutputChars || 0) + limits.updateChars;
   backdropQueue.push({ sessionId: sess.id, prompt: plan.prompt, sceneKey: plan.sceneKey });
   backdropStatus(sess, 'generating');
   runBackdropQueue();
@@ -1199,7 +1220,7 @@ function registerIpc() {
     const sess = {
       id: nextSessionId++, proc: null, ownerId: event.sender.id, ready: false,
       uiPending: [], cols: 80, rows: 24, outPending: '', flushTimer: null, exited: false,
-      backdropOutputChars: 0, backdropNextAt: MIN_OUTPUT_CHARS, backdropLastAt: 0,
+      backdropOutputChars: 0, backdropNextAt: 0 /* 0: the first-picture setting */, backdropLastAt: 0,
       backdropQueued: false, backdropPath: null, backdropDataUrl: null,
       backdropProfile: createTopicProfile(), backdropAnalysisBuffer: '', backdropSceneKey: null,
     };
@@ -1268,6 +1289,19 @@ function registerIpc() {
   ipcMain.handle('backdrop:setup-state', () => backdropSetupState());
   ipcMain.handle('backdrop:install', () => installBackdrop());
   ipcMain.handle('backdrop:cancel', () => cancelBackdropSetup());
+  ipcMain.handle('settings:get', () => ({ values: appSettings().get(), schema: appSettings().schema() }));
+  // Sync twin for the renderer's first paint, so a new tab opens at the
+  // chosen font rather than flicking over to it.
+  ipcMain.on('settings:get-sync', (event) => { event.returnValue = { values: appSettings().get(), schema: appSettings().schema() }; });
+  ipcMain.handle('settings:set', (_e, partial) => {
+    try {
+      const { ok, errors } = appSettings().set(partial);
+      return { ok, errors };
+    } catch (e) {
+      console.error('[limpet] saving settings failed:', e.message);
+      return { ok: false, errors: { '': `couldn't save: ${e.message}` } };
+    }
+  });
 }
 
 registerIpc();
