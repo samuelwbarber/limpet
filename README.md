@@ -250,7 +250,12 @@ npm start              # or launch "limpet" from the Start Menu after install.ps
 
 In-session `peek`, `download` and `upload` talk to the app over private
 terminal escape sequences, so they tunnel through SSH with no server-side
-setup.
+setup. Anything printed to the terminal could contain those sequences (a
+`cat`-ed file, a hostile host), so the app only acts on `download`, `upload`
+and `reels` requests that carry a per-install secret, which `xssh` hands to
+the helpers it injects. `upload` also asks you to confirm each file before
+it leaves your PC, and a downloaded folder always unpacks into a new folder
+in Downloads, never over existing files.
 
 ## Repo layout
 

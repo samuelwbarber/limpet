@@ -384,6 +384,9 @@ function xssh {
         $scriptPath = Join-Path $PSScriptRoot 'limpet-remote.sh'
         if (Test-Path $scriptPath) {
             $scriptRaw = Get-Content $scriptPath -Raw
+            # Inside the limpet app, hand the helpers the app's secret so it
+            # trusts their download/upload/reels requests (see limpet-remote.sh).
+            if ($env:LIMPET_TOKEN -match '^[0-9a-f]{32}$') { $scriptRaw = "LIMPET_TOKEN=$($env:LIMPET_TOKEN)`n" + $scriptRaw }
             $scriptBytes = [Text.Encoding]::UTF8.GetBytes($scriptRaw)
             # gzip BEFORE base64. The bootstrap is one ssh.exe argument, and a long
             # single arg handed through PowerShell -> ssh.exe gets a newline injected
@@ -409,18 +412,22 @@ function xssh {
                 # (bash --rcfile $f), exactly like the -NoResume path -- NOT via
                 # `export -f` env inheritance, which a pre-existing tmux server
                 # ignores (it keeps its own start-time env, so a new session would
-                # get a stale peek). Each session is stamped with the helper version;
-                # a reconnect resumes a matching session but recreates a stale one, so
-                # a helper update always takes effect. -d detaches the dropped client.
+                # get a stale peek). The session is named for the helper version
+                # (limpet-<hash>, token included), so a reconnect resumes the session
+                # running these exact helpers, and a helper update (or another PC)
+                # starts its own session beside the old one. Never kill a session:
+                # it may be running someone's work (older ones stay reachable with
+                # `tmux ls` / `tmux attach -t <name>`). `=` makes -t match the name
+                # exactly, not as a prefix. -d detaches the dropped client.
                 # NOTE: this whole string is one ssh.exe argument. Windows/PowerShell
                 # mangle BOTH embedded double AND single quotes when handing a native
                 # exe a long arg (single quotes made the remote `bash -c` choke on an
                 # unbalanced quote -> "unexpected EOF" -> dead session). So the template
-                # contains NO quotes of either kind: `case` not `[ = ]`; the tmux command
+                # contains NO quotes of either kind; the tmux command
                 # is a bare unquoted `bash --rcfile $f -i` (tmux execs it directly, no
                 # `exec`); and __B64__ is left UNQUOTED -- the base64 alphabet
                 # (A-Za-z0-9+/=) has no shell-special or glob chars, so it needs none.
-                $tpl = 'f=$(mktemp); printf %s __B64__ | base64 -d | gunzip > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then if tmux has-session -t limpet 2>/dev/null; then v=$(tmux show-environment -t limpet _LIMPET_VER 2>/dev/null); case ${v#*=} in __VER__) ;; *) tmux kill-session -t limpet 2>/dev/null ;; esac; fi; if tmux has-session -t limpet 2>/dev/null; then rm -f $f; else tmux new -d -s limpet bash --rcfile $f -i; tmux setenv -t limpet _LIMPET_VER __VER__; fi; exec tmux attach -d -t limpet; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
+                $tpl = 'f=$(mktemp); printf %s __B64__ | base64 -d | gunzip > $f; export LIMPET_SH=$f; if command -v tmux >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then s=limpet-__VER__; if tmux has-session -t =$s 2>/dev/null; then rm -f $f; else tmux new -d -s $s bash --rcfile $f -i; fi; exec tmux attach -d -t =$s; elif command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; rm -f $f; else ENV=$f sh -i; rm -f $f; fi'
             }
             else {
                 $tpl = 'f=$(mktemp); printf %s __B64__ | base64 -d | gunzip > $f; export LIMPET_SH=$f; if command -v bash >/dev/null 2>&1; then bash --rcfile $f -i; else ENV=$f sh -i; fi; rm -f $f'
@@ -587,7 +594,7 @@ function reels {
     $url = if ($args.Count) { [string]$args[0] } else { '' }
     $u64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($url))
     $e = [char]27; $bel = [char]7
-    Write-Host -NoNewline ("{0}]5379;reels;{1}{2}" -f $e, $u64, $bel)
+    Write-Host -NoNewline ("{0}]5379;reels;{1};{2}{3}" -f $e, $u64, $env:LIMPET_TOKEN, $bel)
 }
 
 # ---------------------------------------------------------------------------

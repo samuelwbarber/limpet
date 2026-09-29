@@ -127,10 +127,17 @@ async function type(page, text) {
   fs.rmSync(dl, { force: true });
   // header (name "limpet-ci.txt", kind file), one data chunk ("hello limpet"), finish
   const E = '$([char]27)'; const B = '$([char]7)';
-  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;" + $env:LIMPET_TOKEN + "${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
   const saved = await waitFor(() => fs.existsSync(dl) && fs.readFileSync(dl, 'utf8') === 'hello limpet', 8000);
   check('streamed download saves to Downloads', !!saved);
   check('streamed download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
+  fs.rmSync(dl, { force: true });
+
+  // ...but only when it carries the app's token: output that merely contains the
+  // sequence (a `cat`-ed file, a hostile host) must not write to Downloads.
+  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;0000${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  const refused = await waitFor(async () => (await screenText(page)).includes('ignored a download'), 8000);
+  check('untokened download is refused', !!refused && !fs.existsSync(dl));
   fs.rmSync(dl, { force: true });
 
   check('no renderer page errors', pageErrors.length === 0);

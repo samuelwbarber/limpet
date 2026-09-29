@@ -8,6 +8,11 @@
 
 _limpet_b64() { base64 | tr -d '\n'; }
 
+# LIMPET_TOKEN is the limpet app's secret. xssh puts a `LIMPET_TOKEN=...` line
+# above this script when it injects it; the app acts on download/upload/reels
+# only when they carry it, so text that merely contains our escape sequences
+# (a `cat`-ed file, a hostile server) can't trigger them.
+
 # Emit a raw escape sequence to the terminal. Inside tmux the outer terminal
 # (the limpet app) never sees our OSC sequences -- tmux swallows anything it
 # doesn't recognise -- so wrap them in tmux's passthrough (DCS tmux; ... ST,
@@ -96,7 +101,7 @@ download() {
     if [ ! -e "$p" ]; then echo "download: $p: not found" >&2; continue; fi
     if [ -d "$p" ]; then kind=dir; else kind=file; fi
     name=${p%/}; name=${name##*/}
-    _limpet_emit "$(printf '\033]5379;dl;h;%s;%s\007' "$(printf '%s' "$name" | _limpet_b64)" "$kind")"
+    _limpet_emit "$(printf '\033]5379;dl;h;%s;%s;%s\007' "$(printf '%s' "$name" | _limpet_b64)" "$kind" "${LIMPET_TOKEN:-}")"
     { if [ "$kind" = dir ]; then tar cf - -C "$(dirname "$p")" "$(basename "$p")"; else cat "$p"; fi; } \
       | base64 | tr -d '\n' | fold -w 262144 \
       | awk -v tmux="${TMUX:+1}" '{ if (tmux) printf "\033Ptmux;\033\033]5379;dl;d;%s\007\033\\", $0; else printf "\033]5379;dl;d;%s\007", $0 }'
@@ -106,19 +111,20 @@ download() {
 }
 
 # Ask the limpet app to push a local PC file into the current remote directory.
+# The app asks the user to confirm each file first.
 upload() {
   local p
   if [ "$#" -eq 0 ]; then echo "usage: upload <local-path-on-pc> [...]" >&2; return 1; fi
   for p in "$@"; do
-    _limpet_emit "$(printf '\033]5379;upload;%s;%s\007' \
-      "$(printf '%s' "$p" | _limpet_b64)" "$(printf '%s' "$PWD" | _limpet_b64)")"
+    _limpet_emit "$(printf '\033]5379;upload;%s;%s;%s\007' \
+      "$(printf '%s' "$p" | _limpet_b64)" "$(printf '%s' "$PWD" | _limpet_b64)" "${LIMPET_TOKEN:-}")"
   done
 }
 
 # Dock a webpage on the right side of the limpet window. No args toggles the
 # Instagram reels feed; pass a URL to open something else.
 reels() {
-  _limpet_emit "$(printf '\033]5379;reels;%s\007' "$(printf '%s' "${1:-}" | _limpet_b64)")"
+  _limpet_emit "$(printf '\033]5379;reels;%s;%s\007' "$(printf '%s' "${1:-}" | _limpet_b64)" "${LIMPET_TOKEN:-}")"
 }
 
 # Hop to another host WITH the limpet helpers: `xssh gpu19` from a login node
@@ -140,5 +146,6 @@ xssh() {
 # environment, BASH_FUNC_* included, to the compute node).
 if [ -n "$BASH_VERSION" ]; then
   export _LIMPET_ESC
+  [ -n "${LIMPET_TOKEN:-}" ] && export LIMPET_TOKEN
   export -f _limpet_b64 _limpet_emit _limpet_img_rows peek download upload reels xssh 2>/dev/null
 fi

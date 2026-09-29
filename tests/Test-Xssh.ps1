@@ -35,9 +35,10 @@ try {
     $c = Invoke-Combo @()
     Check 'default: injects the integration'    ($c -like '*base64 -d*')
     Check 'default: decompresses with gunzip'   ($c -like '*base64 -d | gunzip*')
-    Check 'default: resumes the tmux "limpet" session' ($c -like '*-s limpet*' -and $c -like '*tmux attach -d -t limpet*')
+    Check 'default: resumes the tmux "limpet-<ver>" session' ($c -like '*tmux new -d -s $s *' -and $c -like '*tmux attach -d -t =$s*')
     Check 'default: session sources the fresh script'  ($c -like '*bash --rcfile $f -i*')
-    Check 'default: version-stamps the session'        ($c -like '*_LIMPET_VER*')
+    Check 'default: names the session for the helper version' ($c -match 's=limpet-[0-9a-f]{12};')
+    Check 'default: never kills an existing session'  ($c -notlike '*kill-session*')
     Check 'default: adds keepalive options'     ($c -like '*ServerAliveInterval=15*')
     Check 'default: forces a tty (-t)'          ($c -like '*-t *')
     # Regression guard: a long single arg through PowerShell -> ssh.exe gets a

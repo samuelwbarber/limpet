@@ -166,8 +166,11 @@ try {
     Check 'peak is peek' ((Get-HostOut { peak "$d\tall.png" }) -match '\]1337;')
 
     # ---- reels protocol ----
+    $savedTok = $env:LIMPET_TOKEN; $env:LIMPET_TOKEN = '0123456789abcdef0123456789abcdef'
     $rl = Get-HostOut { reels 'https://x' }
+    $env:LIMPET_TOKEN = $savedTok
     Check 'reels emits the OSC 5379 verb' ($rl -match '\]5379;reels;aHR0cHM6Ly94')
+    Check 'reels carries the app token' ($rl -match ';0123456789abcdef0123456789abcdef')
 
     # ---- wput / xssh argument handling ----
     Check-Throws 'wput with no files errors' { wput } '*no files*'
