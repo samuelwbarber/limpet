@@ -8,6 +8,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { unpacked } = require('./paths');
 
 const realPath = (p) => { try { return fs.realpathSync.native(p); } catch (_) { return null; } };
 
@@ -204,7 +205,7 @@ function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
 // lock-holders.ps1 (about a second, the files asked about side by side).
 async function fileHolders(paths) {
   if (!paths.length) return {};
-  const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'lock-holders.ps1')],
+  const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', unpacked(path.join(__dirname, 'lock-holders.ps1'))],
     { env: { ...process.env, LIMPET_LOCKS: JSON.stringify(paths) }, timeoutMs: 20000 });
   try {
     const map = JSON.parse(out);

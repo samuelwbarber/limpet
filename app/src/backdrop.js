@@ -4,11 +4,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { PACKAGED, unpacked, userData } = require('./paths');
 
 // LIMPET_LOCAL_AI_DIR and LIMPET_BACKDROP_SETUP let the tests install into a
-// scratch folder with a stand-in setup script.
-const LOCAL_AI_DIR = process.env.LIMPET_LOCAL_AI_DIR || path.join(__dirname, '..', 'local-ai');
-const SETUP_SCRIPT = process.env.LIMPET_BACKDROP_SETUP || path.join(__dirname, '..', 'scripts', 'setup-local-backdrop.ps1');
+// scratch folder with a stand-in setup script. The installed app can't write
+// to its own folder, so it keeps the model in its per-user data instead.
+const LOCAL_AI_DIR = process.env.LIMPET_LOCAL_AI_DIR ||
+  (PACKAGED ? userData('local-ai') : path.join(__dirname, '..', 'local-ai'));
+const SETUP_SCRIPT = process.env.LIMPET_BACKDROP_SETUP ||
+  unpacked(path.join(__dirname, '..', 'scripts', 'setup-local-backdrop.ps1'));
 const SD_EXE = path.join(LOCAL_AI_DIR, 'bin', 'sd-cli.exe');
 const MODEL = path.join(LOCAL_AI_DIR, 'models', 'sdxs-512-tinySDdistilled_Q8_0.gguf');
 const MODEL_BYTES = 682847200; // the pinned model's size, as the setup script checks it

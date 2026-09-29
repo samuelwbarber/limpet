@@ -3,9 +3,11 @@
   "productName": "limpet",
   "version": "0.1.0",
   "description": "limpet - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
+  "author": "samuelwbarber",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "dist": "electron-builder --win --publish never",
     "demo:backdrop": "node scripts/show-backdrop-demo.js",
     "setup:backdrop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-backdrop.ps1",
     "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js tests/accounts.test.js tests/handoff.test.js tests/codex-import.test.js tests/usage.test.js tests/osc.test.js tests/settings.test.js tests/failover.test.js tests/remote-copy.test.js",
@@ -14,6 +16,7 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "playwright-core": "^1.63.0"
   },
   "dependencies": {
@@ -21,7 +24,62 @@
     "@xterm/addon-image": "^0.9.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
+    "electron-updater": "^6.8.9",
     "node-pty": "^1.1.0",
     "ssh2": "^1.17.0"
+  },
+  "build": {
+    "appId": "io.github.samuelwbarber.limpet",
+    "productName": "limpet",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "scripts/setup-local-backdrop.ps1",
+      "build/limpet.ico",
+      "!**/*.pdb",
+      "!node_modules/node-pty/{src,deps,third_party,scripts}/**",
+      "!node_modules/node-pty/prebuilds/darwin-*/**"
+    ],
+    "asarUnpack": [
+      "src/lock-holders.ps1",
+      "scripts/setup-local-backdrop.ps1",
+      "node_modules/node-pty/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../shell",
+        "to": "shell"
+      }
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/limpet.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "limpet",
+      "runAfterFinish": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "samuelwbarber",
+      "repo": "limpet"
+    }
   }
 }

@@ -20,6 +20,7 @@ const usage = require('./usage');
 const settings = require('./settings');
 const failover = require('./failover');
 const remoteCopy = require('./remote-copy');
+const updater = require('./updater');
 const {
   MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -28,12 +29,19 @@ const {
 
 let ptyLib = null;
 try {
-  ptyLib = require('node-pty');
+  // Installed, node-pty loads from app.asar.unpacked: its ConPTY worker script
+  // and forked helper have to be real files, not asar entries.
+  ptyLib = require(app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'node-pty')
+    : 'node-pty');
 } catch (e) {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
 
-const LIMPET_MODULE = path.join(__dirname, '..', '..', 'shell', 'Limpet.psd1');
+// The installer ships shell/ as resources\shell (extraResources in package.json).
+const LIMPET_MODULE = app.isPackaged
+  ? path.join(process.resourcesPath, 'shell', 'Limpet.psd1')
+  : path.join(__dirname, '..', '..', 'shell', 'Limpet.psd1');
 
 // Injected into the docked reels page to make the reel float on a
 // terminal-matching background with no scrollbars or nav/chat chrome. Instagram's
@@ -1380,7 +1388,7 @@ function registerIpc() {
 }
 
 registerIpc();
-app.whenReady().then(() => createWindow());
+app.whenReady().then(() => { createWindow(); updater.start(); });
 app.on('before-quit', () => {
   if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
   cancelBackdropSetup();

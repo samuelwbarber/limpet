@@ -21,6 +21,41 @@ editing.
 Electron downloads its own binary the first time it runs (Electron 42 dropped
 the install-time download), so the first `npm start` takes a little longer.
 
+## Building an installer
+
+```powershell
+npm install
+npm run dist
+```
+
+This builds a per-user NSIS installer with electron-builder, for x64 and
+arm64 in one `limpet-Setup-<version>.exe`, in `app\dist`. It installs under
+`%LOCALAPPDATA%\Programs\limpet` without admin rights and adds Start Menu and
+desktop shortcuts. The Limpet module ships inside it (`resources\shell`), so
+the installed app doesn't need this repo. `dist` never uploads anything
+(`--publish never`).
+
+The installer is unsigned unless these are set when you run `npm run dist`, in
+which case electron-builder signs the app and installer with that certificate:
+
+- `WIN_CSC_LINK`: path, `file://` URL or base64 of a `.pfx`/`.p12` code-signing certificate
+- `WIN_CSC_KEY_PASSWORD`: its password
+
+An unsigned installer works, but SmartScreen warns before running it.
+
+## Auto-update
+
+The installed app (not `npm start`) checks the GitHub Releases of
+`samuelwbarber/limpet` about 15 seconds after it opens and every 6 hours after
+that. When a release for a newer version carries electron-builder's update
+files (`latest.yml` plus the installer and its `.blockmap`, all written to
+`app\dist` by `npm run dist`), limpet downloads it in the background and then
+asks whether to restart now; **Later** installs it the next time limpet quits.
+Being offline, or there being no such release yet, is only logged. Publishing
+those releases is a separate step for the maintainer to set up; nothing in this
+repo uploads them. The feed is `build.publish` in `package.json`, and the
+update client is `src/updater.js`.
+
 ## Tabs, clipboard, and links
 
 Use `Ctrl+Shift+T` for a new tab, `Ctrl+Shift+W` to close one, and `Ctrl+Tab`
@@ -85,7 +120,7 @@ recognizable slot machine. Each tab has its own scene, and a detached tab keeps
 its scene.
 
 Setup is a one-time download of about 675 MB (the generator plus the 651 MB
-model) into `app\local-ai`. Picking **Generative** from the tab menu before it
+model) into `app\local-ai` (the installed app uses `%APPDATA%\limpet\local-ai`). Picking **Generative** from the tab menu before it
 is installed asks whether to install it, then shows progress with a Cancel
 button (a cancelled download resumes next time). The same setup from a prompt:
 

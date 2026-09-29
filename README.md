@@ -257,6 +257,10 @@ npm install
 npm start              # or launch "limpet" from the Start Menu after install.ps1
 ```
 
+- To get a normal Windows installer instead, run `npm run dist` in `app/`: it
+  writes a per-user `limpet-Setup-<version>.exe` (with the module bundled) to
+  `app\dist`, and the installed app keeps itself up to date from GitHub
+  Releases. See [app/README.md](app/README.md#building-an-installer).
 - The shell module (`shell/`) works in any terminal: Windows Terminal,
   WezTerm, VS Code. `install.ps1` adds it to your profile and creates a Start
   Menu entry for the app.
