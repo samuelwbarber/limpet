@@ -137,6 +137,37 @@ try {
     rm -f "$d\ghost.txt"   # missing + -f: must be silent, like the real rm
     Check 'rm -f on a missing file stays quiet' $true
 
+    New-Item -ItemType Directory -Path "$d\keepdir" -Force | Out-Null
+    Check-Throws 'rm without -r refuses a directory' { rm "$d\keepdir" } '*Is a directory*'
+    Check 'rm without -r leaves the directory' (Test-Path "$d\keepdir")
+
+    [IO.File]::WriteAllText("$d\br[1].txt", 'x')   # [ ] must not be a wildcard
+    rm "$d\br[1].txt"
+    Check 'rm removes a literal name with [ ]' (-not (Test-Path -LiteralPath "$d\br[1].txt"))
+
+    # rm -r must delete a junction as a link, never empty its target (5.1's
+    # Remove-Item -Recurse follows junctions, e.g. ~/.claude-N/projects).
+    if ($env:OS -eq 'Windows_NT') {
+        New-Item -ItemType Directory -Path "$d\jtarget" -Force | Out-Null
+        'shared' | Out-File "$d\jtarget\keep.txt" -Encoding utf8
+        New-Item -ItemType Directory -Path "$d\jhost" -Force | Out-Null
+        New-Item -ItemType Junction -Path "$d\jhost\link" -Value "$d\jtarget" | Out-Null
+        New-Item -ItemType Junction -Path "$d\jtop" -Value "$d\jtarget" | Out-Null
+        rm -rf "$d\jhost"
+        Check 'rm -rf removes a tree holding a junction' (-not (Test-Path "$d\jhost"))
+        Check 'rm -rf leaves the junction target intact' (Test-Path "$d\jtarget\keep.txt")
+        rm "$d\jtop"
+        Check 'rm on a junction removes only the link' ((-not (Test-Path "$d\jtop")) -and (Test-Path "$d\jtarget\keep.txt"))
+    }
+
+    'old' | Out-File "$d\cn.txt" -Encoding utf8
+    'new' | Out-File "$d\cn2.txt" -Encoding utf8
+    cp -n "$d\cn2.txt" "$d\cn.txt"
+    Check 'cp -n does not overwrite' ((Get-Content "$d\cn.txt") -eq 'old')
+
+    $from2 = @(tail -n +2 "$d\a.txt")
+    Check 'tail -n +2 starts at line 2' ($from2.Count -eq 4 -and $from2[0] -eq 'line2')
+
     $duo = du "$d"
     Check 'du reports a size for a path' ($duo.Path -eq "$d" -and $duo.Size -match '\d')
     Check 'df lists the system drive' ($null -ne (df | Where-Object Root -like 'C:*'))
@@ -166,8 +197,11 @@ try {
     Check 'peak is peek' ((Get-HostOut { peak "$d\tall.png" }) -match '\]1337;')
 
     # ---- reels protocol ----
+    $savedTok = $env:LIMPET_TOKEN; $env:LIMPET_TOKEN = '0123456789abcdef0123456789abcdef'
     $rl = Get-HostOut { reels 'https://x' }
+    $env:LIMPET_TOKEN = $savedTok
     Check 'reels emits the OSC 5379 verb' ($rl -match '\]5379;reels;aHR0cHM6Ly94')
+    Check 'reels carries the app token' ($rl -match ';0123456789abcdef0123456789abcdef')
 
     # ---- wput / xssh argument handling ----
     Check-Throws 'wput with no files errors' { wput } '*no files*'

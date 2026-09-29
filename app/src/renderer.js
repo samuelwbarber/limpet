@@ -29,7 +29,8 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   closeEl.className = 'close';
   closeEl.draggable = false;
   closeEl.textContent = '×';
-  closeEl.title = 'Close tab (Ctrl+Shift+W)';
+  const closeKeys = window.LimpetSettings.get('keybindings', 'closeTab');
+  closeEl.title = closeKeys ? `Close tab (${closeKeys})` : 'Close tab';
   closeEl.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
   tabEl.append(titleEl, closeEl);
   tabEl.addEventListener('mousedown', (e) => { if (e.target !== closeEl) activate(id); });
@@ -65,9 +66,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   tabstrip.appendChild(tabEl);
 
   const term = new Terminal({
-    fontFamily: "'Cascadia Mono', Consolas, monospace",
-    fontSize: 14,
-    cursorBlink: true,
+    ...window.LimpetSettings.termOptions(), // font, size, cursor, scrollback (settings-ui.js)
     allowProposedApi: true,
     allowTransparency: true,
     theme: { background: 'rgba(30,30,46,0.25)', foreground: '#ffffff', cursor: '#f5e0dc', selectionBackground: '#585b70' },
@@ -91,6 +90,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   term.onSelectionChange(() => {
     const s = term.getSelection();
     if (s) term._selCache = { text: s, at: Date.now() };
+    window.LimpetSettings.selectionChanged(term);
   });
   let img = null;
   try { img = new ImageAddon.ImageAddon(); term.loadAddon(img); } catch (e) { console.error('[limpet] image addon failed:', e); }
@@ -98,20 +98,16 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   // Predictive local echo: draw typed characters immediately (in red) and let
   // the server's echo confirm them, so a laggy ssh link stops feeling laggy.
   // Adaptive + self-gating, so on a fast link or a no-echo prompt it does
-  // nothing. See predict.js.
-  let predict = null;
-  try {
-    const screenEl = pane.querySelector('.xterm-screen');
-    if (window.Predict && screenEl) predict = window.Predict.create(term, screenEl);
-  } catch (e) { console.error('[limpet] predictor failed:', e); }
+  // nothing. See predict.js. Off in settings: none. The settings page swaps
+  // tab.predict live, so everything reads it from the tab.
+  const predict = window.LimpetSettings.makePredictor(term, pane);
+  const predictor = () => { const t = tabs.get(id); return t && t.predict; };
 
-  term.onData((d) => { if (predict) predict.onKey(d); term._selCache = { text: '', at: 0 }; window.limpet.sendInput(id, d); });
+  term.onData((d) => { const p = predictor(); if (p) p.onKey(d); term._selCache = { text: '', at: 0 }; window.limpet.sendInput(id, d); });
   // Server output landed and xterm repainted: confirm/settle predictions.
-  if (predict) {
-    term.onRender(() => predict.reconcile());
-    // Scrolling invalidates the row-based overlay positions; just drop them.
-    term.onScroll(() => predict.flush());
-  }
+  term.onRender(() => { const p = predictor(); if (p) p.reconcile(); });
+  // Scrolling invalidates the row-based overlay positions; just drop them.
+  term.onScroll(() => { const p = predictor(); if (p) p.flush(); });
   term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; } });
   term.attachCustomKeyEventHandler((e) => handleKeys(e, id, term));
   // Right-click: copy if there's a selection, else paste.
@@ -174,7 +170,9 @@ function removeTab(id) {
   const order = tabOrder();
   const idx = order.indexOf(id);
   tabs.delete(id);
+  t.closed = true;  // late timer / IPC callbacks bail on this
   clearTimeout(t.backdropTimer);
+  clearTimeout(t.peekTimer);
   if (t.predict) t.predict.dispose();
   t.term.dispose();
   t.pane.remove();
@@ -210,11 +208,13 @@ function scheduleBackdropCandidate(id, tab) {
   clearTimeout(tab.backdropTimer);
   tab.backdropTimer = setTimeout(async () => {
     tab.backdropTimer = null;
+    if (tab.closed) return;
     const result = await window.limpet.considerBackdrop(
       id,
       terminalSnapshot(tab.term),
       tab.titleEl.textContent || '',
     );
+    if (tab.closed) return;
     if (result && result.status === 'queued') tab.tabEl.classList.add('generating');
   }, BACKDROP_IDLE_MS);
 }
@@ -338,6 +338,7 @@ function schedulePeekRedraw(t) {
 }
 
 function redrawPeeks(t) {
+  if (t.closed) return;
   t.peeks = t.peeks.filter((p) => !p.marker.isDisposed);
   if (!t.peeks.length || !t.img || t.term.buffer.active.type === 'alternate') return;
   const buf = t.term.buffer.active;
@@ -370,8 +371,7 @@ function syncSize() {
 }
 window.addEventListener('resize', syncSize);
 
-// ---- reels: dock a webpage (default: Instagram reels) on the right ----
-const DEFAULT_REELS = 'https://www.instagram.com/reels/';
+// ---- reels: dock a webpage (default: Instagram reels, see settings) on the right ----
 const reelsView = document.getElementById('reels-view');
 
 // The page is tidied by the main process (see REELS_TIDY in main.js), injected
@@ -381,14 +381,17 @@ window.limpet.onReels((url) => {
   const panel = document.getElementById('reels');
   const view = reelsView;
   if (url) {
-    // explicit `reels <url>` -> always show and navigate there
+    // explicit `reels <url>` -> always show and navigate there; web pages only
+    let ok = false;
+    try { ok = ['http:', 'https:'].includes(new URL(url).protocol); } catch (_) { /* not a URL */ }
+    if (!ok) return;
     if (view.getAttribute('src') !== url) view.setAttribute('src', url);
     panel.classList.add('show');
   } else {
     // bare `reels` -> toggle; lazy-load the default feed the first time
     panel.classList.toggle('show');
     if (panel.classList.contains('show') && !view.getAttribute('src')) {
-      view.setAttribute('src', DEFAULT_REELS);
+      view.setAttribute('src', window.LimpetSettings.get('reels', 'defaultUrl'));
     }
   }
   // the terminal's width just changed; re-fit so nothing gets clipped
@@ -420,7 +423,7 @@ function pasteClipboard(id) {
     // Let xterm normalize newlines and apply bracketed-paste mode. term.paste()
     // emits exactly one onData event, which is the sole path into the PTY.
     if (tab && text) tab.term.paste(text);
-  });
+  }).catch((e) => console.error('[limpet] paste failed:', e));
 }
 
 function consumeKey(e) {
@@ -432,13 +435,12 @@ function consumeKey(e) {
 }
 
 // Ctrl+Shift+C / Ctrl+Shift+V, Ctrl+C copies when there's a selection
-// (otherwise it falls through as the usual interrupt), and the tab shortcuts.
+// (otherwise it falls through as the usual interrupt), and the tab and
+// settings shortcuts, whose keys come from the settings page.
 function handleKeys(e, id, term) {
   if (e.type !== 'keydown') return true;
   const k = e.key.toLowerCase();
-  if (e.ctrlKey && e.shiftKey && k === 't') { newTab(); return consumeKey(e); }
-  if (e.ctrlKey && e.shiftKey && k === 'w') { closeTab(id); return consumeKey(e); }
-  if (e.ctrlKey && k === 'tab') { cycleTabs(e.shiftKey ? -1 : 1); return consumeKey(e); }
+  if (window.LimpetSettings.runAction(e, id)) return consumeKey(e);
   if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(term); return consumeKey(e); }
   if (e.ctrlKey && k === 'v') { pasteClipboard(id); return consumeKey(e); }
   // Ctrl+C: copy if something is (or was just) selected, otherwise let it through
@@ -733,9 +735,15 @@ async function showAccountMenu(id, tabEl) {
   menu.appendChild(head);
   document.body.appendChild(menu);
   accountMenu = menu;
+  menu.classList.add('pending');  // picks wait until the current session is known
 
-  const { accounts: all = [], more = [] } = await window.limpet.claudeAccounts(id) || {};
+  let listed;
+  try { listed = await window.limpet.claudeAccounts(id); } catch (e) {
+    if (accountMenu === menu) head.textContent = `Accounts · could not list them: ${(e && e.message) || e}`;
+    return;
+  }
   if (accountMenu !== menu) return;
+  const { accounts: all = [], more = [] } = listed || {};
   const items = new Map();
   const footer = document.createElement('div');
   footer.className = 'more';
@@ -803,11 +811,17 @@ async function showAccountMenu(id, tabEl) {
   gen.addEventListener('click', () => { closeAccountMenu(); chooseGenerative(); });
   bg.appendChild(gen);
   menu.appendChild(bg);
+  menu.appendChild(window.LimpetSettings.menuItem(closeAccountMenu));
 
   // Finding the session walks the process tree (about a second); the list is
   // usable meanwhile.
-  const current = await window.limpet.claudeSession(id);
+  let current;
+  try { current = await window.limpet.claudeSession(id); } catch (e) {
+    if (accountMenu === menu) head.textContent = `Could not find this tab's session: ${(e && e.message) || e}`;
+    return;  // still unknown -> picks stay disabled
+  }
   if (accountMenu !== menu) return;
+  menu.classList.remove('pending');
   menu.dataset.current = current ? current.cmd : '';
   if (current) {
     head.textContent = `Chat is on ${current.cmd}${current.status ? ` (${current.status})` : ''} · pick another to move it`;
@@ -820,7 +834,7 @@ async function showAccountMenu(id, tabEl) {
 }
 
 async function pickAccount(id, cmd, menu) {
-  if (menu.classList.contains('busy')) return;
+  if (menu.classList.contains('busy') || menu.classList.contains('pending')) return;
   if (menu.dataset.current === cmd) { closeAccountMenu(); return; }
   menu.classList.add('busy');
   menu.querySelector('.head').textContent = `Moving this chat to ${cmd}…`;
@@ -851,7 +865,8 @@ window.addEventListener('drop', async (e) => {
   e.preventDefault();
   dragDepth = 0;
   dropEl.classList.remove('show');
-  const paths = Array.from(e.dataTransfer.files).map((f) => f.path).filter(Boolean);
+  // File.path is gone (Electron 32); the preload asks webUtils for the path.
+  const paths = Array.from(e.dataTransfer.files).map((f) => window.limpet.pathForFile(f)).filter(Boolean);
   if (paths.length && activeId !== null) await window.limpet.dropFiles(activeId, paths);
   const t = tabs.get(activeId);
   if (t) t.term.focus();

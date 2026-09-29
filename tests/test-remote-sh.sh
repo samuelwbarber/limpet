@@ -18,8 +18,10 @@ bash -n shell/limpet-remote.sh; check 'bash syntax' $?
 sh -n shell/limpet-remote.sh;   check 'POSIX sh syntax' $?
 
 # ---- source: definitions + export -f ----
+# xssh prepends the app's token to the script; stand in for that here.
+export LIMPET_TOKEN=0123456789abcdef0123456789abcdef
 . shell/limpet-remote.sh
-for fn in peek download upload reels xssh _limpet_img_rows _limpet_b64; do
+for fn in peek download upload reels xssh _limpet_img_rows _limpet_b64 _limpet_cwd; do
   type "$fn" >/dev/null 2>&1; check "defines $fn" $?
 done
 bash -c 'type peek >/dev/null 2>&1 && type download >/dev/null 2>&1'
@@ -80,7 +82,7 @@ case "$rout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;reels;"*) check 'tmux: reels is 
 # ---- download protocol (streamed: dl;h header, dl;d chunks, dl;f finish) ----
 printf 'hello limpet' > "$TMP/file.txt"
 out=$(download "$TMP/file.txt")
-case "$out" in *']5379;dl;h;ZmlsZS50eHQ=;file'"$BEL"*) check 'download: header marks name + kind=file' 0;; *) check 'download: header marks name + kind=file' 1;; esac
+case "$out" in *']5379;dl;h;ZmlsZS50eHQ=;file;'"$LIMPET_TOKEN$BEL"*) check 'download: header marks name + kind=file' 0;; *) check 'download: header marks name + kind=file' 1;; esac
 case "$out" in *']5379;dl;d;'*) check 'download: emits base64 data chunks' 0;; *) check 'download: emits base64 data chunks' 1;; esac
 case "$out" in *']5379;dl;f'"$BEL"*) check 'download: emits the finish marker' 0;; *) check 'download: emits the finish marker' 1;; esac
 dpay=$(printf %s "$out" | awk 'BEGIN{RS="\007"} /dl;d;/ { sub(/.*dl;d;/,""); printf "%s", $0 }')
@@ -91,7 +93,7 @@ grep -q 'not found' "$TMP/err"; check 'download reports missing files' $?
 # folders stream as an extractable tar
 mkdir -p "$TMP/dl_dir/sub"; printf 'inside' > "$TMP/dl_dir/sub/inner.txt"
 dout=$(download "$TMP/dl_dir")
-case "$dout" in *']5379;dl;h;'*';dir'"$BEL"*) check 'download folder: header marks kind=dir' 0;; *) check 'download folder: header marks kind=dir' 1;; esac
+case "$dout" in *']5379;dl;h;'*';dir;'"$LIMPET_TOKEN$BEL"*) check 'download folder: header marks kind=dir' 0;; *) check 'download folder: header marks kind=dir' 1;; esac
 dtar=$(printf %s "$dout" | awk 'BEGIN{RS="\007"} /dl;d;/ { sub(/.*dl;d;/,""); printf "%s", $0 }')
 printf %s "$dtar" | base64 -d 2>/dev/null | tar -tf - 2>/dev/null | grep -q 'inner.txt'; check 'download folder: streams an extractable tar' $?
 # inside tmux the data chunks are wrapped in passthrough too (awk path)
@@ -100,12 +102,29 @@ case "$tdout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;dl;d;"*) check 'tmux: download 
 
 pwd64=$(printf %s "$TMP" | base64 | tr -d '\n')
 out=$(cd "$TMP" && upload '/pc/path file.txt')
-case "$out" in *']5379;upload;L3BjL3BhdGggZmlsZS50eHQ=;'"$pwd64$BEL"*) check 'upload sends pc path + remote cwd' 0;; *) check 'upload sends pc path + remote cwd' 1;; esac
+case "$out" in *']5379;upload;L3BjL3BhdGggZmlsZS50eHQ=;'"$pwd64;$LIMPET_TOKEN$BEL"*) check 'upload sends pc path + remote cwd + token' 0;; *) check 'upload sends pc path + remote cwd + token' 1;; esac
 
 out=$(reels 'https://x')
-case "$out" in *']5379;reels;aHR0cHM6Ly94'"$BEL"*) check 'reels sends the url' 0;; *) check 'reels sends the url' 1;; esac
+case "$out" in *']5379;reels;aHR0cHM6Ly94;'"$LIMPET_TOKEN$BEL"*) check 'reels sends the url' 0;; *) check 'reels sends the url' 1;; esac
 out=$(reels)
-case "$out" in *']5379;reels;'"$BEL"*) check 'bare reels toggles' 0;; *) check 'bare reels toggles' 1;; esac
+case "$out" in *']5379;reels;;'"$LIMPET_TOKEN$BEL"*) check 'bare reels toggles' 0;; *) check 'bare reels toggles' 1;; esac
+
+# ---- prompt directory report (aims the app's scp for dropped folders) ----
+# Every bash prompt reports cwd;<b64 $PWD>;<xssh hop depth>;<token>.
+case "$PROMPT_COMMAND" in *_limpet_cwd*) check 'cwd: hooked into PROMPT_COMMAND' 0;; *) check 'cwd: hooked into PROMPT_COMMAND' 1;; esac
+out=$(cd "$TMP" && _limpet_cwd)
+case "$out" in *']5379;cwd;'"$pwd64;0;$LIMPET_TOKEN$BEL"*) check 'cwd: reports $PWD, depth 0 and the token' 0;; *) check 'cwd: reports $PWD, depth 0 and the token' 1;; esac
+(exit 3); _limpet_cwd >/dev/null; [ $? = 3 ]; check 'cwd: keeps $? for the prompt' $?
+tout=$(TMUX=/fake,0,0 _limpet_cwd 2>/dev/null)
+case "$tout" in *"${ESC}Ptmux;${ESC}${ESC}]5379;cwd;"*) check 'tmux: cwd report is wrapped' 0;; *) check 'tmux: cwd report is wrapped' 1;; esac
+pc=$(HOME=$TMP bash -c 'PROMPT_COMMAND="echo mine"; . shell/limpet-remote.sh; . shell/limpet-remote.sh; printf %s "$PROMPT_COMMAND"')
+[ "$pc" = "echo mine"$'\n'"_limpet_cwd" ]; check 'cwd: appended to an existing PROMPT_COMMAND, once' $?
+pc=$(HOME=$TMP LIMPET_TOKEN= bash -c '. shell/limpet-remote.sh; printf %s "${PROMPT_COMMAND:-}"')
+[ -z "$pc" ]; check 'cwd: no report without the token' $?
+iout=$(printf 'cd /\nexit\n' | HOME=$TMP bash --rcfile shell/limpet-remote.sh -i 2>/dev/null)
+case "$iout" in *']5379;cwd;Lw==;0;'"$LIMPET_TOKEN$BEL"*) check 'cwd: an interactive prompt reports after cd' 0;; *) check 'cwd: an interactive prompt reports after cd' 1;; esac
+dout=$(LIMPET_DEPTH=2 HOME=$TMP bash -c '. shell/limpet-remote.sh; cd /; _limpet_cwd')
+case "$dout" in *']5379;cwd;Lw==;2;'*) check 'cwd: carries LIMPET_DEPTH' 0;; *) check 'cwd: carries LIMPET_DEPTH' 1;; esac
 
 # ---- remote xssh hop (ssh stubbed on PATH) ----
 mkdir -p "$TMP/bin"
@@ -123,6 +142,9 @@ xssh host2 >/dev/null 2>&1
 grep -qx -- '-t' "$SSH_CAPTURE"; check 'hop forces a tty' $?
 grep -q 'base64 -d' "$SSH_CAPTURE"; check 'hop re-injects the helpers' $?
 grep -q 'LIMPET_SH' "$SSH_CAPTURE"; check 'hop chains LIMPET_SH onward' $?
+grep -q 'LIMPET_DEPTH=1;' "$SSH_CAPTURE"; check 'hop: next host reports depth 1' $?
+LIMPET_DEPTH=1 xssh host3 >/dev/null 2>&1
+grep -q 'LIMPET_DEPTH=2;' "$SSH_CAPTURE"; check 'hop: depth counts up per hop' $?
 
 # ---- the real bootstrap templates out of Limpet.psm1 ----
 mapfile -t TPLS < <(sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" shell/Limpet.psm1 | sed "s/''/'/g")
@@ -133,7 +155,8 @@ mapfile -t TPLS < <(sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" shell/Limpet.psm1 | se
 b64=$(gzip -c shell/limpet-remote.sh | base64 -w0)
 RESUME=''; PLAIN=''
 for t in "${TPLS[@]}"; do
-  case "$t" in *tmux*) RESUME=${t/__B64__/$b64};; *) PLAIN=${t/__B64__/$b64};; esac
+  t=${t/__B64__/$b64}
+  case "$t" in *tmux*) RESUME=${t/__VER__/test};; *) PLAIN=$t;; esac
 done
 [ -n "$RESUME" ] && [ -n "$PLAIN" ]; check 'templates split into resume/plain' $?
 
@@ -144,7 +167,10 @@ printf 'type peek >/dev/null 2>&1 && echo SH-OK\nexit\n' | ENV="$PWD/shell/limpe
 check 'bash-less fallback: ENV= loads helpers in plain sh' $?
 
 if command -v tmux >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
-  tmux kill-session -t limpet 2>/dev/null
+  tmux kill-session -t limpet-test 2>/dev/null
+  # A session from another helper version (or PC) must survive a connect.
+  tmux kill-session -t limpet-other 2>/dev/null
+  tmux new -d -s limpet-other sleep 60
   export BOOT="$RESUME"
   # CI runners have TERM unset or dumb; tmux refuses to attach on those and
   # script exits early (broken-pipe printfs). Real sessions get a capable
@@ -153,7 +179,9 @@ if command -v tmux >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
   { sleep 2; printf 'export M=alive; type peek >/dev/null 2>&1 && echo TMUX-OK\n'; sleep 1; printf 'tmux detach\n'; sleep 1; } \
     | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t1.log" 2>&1
   grep -qa 'TMUX-OK' "$TMP/t1.log"; check 'resume bootstrap: helpers live inside tmux' $?
-  { sleep 2; printf '[ "$M" = alive ] && echo TMUX-RESUMED\n'; sleep 1; printf 'tmux kill-session -t limpet\n'; sleep 1; } \
+  tmux has-session -t =limpet-other 2>/dev/null; check 'resume bootstrap: leaves sessions of other versions running' $?
+  tmux kill-session -t limpet-other 2>/dev/null
+  { sleep 2; printf '[ "$M" = alive ] && echo TMUX-RESUMED\n'; sleep 1; printf 'tmux kill-session -t limpet-test\n'; sleep 1; } \
     | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t2.log" 2>&1
   grep -qa 'TMUX-RESUMED' "$TMP/t2.log"; check 'resume bootstrap: reconnect resumes the same shell' $?
 else

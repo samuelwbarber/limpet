@@ -17,6 +17,7 @@ $stateFile = Join-Path $env:TEMP 'limpet-last-ssh.txt'
 $stateBackup = if (Test-Path $stateFile) { Get-Content $stateFile -Raw } else { $null }
 
 $pwCacheBackup = $env:LIMPET_NO_PWCACHE
+$tokenBackup = $env:LIMPET_TOKEN
 try {
     # Keep the password-cache probe/prompt out of the bootstrap + reconnect-policy
     # tests (it would add an ssh call and, on a failing probe, block on Read-Host);
@@ -35,9 +36,10 @@ try {
     $c = Invoke-Combo @()
     Check 'default: injects the integration'    ($c -like '*base64 -d*')
     Check 'default: decompresses with gunzip'   ($c -like '*base64 -d | gunzip*')
-    Check 'default: resumes the tmux "limpet" session' ($c -like '*-s limpet*' -and $c -like '*tmux attach -d -t limpet*')
+    Check 'default: resumes the tmux "limpet-<ver>" session' ($c -like '*tmux new -d -s $s *' -and $c -like '*tmux attach -d -t =$s*')
     Check 'default: session sources the fresh script'  ($c -like '*bash --rcfile $f -i*')
-    Check 'default: version-stamps the session'        ($c -like '*_LIMPET_VER*')
+    Check 'default: names the session for the helper version' ($c -match 's=limpet-[0-9a-f]{12};')
+    Check 'default: never kills an existing session'  ($c -notlike '*kill-session*')
     Check 'default: adds keepalive options'     ($c -like '*ServerAliveInterval=15*')
     Check 'default: forces a tty (-t)'          ($c -like '*-t *')
     # Regression guard: a long single arg through PowerShell -> ssh.exe gets a
@@ -69,6 +71,20 @@ try {
     Check 'passthrough args survive in order' ($script:captured -like '*-i C:\keys\k -J jump@host user@localhost*')
 
     Check 'remembers the host for wput' ((Get-Content $stateFile -Raw).Trim() -eq 'user@localhost')
+
+    # ---- inside the app: tell it the host (so a dropped folder can go over
+    # scp), and that ssh ended; tokened like every request the app acts on ----
+    $env:LIMPET_TOKEN = '0123456789abcdef0123456789abcdef'
+    $e = [char]27; $bel = [char]7
+    $t64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('me@box'))
+    $out = xssh -Raw -p 2222 me@box 6>&1 | Out-String
+    Check 'in app: reports host + port on connect' ($out.Contains("$e]5379;xssh;$t64;2222;$($env:LIMPET_TOKEN)$bel"))
+    Check 'in app: reports when ssh ends'          ($out.Contains("$e]5379;xssh;;;$($env:LIMPET_TOKEN)$bel"))
+    $c = Invoke-Combo @()
+    Check 'in app: token-carrying bootstrap stays under the arg-length limit' ($c.Length -lt 8000)
+    $env:LIMPET_TOKEN = $null
+    $out = xssh -Raw me@box 6>&1 | Out-String
+    Check 'outside the app: no reports' (-not $out.Contains(']5379;xssh'))
 
     # ---- reconnect policy ----
     # a live session that drops, then an instant failure (offline after resume),
@@ -131,6 +147,7 @@ finally {
     Remove-Item Function:\ssh -Force -ErrorAction SilentlyContinue
     Remove-Item Function:\Read-Host -Force -ErrorAction SilentlyContinue
     $env:LIMPET_NO_PWCACHE = $pwCacheBackup
+    $env:LIMPET_TOKEN = $tokenBackup
     if ($null -ne $stateBackup) { Set-Content -Path $stateFile -Value $stateBackup -NoNewline }
     else { Remove-Item $stateFile -Force -ErrorAction SilentlyContinue }
 }

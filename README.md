@@ -74,8 +74,13 @@ come along.
 
 Drop a file onto the limpet window while you're in an SSH session and it lands
 in the remote's current directory, reconstructed over the wire via `base64`,
-so it works on any box with coreutils. For folders and big files use
-`wput <files>`, a client-side `scp` that defaults to your last `xssh` host.
+so it works on any box with coreutils. Folders and files over 20 MB go over
+`scp` instead, to the same directory: inside `xssh` the remote prompt tells
+limpet where it is, and xssh tells it the host. That copy is non-interactive,
+so it needs key or agent auth, and it only reaches the host `xssh` connected
+to (not one you hopped to from there). Otherwise limpet says why and you can
+use `wput <files>`, a client-side `scp` that defaults to your last `xssh` host
+and can prompt for a password.
 
 <p align="center"><img src="docs/media/drop.gif" width="840" alt="drag and drop demo: file dropped onto the window arrives in the remote directory" /></p>
 
@@ -96,6 +101,13 @@ prompt, reconnects included. No password again.
 Because sometimes the build takes a while. `reels` docks a vertical feed
 (Instagram Reels by default, or any URL you pass) on the right side of the
 terminal. `reels` again to dismiss.
+
+## Settings
+
+`Ctrl+,` in the app (or **Settings…** in a tab's right-click menu) opens a
+settings page: font, size, line height, cursor, scrollback, predictive echo,
+copy on select, the reels page, the backdrop pace and the keyboard shortcuts.
+Changes apply live to every tab. Details in [`app/README.md`](app/README.md#settings).
 
 ## Backgrounds
 
@@ -220,6 +232,19 @@ stored login, from the same endpoints `/usage` (Claude) and `/status` (Codex)
 use, and nothing is written back; an expired login shows `usage n/a` until you
 run that account again.
 
+limpet also notices on its own. When the agent in a tab prints its limit
+message (Claude Code's `You've hit your session limit · resets 3pm`, Codex's
+`You've hit your usage limit`), or the tab's account shows 0% left when usage
+is read, a small banner in the tab's corner offers the best other account:
+`claude1 hit its 5-hour limit (resets 3:00 pm). Move this chat to claude2 (5h
+88% left)?` **Move** is the same move as picking it in the menu; **Not now**
+or Esc hides it until the next limit. It prefers another account of the same
+agent with the most left on the window that ran out, then another agent's,
+and only then one whose usage limit can't be read (agy, Copilot: `usage
+unknown`). The banner never takes the keyboard from the terminal. In the
+settings page (Ctrl+,), **When an account runs out** switches between this
+offer, moving the chat automatically, or doing nothing.
+
 ## Install
 
 ```powershell
@@ -232,6 +257,10 @@ npm install
 npm start              # or launch "limpet" from the Start Menu after install.ps1
 ```
 
+- To get a normal Windows installer instead, run `npm run dist` in `app/`: it
+  writes a per-user `limpet-Setup-<version>.exe` (with the module bundled) to
+  `app\dist`, and the installed app keeps itself up to date from GitHub
+  Releases. See [app/README.md](app/README.md#building-an-installer).
 - The shell module (`shell/`) works in any terminal: Windows Terminal,
   WezTerm, VS Code. `install.ps1` adds it to your profile and creates a Start
   Menu entry for the app.
@@ -250,7 +279,12 @@ npm start              # or launch "limpet" from the Start Menu after install.ps
 
 In-session `peek`, `download` and `upload` talk to the app over private
 terminal escape sequences, so they tunnel through SSH with no server-side
-setup.
+setup. Anything printed to the terminal could contain those sequences (a
+`cat`-ed file, a hostile host), so the app only acts on `download`, `upload`
+and `reels` requests that carry a per-install secret, which `xssh` hands to
+the helpers it injects. `upload` also asks you to confirm each file before
+it leaves your PC, and a downloaded folder always unpacks into a new folder
+in Downloads, never over existing files.
 
 ## Repo layout
 

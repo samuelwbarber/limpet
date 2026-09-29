@@ -24,23 +24,31 @@ function harness(cols = 80, rows = 24) {
   const term = {
     cols, rows,
     options: { fontFamily: 'mono', fontSize: 14 },
-    buffer: { active: { cursorX: 0, cursorY: 0 } },
+    buffer: { active: {
+      cursorX: 0, cursorY: 0, baseY: 0, lines: {},
+      getLine(y) { const l = this.lines[y]; return l && { getCell: (x) => ({ getChars: () => l[x] || '' }) }; },
+    } },
     _core: {}, // no _renderService -> cell() falls back to screenEl geometry
   };
   const screenEl = { clientWidth: cols * 9, clientHeight: rows * 17, appendChild() {}, children: [] };
   screenEl.appendChild = (c) => screenEl.children.push(c);
   const p = create(term, screenEl);
   const cur = (x, y) => { term.buffer.active.cursorX = x; term.buffer.active.cursorY = y; };
+  // server draws `s` at the cursor (viewport-relative row) and advances it
+  const echo = (s) => {
+    const b = term.buffer.active, l = (b.lines[b.baseY + b.cursorY] ||= []);
+    for (const ch of s) l[b.cursorX++] = ch;
+  };
   // overlay is the single child appended to screenEl; its children are the glyphs
   const glyphs = () => (screenEl.children[0] ? screenEl.children[0].children : []);
-  return { term, p, cur, glyphs };
+  return { term, p, cur, echo, glyphs };
 }
 
 test('confirms predictions as the server cursor advances past them', () => {
-  const { p, cur, glyphs } = harness();
+  const { p, echo, glyphs } = harness();
   p.onKey('a'); p.onKey('b');
   assert.equal(glyphs().length, 2, 'two predicted glyphs queued');
-  cur(2, 0);                 // server echoed "ab"
+  echo('ab');                // server echoed "ab"
   p.reconcile();
   assert.equal(glyphs().length, 0, 'both confirmed and removed');
 });
@@ -53,9 +61,9 @@ test('nothing is shown until an echo is observed (password-prompt safety)', () =
 });
 
 test('a confirmation reveals the remaining queued predictions', () => {
-  const { p, cur, glyphs } = harness();
+  const { p, echo, glyphs } = harness();
   p.onKey('a'); p.onKey('b'); p.onKey('c'); // cols 0,1,2
-  cur(1, 0);                 // server echoed just "a"
+  echo('a');                 // server echoed just "a"
   p.reconcile();
   assert.equal(glyphs().length, 2, 'a confirmed, b/c remain');
   assert.equal(glyphs()[0].style.visibility, 'visible', 'trusted now -> b revealed');
@@ -99,4 +107,24 @@ test('predictions wrap to the next row at the right edge', () => {
   assert.equal(g.length, 2);
   assert.equal(g[1].style.top, (1 * 17) + 'px', 'second glyph is on row 1');
   assert.equal(g[1].style.left, (0 * 9) + 'px', 'second glyph is at column 0');
+});
+
+test('a password prompt echoing `*` neither confirms nor reveals', () => {
+  const { p, echo, glyphs } = harness();
+  p.onKey('s'); p.onKey('e'); p.onKey('c');
+  echo('*');                 // cursor moved past 's', but the server drew '*'
+  p.reconcile();
+  assert.equal(glyphs().length, 0, 'mismatched echo -> flushed, nothing shown');
+  p.onKey('r');              // still untrusted: the next prediction stays hidden
+  assert.equal(glyphs()[0].style.visibility, 'hidden');
+});
+
+test('confirmation reads the buffer at baseY + viewport row', () => {
+  const { term, p, echo, glyphs } = harness();
+  term.buffer.active.baseY = 100;
+  p.onKey('a'); p.onKey('b');
+  echo('a');
+  p.reconcile();
+  assert.equal(glyphs().length, 1, 'a confirmed via scrolled buffer line');
+  assert.equal(glyphs()[0].style.visibility, 'visible');
 });

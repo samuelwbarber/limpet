@@ -1,0 +1,61 @@
+/* The settings page (settings-ui.js): an overlay in the terminal's palette,
+   the same colours as the tab menu and the backdrop setup prompt. */
+.settings-overlay {
+  position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+  background: rgba(17,17,27,0.6);
+}
+.settings-panel {
+  display: flex; flex-direction: column;
+  width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  background: #181825; border: 1px solid #313244; border-radius: 10px; color: #cdd6f4;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45); font: 12px 'Cascadia Mono', Consolas, monospace;
+}
+.settings-head {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px 10px 18px;
+  border-bottom: 1px solid #313244;
+}
+.settings-head h1 { margin: 0; font-size: 14px; font-weight: normal; }
+.settings-status { flex: 1 1 auto; min-width: 0; color: #f38ba8; overflow-wrap: anywhere; }
+.settings-body { overflow-y: auto; padding: 4px 18px 16px; }
+.settings-section { padding-top: 12px; }
+.settings-section + .settings-section { margin-top: 8px; border-top: 1px solid #313244; }
+.settings-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.settings-section h2 { margin: 0; font-size: 12px; font-weight: normal; color: #89b4fa; text-transform: uppercase; letter-spacing: 0.06em; }
+.settings-row {
+  display: grid; grid-template-columns: minmax(150px, 40%) 1fr; gap: 12px; align-items: start;
+  padding: 5px 0;
+}
+.settings-row label { padding-top: 5px; color: #a6adc8; }
+.settings-control { min-width: 0; }
+.settings-help { margin-top: 3px; color: #6c7086; line-height: 1.4; }
+.settings-error { color: #f38ba8; line-height: 1.4; }
+.settings-error:not(:empty) { margin-top: 3px; }
+.settings-panel input[type="text"], .settings-panel input[type="url"],
+.settings-panel input[type="number"], .settings-panel select {
+  box-sizing: border-box; width: 100%; padding: 4px 8px;
+  font: inherit; color: #cdd6f4; background: #1e1e2e;
+  border: 1px solid #45475a; border-radius: 6px;
+}
+.settings-panel input[type="number"] { width: 120px; }
+.settings-panel select { width: auto; min-width: 120px; }
+.settings-panel input.keybinding { width: 200px; cursor: pointer; caret-color: transparent; }
+.settings-panel input.keybinding:focus { border-color: #89b4fa; background: #232336; }
+.settings-panel input[type="checkbox"] { margin: 6px 0 0; accent-color: #89b4fa; width: 14px; height: 14px; }
+.settings-row.invalid input, .settings-row.invalid select { border-color: #f38ba8; }
+.settings-panel button {
+  font: inherit; color: #cdd6f4; background: transparent; cursor: pointer;
+  border: 1px solid #45475a; border-radius: 6px; padding: 2px 10px;
+}
+.settings-panel button:hover { background: #313244; }
+.settings-panel .settings-reset { color: #a6adc8; }
+.settings-panel .settings-close { border-color: transparent; font-size: 14px; padding: 0 7px; }
+.settings-panel .settings-close:hover { color: #f38ba8; }
+.settings-panel input:focus-visible, .settings-panel select:focus-visible,
+.settings-panel button:focus-visible { outline: 2px solid #cdd6f4; outline-offset: 1px; }
+/* "Settings…" at the foot of a tab's right-click menu */
+.account-menu .open-settings {
+  display: flex; justify-content: space-between; gap: 14px; margin-top: 4px; padding: 6px 10px;
+  border-top: 1px solid #313244; border-radius: 0 0 5px 5px; cursor: pointer;
+}
+.account-menu .open-settings:hover, .account-menu .open-settings:focus-visible { background: #313244; outline: none; }
+.account-menu .open-settings .keys { color: #6c7086; }

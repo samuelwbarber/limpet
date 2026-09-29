@@ -82,7 +82,7 @@ async function typeCmd(page, text, delay = 45) {
   // shells would inherit its markers and Claude would stop saving transcripts.
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^CLAUDE/i.test(k)));
   const app = await _electron.launch({
-    executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
+    executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
     args: [APP], env,
     timeout: 30000,
   });

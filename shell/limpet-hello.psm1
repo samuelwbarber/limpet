@@ -270,8 +270,10 @@ function Enable-LimpetHello {
     Write-Host "Installing limpet key on $Target (enter the host password once)..." -ForegroundColor Cyan
     # Append our public key to the remote authorized_keys (idempotent), creating
     # ~/.ssh with correct perms. Uses the password interactively this one time.
+    # If the file doesn't end in a newline, add one first so our key doesn't
+    # get glued onto the last existing key.
     $remote = "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; " +
-              "grep -qxF '$pub' ~/.ssh/authorized_keys || printf '%s\n' '$pub' >> ~/.ssh/authorized_keys; " +
+              "grep -qxF '$pub' ~/.ssh/authorized_keys || { if [ -s ~/.ssh/authorized_keys ] && [ `$(tail -c1 ~/.ssh/authorized_keys | wc -l) -eq 0 ]; then echo >> ~/.ssh/authorized_keys; fi; printf '%s\n' '$pub' >> ~/.ssh/authorized_keys; }; " +
               "echo limpet-key-installed"
     & ssh -p $Port -o PreferredAuthentications=password -o PubkeyAuthentication=no $Target $remote
     if ($LASTEXITCODE -ne 0) { Write-Error "limpet-hello: failed to install key on $Target (ssh exit $LASTEXITCODE)."; return }
@@ -290,8 +292,15 @@ function Disable-LimpetHello {
     )
     if ($RemoveRemote -and (Test-Path "$($script:LimpetKeyPath).pub")) {
         $pub = (Get-Content "$($script:LimpetKeyPath).pub" -Raw).Trim()
-        $remote = "test -f ~/.ssh/authorized_keys && grep -vxF '$pub' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp && mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys; echo limpet-key-removed"
-        & ssh -p $Port $Target $remote
+        # grep -v exits 1 when no lines remain (our key was the only one), so
+        # don't chain on it. Write back through `cat >` to keep the original
+        # file's permissions, and only report removal once the key is gone.
+        $remote = "f=~/.ssh/authorized_keys; test -f `$f || { echo limpet-key-removed; exit 0; }; " +
+                  "umask 077; { grep -vxF '$pub' `$f > `$f.tmp || true; } && cat `$f.tmp > `$f && rm -f `$f.tmp; " +
+                  "grep -qxF '$pub' `$f || echo limpet-key-removed"
+        $out = & ssh -p $Port $Target $remote
+        if ($out -contains 'limpet-key-removed') { Write-Host "Removed the limpet key from $Target." -ForegroundColor Green }
+        else { Write-Warning "limpet-hello: could not confirm the limpet key was removed from $Target (ssh exit $LASTEXITCODE)." }
     }
     _Limpet-RemoveHost $Target
     Write-Host "Forgot $Target." -ForegroundColor Yellow

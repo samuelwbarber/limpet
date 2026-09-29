@@ -38,9 +38,16 @@ public static class LimpetLockHolders {
             uint needed = 0, count = 0, reasons = 0;
             int rc = RmGetList(session, out needed, ref count, null, ref reasons);
             if (rc != ERROR_MORE_DATA) return new int[0];
-            var info = new RM_PROCESS_INFO[needed];
-            count = needed;
-            if (RmGetList(session, out needed, ref count, info, ref reasons) != 0) return new int[0];
+            // The holder list can grow between the sizing call and this one;
+            // re-size and ask again rather than report the file as free.
+            RM_PROCESS_INFO[] info;
+            int tries = 0;
+            do {
+                info = new RM_PROCESS_INFO[needed + 4];
+                count = (uint)info.Length;
+                rc = RmGetList(session, out needed, ref count, info, ref reasons);
+            } while (rc == ERROR_MORE_DATA && ++tries < 5);
+            if (rc != 0) return new int[0];
             var pids = new List<int>();
             for (int i = 0; i < count; i++) pids.Add(info[i].Process.dwProcessId);
             return pids.ToArray();

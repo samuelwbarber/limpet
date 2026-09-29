@@ -6,30 +6,42 @@
 // works inside your SSH session with nothing installed on the remote but
 // coreutils (base64). Real ConPTY via node-pty; pipe fallback if unavailable.
 
-const { app, BrowserWindow, ipcMain, clipboard, screen, shell, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, screen, shell, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const accounts = require('./accounts');
 const agentScan = require('./agent-scan');
 const handoff = require('./handoff');
 const codexImport = require('./codex-import');
 const usage = require('./usage');
+const settings = require('./settings');
+const failover = require('./failover');
+const remoteCopy = require('./remote-copy');
+const updater = require('./updater');
 const {
-  MIN_OUTPUT_CHARS, UPDATE_OUTPUT_CHARS, MIN_UPDATE_MS, MIN_SCENE_CHANGE_CONFIDENCE,
+  MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
   backendStatus, outputPath, generateLocalImage, setupProgress, runSetup, LOCAL_AI_DIR,
 } = require('./backdrop');
 
 let ptyLib = null;
 try {
-  ptyLib = require('@homebridge/node-pty-prebuilt-multiarch');
+  // Installed, node-pty loads from app.asar.unpacked: its ConPTY worker script
+  // and forked helper have to be real files, not asar entries.
+  ptyLib = require(app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'node-pty')
+    : 'node-pty');
 } catch (e) {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
 
-const LIMPET_MODULE = path.join(__dirname, '..', '..', 'shell', 'Limpet.psd1');
+// The installer ships shell/ as resources\shell (extraResources in package.json).
+const LIMPET_MODULE = app.isPackaged
+  ? path.join(process.resourcesPath, 'shell', 'Limpet.psd1')
+  : path.join(__dirname, '..', '..', 'shell', 'Limpet.psd1');
 
 // Injected into the docked reels page to make the reel float on a
 // terminal-matching background with no scrollbars or nav/chat chrome. Instagram's
@@ -178,6 +190,33 @@ const REELS_TIDY = `(function () {
   }
 })();`;
 const MAX_DROP_BYTES = 20 * 1024 * 1024; // pasting more than this through a PTY is impractical
+// A held OSC waiting for its BEL is given up on (shown as text) once it grows
+// past this or the stream goes quiet this long: real limpet sequences stream
+// back-to-back, a stray marker in `cat`-ed binary never gets its BEL.
+const MAX_HELD_OSC = 48 * 1024 * 1024;
+const HELD_OSC_IDLE_MS = 15000;
+const MAX_PEEK_BYTES = 64 * 1024 * 1024;
+
+// Anything printed to the terminal can contain an OSC 5379 sequence: a remote
+// host, a `cat`-ed file, a log line. So the verbs that act on this PC (dl,
+// upload, reels) must carry this secret, which only reaches limpet's own
+// helpers: the shell gets it as LIMPET_TOKEN and xssh bakes it into the helper
+// script it injects. Kept across restarts so a resumed tmux session's helpers
+// stay valid.
+let oscTokenValue = null;
+function oscToken() {
+  if (oscTokenValue) return oscTokenValue;
+  const file = path.join(app.getPath('userData'), 'osc-token');
+  try {
+    const t = fs.readFileSync(file, 'utf8').trim();
+    if (/^[0-9a-f]{32}$/.test(t)) return (oscTokenValue = t);
+  } catch (_) { /* first run */ }
+  oscTokenValue = crypto.randomBytes(16).toString('hex');
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, oscTokenValue, { mode: 0o600 }); } catch (_) { /* this run only */ }
+  return oscTokenValue;
+}
+const tokenOk = (t) => typeof t === 'string' && t.length === 32
+  && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(oscToken()));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Keep BrowserWindow references alive and route each PTY only to the window
@@ -255,6 +294,7 @@ function flushBackdropAnalysis(sess) {
 
 function sendData(sess, data) {
   recordBackdropOutput(sess, data);
+  limitFailover.output(sess, data);
   sendToSession(sess, 'term:data', { id: sess.id, data });
 }
 
@@ -270,29 +310,64 @@ function sendData(sess, data) {
 // reserved blank rows. Untagged OSC 1337 (e.g. a third-party imgcat) and all
 // other output pass through to xterm.js untouched.
 const {
-  LIMPET_OSC, OSC_MARKERS, BEL,
+  LIMPET_OSC, OSC_MARKERS, BEL, MAX_IIP_HEADER,
   heldPrefixLen, findMarker, looksLikeVerb, classifyIip, b64dec, transformPeekImage, buildPeekOsc,
 } = require('./protocol');
 
 // A trailing partial-prefix of a marker is held back so a marker split across
 // two PTY chunks isn't leaked to the screen — but it's flushed on a short timer
 // if no more output follows, so a held byte (e.g. a lone trailing ESC, which is
-// extremely common) can never leave the screen frozen at an idle prompt.
-function scheduleFlush(sess) {
+// extremely common) can never leave the screen frozen at an idle prompt. A held
+// full marker gets a much longer timer (see HELD_OSC_IDLE_MS).
+function scheduleFlush(sess, ms = 30) {
   if (sess.flushTimer) clearTimeout(sess.flushTimer);
   sess.flushTimer = setTimeout(() => {
     sess.flushTimer = null;
-    if (sess.outPending) { sendData(sess, sess.outPending); sess.outPending = ''; }
-  }, 30);
+    if (sess.outPending) {
+      const held = sess.outPending + (sess.heldMore || []).join('');
+      dropHeldOsc(sess, held.length > 4096 ? '' : held);
+    }
+  }, ms);
+}
+
+// Give up on a held sequence: show `text` in its place (a short stray marker is
+// just output) and abandon any transfer it belonged to.
+function dropHeldOsc(sess, text) {
+  const wasHeld = OSC_MARKERS.some((m) => sess.outPending.startsWith(m)) && (sess.heldScanned || sess.outPending.length) > 4096;
+  sess.outPending = '';
+  sess.heldMore = [];
+  sess.heldScanned = 0;
+  if (wasHeld) {
+    endDownload(sess);
+    sess.peekImg = null;
+    text = `${text}\r\n\x1b[33m[limpet] dropped an unfinished escape sequence\x1b[0m\r\n`;
+  }
+  if (text) sendData(sess, text);
 }
 
 function forwardOutput(sess, data) {
   if (sess.flushTimer) { clearTimeout(sess.flushTimer); sess.flushTimer = null; }
-  let buf = sess.outPending + data;
+  // Still inside a held sequence and no BEL in this chunk: just queue it (joining
+  // into one string per chunk would copy the whole held sequence every time).
+  if (sess.heldScanned && data.indexOf(BEL) === -1) {
+    sess.heldMore.push(data);
+    sess.heldScanned += data.length;
+    if (sess.heldScanned > MAX_HELD_OSC) dropHeldOsc(sess, '');
+    else scheduleFlush(sess, HELD_OSC_IDLE_MS);
+    return;
+  }
+  let buf = sess.outPending + (sess.heldMore || []).join('') + data;
+  sess.heldMore = [];
+  // A held full marker was already searched for its BEL up to heldScanned, so
+  // only the new data needs scanning (a big transfer would otherwise rescan
+  // everything held on every chunk).
+  let scanFrom = sess.heldScanned || 0;
   sess.outPending = '';
+  sess.heldScanned = 0;
   let out = '';
   while (buf.length) {
-    const { idx: start, marker } = findMarker(buf);
+    const held = scanFrom ? OSC_MARKERS.find((m) => buf.startsWith(m)) : null;
+    const { idx: start, marker } = held ? { idx: 0, marker: held } : findMarker(buf);
     if (start === -1) {
       const hold = heldPrefixLen(buf);
       out += buf.slice(0, buf.length - hold);
@@ -302,13 +377,15 @@ function forwardOutput(sess, data) {
     out += buf.slice(0, start);
     buf = buf.slice(start);
     const afterMark = marker.length;
-    const end = buf.indexOf(BEL, afterMark);
+    const end = buf.indexOf(BEL, Math.max(afterMark, scanFrom));
+    scanFrom = 0;
     if (end === -1) {
       // Real limpet sequence still arriving (a download or image can be large) →
       // wait for BEL. A false marker is dropped back to the screen right away.
-      const after = buf.slice(afterMark);
+      const after = buf.slice(afterMark, afterMark + MAX_IIP_HEADER + 64);
       const wait = marker === LIMPET_OSC ? looksLikeVerb(after) : classifyIip(after) !== 'other';
-      if (wait) { sess.outPending = buf; }
+      if (wait && buf.length > MAX_HELD_OSC) { sess.outPending = buf; dropHeldOsc(sess, ''); break; }
+      if (wait) { sess.outPending = buf; sess.heldScanned = buf.length; }
       else { out += buf.slice(0, afterMark); buf = buf.slice(afterMark); continue; }
       break;
     }
@@ -325,8 +402,43 @@ function forwardOutput(sess, data) {
   if (out) sendData(sess, out);
   // A held *partial-prefix* (no full marker yet) must never linger — flush it if
   // the stream goes quiet. A held full marker (real download in flight) streams
-  // back-to-back, so it isn't on this timer.
-  if (sess.outPending && !OSC_MARKERS.some((m) => sess.outPending.startsWith(m))) scheduleFlush(sess);
+  // back-to-back, so it only gets a long timer: a stray marker from `cat`-ed
+  // binary with no BEL after it must not freeze the tab.
+  if (sess.outPending) {
+    scheduleFlush(sess, OSC_MARKERS.some((m) => sess.outPending.startsWith(m)) ? HELD_OSC_IDLE_MS : 30);
+  }
+}
+
+const isWebUrl = (u) => { try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch (_) { return false; } };
+
+// A dl/upload/reels request without this app's token came from something other
+// than limpet's helpers (or from helpers injected before the token existed).
+function untrusted(sess, verb) {
+  sendData(sess, `\r\n\x1b[33m[limpet] ignored a ${verb} request that didn't come from limpet's helpers (reconnect with xssh to refresh them)\x1b[0m\r\n`);
+}
+
+// `upload` sends a file off this PC, so the user confirms every one, whatever
+// asked: the token proves limpet's helpers sent it, not that the remote end is
+// friendly. UNC and device paths are refused outright; even stat-ing
+// \\host\share makes Windows authenticate to that host.
+async function confirmUpload(sess, p) {
+  if (/^[\\/]{2}/.test(p)) {
+    sendData(sess, `\r\n\x1b[31m[limpet] upload: network paths aren't allowed: ${p}\x1b[0m\r\n`);
+    return;
+  }
+  const wc = sessionWebContents(sess);
+  const win = wc && BrowserWindow.fromWebContents(wc);
+  const opts = {
+    type: 'question', buttons: ['Upload', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+    title: 'limpet', message: 'Send this file from your PC into the terminal session?', detail: path.resolve(p),
+  };
+  try {
+    const { response } = await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts));
+    if (response !== 0) { sendData(sess, '\r\n\x1b[33m[limpet] upload cancelled\x1b[0m\r\n'); return; }
+    await injectFiles(sess, [p]);
+  } catch (e) {
+    sendData(sess, `\r\n\x1b[31m[limpet] upload failed: ${e.message}\x1b[0m\r\n`);
+  }
 }
 
 // Returns text to emit to the terminal ('' for side-effect-only verbs). `peek`
@@ -337,21 +449,41 @@ function forwardOutput(sess, data) {
 // never passes back through ConPTY.
 function handleLimpetOsc(sess, seq) {
   const parts = seq.split(';');
+  // dl;d/dl;f only feed a download a tokened dl;h started.
   if (parts[0] === 'dl') {
     const sub = parts[1];
-    if (sub === 'h') startDownload(sess, b64dec(parts[2]).toString('utf8'), parts[3]);
-    else if (sub === 'd') writeDownloadChunk(sess, parts[2]);
+    if (sub === 'h') {
+      if (tokenOk(parts[4])) startDownload(sess, b64dec(parts[2]).toString('utf8'), parts[3]);
+      else untrusted(sess, 'download');
+    } else if (sub === 'd') writeDownloadChunk(sess, parts[2]);
     else if (sub === 'f') finishDownload(sess);
   } else if (parts[0] === 'upload') {
-    injectFiles(sess, [b64dec(parts[1]).toString('utf8')]);
+    if (tokenOk(parts[3])) confirmUpload(sess, b64dec(parts[1]).toString('utf8'));
+    else untrusted(sess, 'upload');
   } else if (parts[0] === 'reels') {
-    sendToSession(sess, 'reels:toggle', b64dec(parts[1]).toString('utf8'));
+    const url = b64dec(parts[1]).toString('utf8');
+    if (!tokenOk(parts[2])) untrusted(sess, 'reels');
+    else if (url && !isWebUrl(url)) sendData(sess, '\r\n\x1b[31m[limpet] reels: only http(s) URLs\x1b[0m\r\n');
+    else sendToSession(sess, 'reels:toggle', url);
+  } else if (parts[0] === 'xssh') {
+    // xssh (the PowerShell function) connecting / done: where scp can reach.
+    // Silently ignored without the token: nothing here is worth a warning.
+    if (tokenOk(parts[3])) { sess.remote = remoteCopy.parseXssh(parts.slice(1)); sess.remoteCwd = null; }
+  } else if (parts[0] === 'cwd') {
+    // Every remote prompt reports its directory; sent once per prompt, so an
+    // untokened one is dropped quietly rather than warned about each time.
+    if (tokenOk(parts[3])) sess.remoteCwd = remoteCopy.parseCwd(parts.slice(1));
   } else if (parts[0] === 'peek') {
     const sub = parts[1];
     if (sub === 'h') {
-      sess.peekImg = { name: b64dec(parts[2]).toString('utf8'), size: parts[3], rows: parts[4], chunks: [] };
+      sess.peekImg = { name: b64dec(parts[2]).toString('utf8'), size: parts[3], rows: parts[4], chunks: [], bytes: 0 };
     } else if (sub === 'd') {
-      if (sess.peekImg) sess.peekImg.chunks.push(parts[2] || '');
+      const p = sess.peekImg;
+      if (p) {
+        p.bytes += (parts[2] || '').length;
+        if (p.bytes > MAX_PEEK_BYTES) sess.peekImg = null; // never finishes; don't grow forever
+        else p.chunks.push(parts[2] || '');
+      }
     } else if (sub === 'f') {
       const p = sess.peekImg;
       sess.peekImg = null;
@@ -393,18 +525,24 @@ function startDownload(sess, name, kind) {
   endDownload(sess); // drop any half-received one first
   try {
     const dir = downloadsDir();
-    const safe = path.basename(name) || 'download';
+    const base = path.basename(name);
+    const safe = /^\.*$/.test(base) ? 'download' : base; // '', '.', '..'
     if (kind === 'dir') {
-      const proc = spawn('tar', ['-xf', '-', '-C', dir], { windowsHide: true });
-      const dl = { kind, name: safe, bytes: 0, proc, failed: false };
-      proc.on('error', () => { dl.failed = true; sendData(sess, `\r\n\x1b[31m[limpet] download failed: tar not available\x1b[0m\r\n`); });
+      // Unpack into a folder of its own, never over what's already in
+      // Downloads: the tar's top-level folder is stripped and its contents land
+      // in "<name>" (or "<name> (1)"...), which we create fresh.
+      const dest = uniqueDest(dir, safe);
+      fs.mkdirSync(dest);
+      const proc = spawn('tar', ['-xf', '-', '--strip-components=1', '-C', dest], { windowsHide: true });
+      const dl = { kind, name: path.basename(dest), dest, bytes: 0, proc, failed: false };
+      proc.on('error', () => { dl.failed = true; unpause(sess, dl); sendData(sess, `\r\n\x1b[31m[limpet] download failed: tar not available\x1b[0m\r\n`); });
       proc.stdin.on('error', () => { /* closed early */ });
       sess.dl = dl;
     } else {
       const dest = uniqueDest(dir, safe);
-      const dl = { kind: 'file', name: path.basename(dest), bytes: 0, failed: false };
+      const dl = { kind: 'file', name: path.basename(dest), dest, bytes: 0, failed: false };
       dl.ws = fs.createWriteStream(dest);
-      dl.ws.on('error', (e) => { dl.failed = true; sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`); });
+      dl.ws.on('error', (e) => { dl.failed = true; unpause(sess, dl); sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`); });
       sess.dl = dl;
     }
   } catch (e) {
@@ -419,13 +557,29 @@ function writeDownloadChunk(sess, b64) {
   const buf = Buffer.from(b64 || '', 'base64');
   dl.bytes += buf.length;
   const sink = dl.ws || (dl.proc && dl.proc.stdin);
-  if (sink && sink.writable) { try { sink.write(buf); } catch (_) { /* sink gone */ } }
+  if (!sink || !sink.writable) return;
+  let ok = true;
+  try { ok = sink.write(buf); } catch (_) { return; /* sink gone */ }
+  // The disk (or tar) is slower than the link: stop reading the shell until it
+  // catches up, so the backlog never piles up in memory.
+  if (!ok && sess.proc && sess.proc.pause && !dl.paused) {
+    dl.paused = true;
+    sess.proc.pause();
+    sink.once('drain', () => unpause(sess, dl));
+  }
+}
+
+function unpause(sess, dl) {
+  if (!dl.paused) return;
+  dl.paused = false;
+  if (sess.proc && sess.proc.resume) sess.proc.resume();
 }
 
 function finishDownload(sess) {
   const dl = sess.dl;
+  if (!dl) return;
+  if (dl.failed) { endDownload(sess); return; }
   sess.dl = null;
-  if (!dl || dl.failed) return;
   const done = (verb) => sendData(sess, `\r\n\x1b[32m[limpet] ${verb} ${dl.name} (${fmtBytes(dl.bytes)}) to Downloads\x1b[0m\r\n`);
   if (dl.ws) {
     dl.ws.end(() => done('saved'));
@@ -438,13 +592,16 @@ function finishDownload(sess) {
   }
 }
 
-// Abort a partially-received download (a new one starting, or the session ended).
+// Abort a partially-received download (a new one starting, or the session
+// ended) and remove what it wrote, so no truncated copy passes for the real one.
 function endDownload(sess) {
   const dl = sess && sess.dl;
   if (!dl) return;
   sess.dl = null;
-  try { if (dl.ws) dl.ws.destroy(); } catch (_) { /* ignore */ }
-  try { if (dl.proc) dl.proc.kill(); } catch (_) { /* ignore */ }
+  unpause(sess, dl);
+  const cleanup = () => { try { fs.rmSync(dl.dest, { recursive: true, force: true }); } catch (_) { /* ignore */ } };
+  try { if (dl.ws) { dl.ws.on('close', cleanup); dl.ws.destroy(); } } catch (_) { /* ignore */ }
+  try { if (dl.proc) { dl.proc.on('close', cleanup); dl.proc.kill(); } } catch (_) { /* ignore */ }
 }
 
 // The shell ended on its own (`exit`, crash) — drop the session and tell the
@@ -469,7 +626,7 @@ function startShell(sess) {
     try {
       const p = ptyLib.spawn('powershell.exe', args, {
         name: 'xterm-256color', cols: sess.cols, rows: sess.rows,
-        cwd: process.env.USERPROFILE || process.cwd(), env: process.env,
+        cwd: process.env.USERPROFILE || process.cwd(), env: { ...process.env, LIMPET_TOKEN: oscToken() },
       });
       p.onData((d) => forwardOutput(sess, d));
       p.onExit(() => sessionExited(sess));
@@ -477,6 +634,8 @@ function startShell(sess) {
         pid: p.pid,
         write: (d) => { try { p.write(d); } catch (_) { /* ignore */ } },
         resize: (c, r) => { try { p.resize(c, r); } catch (_) { /* ignore */ } },
+        pause: () => { try { p.pause(); } catch (_) { /* ignore */ } },
+        resume: () => { try { p.resume(); } catch (_) { /* ignore */ } },
         kill: () => { try { p.kill(); } catch (_) { /* ignore */ } },
       };
     } catch (e) {
@@ -484,7 +643,7 @@ function startShell(sess) {
     }
   }
 
-  const cp = spawn('powershell.exe', args, { windowsHide: true });
+  const cp = spawn('powershell.exe', args, { windowsHide: true, env: { ...process.env, LIMPET_TOKEN: oscToken() } });
   cp.stdout.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.stderr.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.on('exit', () => sessionExited(sess));
@@ -492,6 +651,8 @@ function startShell(sess) {
     pid: cp.pid,
     write: (d) => { try { cp.stdin.write(d); } catch (_) { /* ignore */ } },
     resize: () => { /* pipes can't resize */ },
+    pause: () => { cp.stdout.pause(); cp.stderr.pause(); },
+    resume: () => { cp.stdout.resume(); cp.stderr.resume(); },
     kill: () => { try { cp.kill(); } catch (_) { /* ignore */ } },
   };
 }
@@ -508,9 +669,10 @@ function buildDropPayload(localPath) {
 }
 
 // "Paste" one or more PC files into the current session by base64-streaming them
-// into the live prompt. Used by drag-drop and by the in-session `upload` command
-// (whose prompt is already in the target remote directory). Folders and oversized
-// files are skipped with a note.
+// into the live prompt. Used by drag-drop (dropFiles, which sends folders and
+// oversized files over scp instead) and by the in-session `upload` command
+// (whose prompt is already in the target remote directory). Folders and
+// oversized files that reach here are skipped with a note.
 async function injectFiles(sess, paths) {
   if (!sess || !sess.proc) return { ok: false };
   const files = [];
@@ -540,12 +702,68 @@ async function injectFiles(sess, paths) {
   sess.proc.write("stty -echo 2>/dev/null; printf '\\033[1A\\r\\033[2K'\n");
   await sleep(250);
   const sent = [];
-  for (const p of files) {
-    sess.proc.write(buildDropPayload(p));
-    sent.push(path.basename(p));
+  try {
+    for (const p of files) {
+      let payload;
+      // Locked, unreadable or deleted since the stat: skip it, keep going.
+      try { payload = buildDropPayload(p); } catch (e) {
+        sendData(sess, `\r\n\x1b[31m[limpet] couldn't read ${path.basename(p)}: ${e.code || e.message}\x1b[0m\r\n`);
+        continue;
+      }
+      if (!sess.proc) break;
+      sess.proc.write(payload);
+      sent.push(path.basename(p));
+    }
+  } finally {
+    // Echo must come back whatever happened above.
+    if (sess.proc) sess.proc.write('stty echo 2>/dev/null\n');
   }
-  sess.proc.write('stty echo 2>/dev/null\n');
   return { ok: true, sent };
+}
+
+// ---- Settings (settings.js; the page itself is settings-ui.js) ----
+// One store for all windows, in userData/settings.json. Every window hears a
+// change so its terminals pick it up live.
+let settingsStore = null;
+function appSettings() {
+  if (!settingsStore) {
+    settingsStore = settings.createStore(path.join(app.getPath('userData'), 'settings.json'));
+    settingsStore.load();
+    settingsStore.subscribe((values) => broadcast('settings:changed', values));
+  }
+  return settingsStore;
+}
+
+// Backdrop thresholds, read at each decision so a change applies at once.
+function backdropLimits() {
+  const b = appSettings().get().backdrop;
+  return { firstChars: b.firstChars, updateChars: b.updateChars, minMs: b.minIntervalMinutes * 60 * 1000 };
+}
+
+// Drag-and-drop: small files are pasted through the shell as before; folders
+// and files over MAX_DROP_BYTES go over scp to the directory of the remote
+// prompt, when xssh told us the host and that prompt is on it (see
+// remote-copy.js). Otherwise they're refused with the reason.
+async function dropFiles(sess, paths) {
+  if (!sess || !sess.proc) return { ok: false };
+  const entries = [];
+  for (const p of paths) {
+    try {
+      const st = fs.statSync(p);
+      entries.push({ path: p, isDir: st.isDirectory(), size: st.size });
+    } catch (_) { entries.push({ path: p, isDir: false, size: 0 }); } // injectFiles reports it
+  }
+  const { paste, copy } = remoteCopy.splitDrop(entries, MAX_DROP_BYTES);
+  const say = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
+  let copied = null;
+  if (copy.length) {
+    const plan = remoteCopy.planDrop(sess.remote, sess.remoteCwd);
+    const names = copy.map((p) => path.basename(p)).join(', ');
+    if (!plan.ok) say(33, `can't send ${names} (folders and files over ${MAX_DROP_BYTES / 1048576} MB go over scp): ${plan.reason}. Use wput instead.`);
+    else copied = remoteCopy.runScp({ ...plan, paths: copy, key: remoteCopy.defaultKey() }, say);
+  }
+  const pasted = paste.length ? await injectFiles(sess, paste) : { ok: true, sent: [] };
+  return { ...pasted, copying: !!copied }; // scp carries on in the background
 }
 
 function backdropStatus(sess, state, message = '') {
@@ -558,9 +776,10 @@ function considerBackdrop(sess, snapshot, conversationTitle = '') {
   if (!backend.ready) return { status: 'not-installed' };
   if (sess.backdropQueued) return { status: 'busy' };
   const now = Date.now();
-  const nextAt = sess.backdropNextAt || MIN_OUTPUT_CHARS;
+  const limits = backdropLimits();
+  const nextAt = sess.backdropNextAt || limits.firstChars;
   if ((sess.backdropOutputChars || 0) < nextAt) return { status: 'waiting' };
-  if (sess.backdropLastAt && now - sess.backdropLastAt < MIN_UPDATE_MS) return { status: 'cooldown' };
+  if (sess.backdropLastAt && now - sess.backdropLastAt < limits.minMs) return { status: 'cooldown' };
   flushBackdropAnalysis(sess);
   const plan = buildBackdropPlan(snapshot, sess.backdropProfile, conversationTitle);
   if (!plan) return { status: 'not-enough-context' };
@@ -572,7 +791,7 @@ function considerBackdrop(sess, snapshot, conversationTitle = '') {
   sess.backdropQueued = true;
   // Reserve the next interval as soon as the job enters the queue, preventing
   // repeated idle snapshots from adding duplicate jobs.
-  sess.backdropNextAt = (sess.backdropOutputChars || 0) + UPDATE_OUTPUT_CHARS;
+  sess.backdropNextAt = (sess.backdropOutputChars || 0) + limits.updateChars;
   backdropQueue.push({ sessionId: sess.id, prompt: plan.prompt, sceneKey: plan.sceneKey });
   backdropStatus(sess, 'generating');
   runBackdropQueue();
@@ -850,17 +1069,18 @@ async function carryAcross(current, target, note) {
 // Usage left per signed-in account (usage.js), fetched in parallel and kept for
 // a minute so repeated right-clicks don't hammer the endpoints. Tests and demo
 // recordings point LIMPET_USAGE_FIXTURE at a JSON file of { cmd: result } to
-// stay offline.
+// stay offline. `fresh` names one account to re-read regardless (the one that
+// just hit its limit).
 const usageCache = new Map(); // cmd -> { at, result }
 const USAGE_TTL_MS = 60 * 1000;
-function readAllUsage() {
+function readAllUsage(fresh = null) {
   const signedIn = accounts.describeAccounts(claudeHome(), accountIo).filter((a) => a.loggedIn);
   const fixture = process.env.LIMPET_USAGE_FIXTURE ? accountIo.readJson(process.env.LIMPET_USAGE_FIXTURE) : null;
   const now = Date.now();
   return Promise.all(signedIn.map(async (a) => {
     if (fixture) return { cmd: a.cmd, usage: fixture[a.cmd] || { error: 'no fixture' } };
     const hit = usageCache.get(a.cmd);
-    if (hit && now - hit.at < USAGE_TTL_MS) return { cmd: a.cmd, usage: hit.result };
+    if (hit && now - hit.at < USAGE_TTL_MS && a.cmd !== fresh) return { cmd: a.cmd, usage: hit.result };
     const result = await usage.readUsage(a, accountIo);
     usageCache.set(a.cmd, { at: Date.now(), result });
     return { cmd: a.cmd, usage: result };
@@ -911,12 +1131,37 @@ async function switchAgent(sess, cmd) {
     }
     const line = launch(cmd, options);
     if (current) await sleep(150); // let the prompt come back before typing
+    // The shell may have exited during the awaits above.
+    if (!sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
     sess.proc.write(`${line}\r`);
     return { ok: true, from: current ? current.cmd : null, to: cmd, sessionId: current ? current.sessionId : null, how };
   } finally {
     sess.switching = false;
   }
 }
+
+// ---- Failover: the tab's agent hit its usage limit (failover.js) ----
+// 'offer' puts up a banner over the tab offering the best other account,
+// 'auto' moves the chat there straight away with a note in the terminal,
+// 'off' does neither. Chosen on the settings page (agents.failoverMode);
+// LIMPET_FAILOVER overrides it (tests).
+function failoverMode() {
+  const env = process.env.LIMPET_FAILOVER;
+  if (failover.MODES.includes(env)) return env;
+  const mode = appSettings().get().agents.failoverMode;
+  return failover.MODES.includes(mode) ? mode : 'offer';
+}
+module.exports.failoverMode = failoverMode;
+
+const limitFailover = failover.createFailover({
+  mode: failoverMode,
+  detect: detectAgentSession,
+  accounts: () => accounts.describeAccounts(claudeHome(), accountIo),
+  usage: readAllUsage,
+  offer: (sess, payload) => sendToSession(sess, 'failover:offer', { id: sess.id, ...payload }),
+  note: (sess, text) => sendData(sess, `\r\n\x1b[33m[limpet] ${text}\x1b[0m\r\n`),
+  switchTo: switchAgent,
+});
 
 function stopSession(sess) {
   if (!sess || !sessions.has(sess.id)) return;
@@ -1007,6 +1252,17 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
       openExternalUrl(url);
       return { action: 'deny' };
     });
+    // The docked page is the web; keep it there (no file:, no app pages).
+    wc.on('will-navigate', (e, url) => { if (!isWebUrl(url)) e.preventDefault(); });
+  });
+  // Pin the reels webview's settings whatever the page asked for: no preload,
+  // no Node, isolated, and only ever pointed at an http(s) page.
+  browserWin.webContents.on('will-attach-webview', (e, prefs, params) => {
+    delete prefs.preload;
+    prefs.nodeIntegration = false;
+    prefs.contextIsolation = true;
+    prefs.sandbox = true;
+    if (params.src && !isWebUrl(params.src)) e.preventDefault();
   });
 
   browserWin.on('closed', () => {
@@ -1026,7 +1282,8 @@ function ownedSession(event, id) {
 }
 
 function registerIpc() {
-  ipcMain.handle('clip:write', (_e, text) => { clipboard.writeText(String(text || '')); });
+  // Both return Promises from Electron 44 on; handle() waits for them.
+  ipcMain.handle('clip:write', (_e, text) => clipboard.writeText(String(text || '')));
   ipcMain.handle('clip:read', () => clipboard.readText());
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
 
@@ -1034,7 +1291,7 @@ function registerIpc() {
     const sess = {
       id: nextSessionId++, proc: null, ownerId: event.sender.id, ready: false,
       uiPending: [], cols: 80, rows: 24, outPending: '', flushTimer: null, exited: false,
-      backdropOutputChars: 0, backdropNextAt: MIN_OUTPUT_CHARS, backdropLastAt: 0,
+      backdropOutputChars: 0, backdropNextAt: 0 /* 0: the first-picture setting */, backdropLastAt: 0,
       backdropQueued: false, backdropPath: null, backdropDataUrl: null,
       backdropProfile: createTopicProfile(), backdropAnalysisBuffer: '', backdropSceneKey: null,
     };
@@ -1077,7 +1334,7 @@ function registerIpc() {
   });
   ipcMain.handle('term:drop-files', (event, { id, paths }) => {
     const sess = ownedSession(event, id);
-    return sess ? injectFiles(sess, paths) : { ok: false };
+    return sess ? dropFiles(sess, paths) : { ok: false };
   });
   ipcMain.handle('claude:accounts', (event, id) => {
     if (!ownedSession(event, id)) return { accounts: [], more: [] };
@@ -1088,13 +1345,25 @@ function registerIpc() {
       more: accounts.signInHints(described),
     };
   });
-  ipcMain.handle('claude:usage', (event, id) => (ownedSession(event, id) ? readAllUsage() : []));
+  ipcMain.handle('claude:usage', async (event, id) => {
+    const sess = ownedSession(event, id);
+    if (!sess) return [];
+    const rows = await readAllUsage();
+    limitFailover.usageSeen(sess, rows); // the tab's account at 0%?
+    return rows;
+  });
   ipcMain.handle('claude:session', async (event, id) => {
     const sess = ownedSession(event, id);
     const found = sess ? await detectAgentSession(sess) : null;
+    if (sess) limitFailover.sessionSeen(sess, found);
     return found ? { cmd: found.cmd, kind: found.kind, sessionId: found.sessionId, status: found.status } : null;
   });
-  ipcMain.handle('claude:switch', (event, { id, cmd } = {}) => switchAgent(ownedSession(event, id), String(cmd || '')));
+  ipcMain.handle('claude:switch', async (event, { id, cmd } = {}) => {
+    const sess = ownedSession(event, id);
+    const result = await switchAgent(sess, String(cmd || ''));
+    if (result.ok) limitFailover.switched(sess);
+    return result;
+  });
   ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot, title } = {}) => {
     const sess = ownedSession(event, id);
     if (!sess || typeof snapshot !== 'string') return { status: 'invalid' };
@@ -1103,10 +1372,23 @@ function registerIpc() {
   ipcMain.handle('backdrop:setup-state', () => backdropSetupState());
   ipcMain.handle('backdrop:install', () => installBackdrop());
   ipcMain.handle('backdrop:cancel', () => cancelBackdropSetup());
+  ipcMain.handle('settings:get', () => ({ values: appSettings().get(), schema: appSettings().schema() }));
+  // Sync twin for the renderer's first paint, so a new tab opens at the
+  // chosen font rather than flicking over to it.
+  ipcMain.on('settings:get-sync', (event) => { event.returnValue = { values: appSettings().get(), schema: appSettings().schema() }; });
+  ipcMain.handle('settings:set', (_e, partial) => {
+    try {
+      const { ok, errors } = appSettings().set(partial);
+      return { ok, errors };
+    } catch (e) {
+      console.error('[limpet] saving settings failed:', e.message);
+      return { ok: false, errors: { '': `couldn't save: ${e.message}` } };
+    }
+  });
 }
 
 registerIpc();
-app.whenReady().then(() => createWindow());
+app.whenReady().then(() => { createWindow(); updater.start(); });
 app.on('before-quit', () => {
   if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
   cancelBackdropSetup();

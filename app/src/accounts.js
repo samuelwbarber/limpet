@@ -270,8 +270,9 @@ function findSession({ sessionFiles = [], rollouts = [], launches = [], writers 
 
 // A PowerShell single-quoted literal: only the quote itself needs escaping and
 // nothing inside is interpolated, so a prompt is safe to type at the prompt.
+// PowerShell also reads U+2018..U+201B as single quotes; doubling escapes those.
 function psQuote(s) {
-  return `'${String(s).replace(/'/g, "''")}'`;
+  return `'${String(s).replace(/['\u2018-\u201b]/g, '$&$&')}'`;
 }
 
 // How each agent's CLI takes a chat to resume, a first prompt, and an extra

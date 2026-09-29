@@ -36,6 +36,24 @@ jobs:
       - name: Helper + bootstrap suite
         run: bash tests/test-remote-sh.sh
 
+  unit-linux:
+    name: App unit tests (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies (pure JS only; no native builds)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Unit tests
+        run: npm test
+
   app:
     name: Electron app (Windows)
     runs-on: windows-latest
@@ -46,13 +64,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22 # Electron 44's npm package needs >= 22.12
           cache: npm
           cache-dependency-path: app/package-lock.json
       - name: Install dependencies (validates native modules on Windows)
         run: npm ci --no-audit --no-fund
       - name: Parse-check sources
-        run: foreach ($f in 'src/main.js', 'src/preload.js', 'src/renderer.js', 'src/protocol.js', 'src/predict.js', 'src/accounts.js', 'src/agent-scan.js', 'src/handoff.js', 'src/codex-import.js') { node --check $f; if ($LASTEXITCODE) { exit 1 } }
+        run: Get-ChildItem src -Filter *.js | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE) { exit 1 } }
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download)

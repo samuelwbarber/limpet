@@ -61,7 +61,7 @@ async function type(page, text) {
 
 (async () => {
   const app = await _electron.launch({
-    executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
+    executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
     args: [APP],
     timeout: 60000,
     env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
@@ -127,11 +127,37 @@ async function type(page, text) {
   fs.rmSync(dl, { force: true });
   // header (name "limpet-ci.txt", kind file), one data chunk ("hello limpet"), finish
   const E = '$([char]27)'; const B = '$([char]7)';
-  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;" + $env:LIMPET_TOKEN + "${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
   const saved = await waitFor(() => fs.existsSync(dl) && fs.readFileSync(dl, 'utf8') === 'hello limpet', 8000);
   check('streamed download saves to Downloads', !!saved);
   check('streamed download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
   fs.rmSync(dl, { force: true });
+
+  // ...but only when it carries the app's token: output that merely contains the
+  // sequence (a `cat`-ed file, a hostile host) must not write to Downloads.
+  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;0000${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  const refused = await waitFor(async () => (await screenText(page)).includes('ignored a download'), 8000);
+  check('untokened download is refused', !!refused && !fs.existsSync(dl));
+  fs.rmSync(dl, { force: true });
+
+  // ---- settings page: Ctrl+, opens it, a font size change reaches the terminal ----
+  await page.locator('.term-pane.active .xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+Comma');
+  check('Ctrl+, opens the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 1), 5000)));
+  const fontSize = () => page.evaluate(() => tabs.get(activeId).term.options.fontSize);
+  const sizeBefore = await fontSize();
+  await page.locator('#setting-terminal-fontSize').fill(String(sizeBefore + 4));
+  await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
+  check('changing the font size updates the terminal', !!(await waitFor(async () => (await fontSize()) === sizeBefore + 4, 5000)));
+  await page.locator('#setting-terminal-fontSize').fill('99');
+  await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
+  check('an out-of-range font size is refused with a reason', !!(await waitFor(async () => /between 8 and 32/.test(await page.locator('#setting-terminal-fontSize-error').textContent()), 5000)) &&
+    (await fontSize()) === sizeBefore + 4);
+  await page.locator('.settings-section:has(#setting-terminal-fontSize) .settings-reset').click();
+  check('reset puts the default font size back', !!(await waitFor(async () => (await fontSize()) === 14, 5000)));
+  await page.keyboard.press('Escape');
+  check('Esc closes the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 0), 5000)));
+  check('focus goes back to the terminal', await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')));
 
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));

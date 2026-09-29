@@ -8,19 +8,31 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { unpacked } = require('./paths');
 
 const realPath = (p) => { try { return fs.realpathSync.native(p); } catch (_) { return null; } };
 
-function readFirstJsonLine(file) {
+// Codex session_meta lines can run past 64 KB (instructions inline), so read
+// on until the newline, within a generous cap.
+function readFirstJsonLine(file, maxBytes = 8 * 1024 * 1024) {
+  let fd = null;
   try {
-    const fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(64 * 1024);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    const s = buf.toString('utf8', 0, n);
-    const nl = s.indexOf('\n');
-    return JSON.parse(nl === -1 ? s : s.slice(0, nl));
-  } catch (_) { return null; }
+    fd = fs.openSync(file, 'r');
+    const chunks = [];
+    let total = 0;
+    while (total < maxBytes) {
+      const buf = Buffer.alloc(Math.min(64 * 1024, maxBytes - total));
+      const n = fs.readSync(fd, buf, 0, buf.length, total);
+      if (!n) break;
+      const nl = buf.indexOf(10);
+      chunks.push(buf.subarray(0, nl === -1 ? n : nl));
+      total += n;
+      if (nl !== -1) break;
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch (_) { return null; } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch (_) { /* already gone */ }
+  }
 }
 
 const listDir = (dir) => { try { return fs.readdirSync(dir); } catch (_) { return []; } };
@@ -181,6 +193,7 @@ function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
     catch (_) { resolve(null); return; }
     const timer = setTimeout(() => { try { ps.kill(); } catch (_) { /* gone */ } finish(null); }, timeoutMs);
     let out = '';
+    ps.stdout.setEncoding('utf8');
     ps.stdout.on('data', (d) => { out += d; });
     ps.on('error', () => finish(null));
     ps.on('close', () => finish(out));
@@ -192,7 +205,7 @@ function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
 // lock-holders.ps1 (about a second, the files asked about side by side).
 async function fileHolders(paths) {
   if (!paths.length) return {};
-  const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'lock-holders.ps1')],
+  const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', unpacked(path.join(__dirname, 'lock-holders.ps1'))],
     { env: { ...process.env, LIMPET_LOCKS: JSON.stringify(paths) }, timeoutMs: 20000 });
   try {
     const map = JSON.parse(out);

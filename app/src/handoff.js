@@ -236,14 +236,26 @@ function renderMarkdown(turns, { source = 'another coding agent', cwd = '', when
     return `${s}\n`;
   });
   const head = `# Conversation handoff\n\nThis is the transcript of a chat with ${source}${cwd ? ` in \`${cwd}\`` : ''}, handed over on ${when.toISOString().slice(0, 16).replace('T', ' ')} UTC. Continue it exactly where it left off.\n\n`;
-  const size = (arr) => Buffer.byteLength(arr.join('\n'), 'utf8');
+  // Byte sizes once, then drop from the front with a running total (each
+  // joining newline is one byte).
+  const bytes = blocks.map((b) => Buffer.byteLength(b, 'utf8'));
   let body = blocks;
-  let omitted = 0;
-  if (size(body) > maxBytes && body.length > 2) {
-    const first = body[0];
-    let tail = body.slice(1);
-    while (tail.length > 1 && Buffer.byteLength(first, 'utf8') + size(tail) > maxBytes) { tail.shift(); omitted++; }
-    body = [first, `_(${omitted} earlier turn${omitted === 1 ? '' : 's'} omitted to keep this short)_\n`, ...tail];
+  let total = bytes.reduce((a, n) => a + n, 0) + Math.max(0, blocks.length - 1);
+  if (total > maxBytes && blocks.length > 1) {
+    let first = blocks[0];
+    // An opening request bigger than the whole budget keeps only its head,
+    // leaving room for the latest turns.
+    if (bytes[0] > maxBytes) {
+      const cut = Buffer.from(first, 'utf8').subarray(0, Math.floor(maxBytes / 2)).toString('utf8').replace(/\uFFFD+$/, '');
+      first = `${cut}\n_(truncated)_\n`;
+    }
+    const firstBytes = Buffer.byteLength(first, 'utf8');
+    let start = 1, omitted = 0;
+    total -= bytes[0] + 1;
+    while (blocks.length - start > 1 && firstBytes + total > maxBytes) { total -= bytes[start] + 1; start++; omitted++; }
+    body = [first];
+    if (omitted) body.push(`_(${omitted} earlier turn${omitted === 1 ? '' : 's'} omitted to keep this short)_\n`);
+    body.push(...blocks.slice(start));
   }
   return head + body.join('\n');
 }

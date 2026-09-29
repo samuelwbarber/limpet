@@ -117,6 +117,15 @@ test('renderMarkdown writes readable turns and trims the middle when too long', 
   assert.ok(Buffer.byteLength(short) < 6000);
 });
 
+test('renderMarkdown truncates an opening request bigger than the whole budget', () => {
+  const turns = [{ role: 'user', text: `huge ${'é'.repeat(20000)}`, tools: [] }];
+  for (let i = 1; i < 10; i++) turns.push({ role: i % 2 ? 'assistant' : 'user', text: `turn ${i} ${'x'.repeat(300)}`, tools: [] });
+  const md = renderMarkdown(turns, { maxBytes: 4000 });
+  assert.ok(md.includes('## User\n\nhuge é') && md.includes('_(truncated)_') && md.includes('turn 9 '));
+  assert.ok(!md.includes('\uFFFD'), 'no split UTF-8 sequence');
+  assert.ok(Buffer.byteLength(md) < 5000, `stays near maxBytes (${Buffer.byteLength(md)})`);
+});
+
 test('continuePrompt is one line naming the file and the source agent', () => {
   const p = continuePrompt('C:\\h o\\x.md', 'Codex');
   assert.ok(!/[\r\n]/.test(p) && p.includes('C:\\h o\\x.md') && p.includes('Codex'));
