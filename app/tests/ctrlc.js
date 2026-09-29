@@ -28,13 +28,17 @@ async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await
     ['Control+Shift+v', 'PASTE_ONCE_CTRL_SHIFT_V_9922'],
   ]) {
     await type(page, 'Clear-Host');
+    // Paste only once the clear has landed and the prompt is back, or a slow
+    // shell can wipe the pasted line after it's echoed (the first iteration
+    // runs right after startup, and flaked on CI that way).
+    await waitFor(() => screenText(page).then((t) => /^PS [A-Z]:[^\n]*>$/.test(t.trim())), 10000);
     await clip(`Write-Output ${marker}`);
     await page.keyboard.press(shortcut);
     await page.keyboard.press('Enter');
     await waitFor(() => screenText(page).then((t) => (t.match(new RegExp(marker, 'g')) || []).length >= 2), 8000);
     await sleep(300);
     const count = ((await screenText(page)).match(new RegExp(marker, 'g')) || []).length;
-    check(`${shortcut} pastes exactly once`, count === 2);
+    check(`${shortcut} pastes exactly once${count === 2 ? '' : ` (marker seen ${count}x, want 2)`}`, count === 2);
   }
 
   // ---- Ctrl+C copies a selection ----
