@@ -190,6 +190,13 @@ test('launchCommand builds resume, handoff-prompt and fresh-start lines per agen
   assert.strictEqual(psQuote("a'b"), "'a''b'");
 });
 
+test('psQuote doubles the typographic single quotes PowerShell also honours', () => {
+  assert.strictEqual(psQuote('it\u2019s'), "'it\u2019\u2019s'");
+  assert.strictEqual(psQuote('\u2018x\u201a\u201b'), "'\u2018\u2018x\u201a\u201a\u201b\u201b'");
+  assert.strictEqual(psQuote("\u2019; Remove-Item C:\\ '"), "'\u2019\u2019; Remove-Item C:\\ '''");
+  assert.strictEqual(psQuote('\u201c"ok"\u201d'), "'\u201c\"ok\"\u201d'", 'double quotes are literal inside single quotes');
+});
+
 test('launchCommand speaks agy and Copilot too: their resume flags, -i for a first prompt, --add-dir', () => {
   assert.strictEqual(launchCommand('agy2', { resume: SID_A }), `agy2 --conversation ${SID_A}`);
   assert.strictEqual(launchCommand('copilot', { resume: SID_A }), `copilot --resume ${SID_A}`);

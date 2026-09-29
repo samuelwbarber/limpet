@@ -174,7 +174,9 @@ function removeTab(id) {
   const order = tabOrder();
   const idx = order.indexOf(id);
   tabs.delete(id);
+  t.closed = true;  // late timer / IPC callbacks bail on this
   clearTimeout(t.backdropTimer);
+  clearTimeout(t.peekTimer);
   if (t.predict) t.predict.dispose();
   t.term.dispose();
   t.pane.remove();
@@ -210,11 +212,13 @@ function scheduleBackdropCandidate(id, tab) {
   clearTimeout(tab.backdropTimer);
   tab.backdropTimer = setTimeout(async () => {
     tab.backdropTimer = null;
+    if (tab.closed) return;
     const result = await window.limpet.considerBackdrop(
       id,
       terminalSnapshot(tab.term),
       tab.titleEl.textContent || '',
     );
+    if (tab.closed) return;
     if (result && result.status === 'queued') tab.tabEl.classList.add('generating');
   }, BACKDROP_IDLE_MS);
 }
@@ -338,6 +342,7 @@ function schedulePeekRedraw(t) {
 }
 
 function redrawPeeks(t) {
+  if (t.closed) return;
   t.peeks = t.peeks.filter((p) => !p.marker.isDisposed);
   if (!t.peeks.length || !t.img || t.term.buffer.active.type === 'alternate') return;
   const buf = t.term.buffer.active;
@@ -381,7 +386,10 @@ window.limpet.onReels((url) => {
   const panel = document.getElementById('reels');
   const view = reelsView;
   if (url) {
-    // explicit `reels <url>` -> always show and navigate there
+    // explicit `reels <url>` -> always show and navigate there; web pages only
+    let ok = false;
+    try { ok = ['http:', 'https:'].includes(new URL(url).protocol); } catch (_) { /* not a URL */ }
+    if (!ok) return;
     if (view.getAttribute('src') !== url) view.setAttribute('src', url);
     panel.classList.add('show');
   } else {
@@ -420,7 +428,7 @@ function pasteClipboard(id) {
     // Let xterm normalize newlines and apply bracketed-paste mode. term.paste()
     // emits exactly one onData event, which is the sole path into the PTY.
     if (tab && text) tab.term.paste(text);
-  });
+  }).catch((e) => console.error('[limpet] paste failed:', e));
 }
 
 function consumeKey(e) {
@@ -733,9 +741,15 @@ async function showAccountMenu(id, tabEl) {
   menu.appendChild(head);
   document.body.appendChild(menu);
   accountMenu = menu;
+  menu.classList.add('pending');  // picks wait until the current session is known
 
-  const { accounts: all = [], more = [] } = await window.limpet.claudeAccounts(id) || {};
+  let listed;
+  try { listed = await window.limpet.claudeAccounts(id); } catch (e) {
+    if (accountMenu === menu) head.textContent = `Accounts · could not list them: ${(e && e.message) || e}`;
+    return;
+  }
   if (accountMenu !== menu) return;
+  const { accounts: all = [], more = [] } = listed || {};
   const items = new Map();
   const footer = document.createElement('div');
   footer.className = 'more';
@@ -806,8 +820,13 @@ async function showAccountMenu(id, tabEl) {
 
   // Finding the session walks the process tree (about a second); the list is
   // usable meanwhile.
-  const current = await window.limpet.claudeSession(id);
+  let current;
+  try { current = await window.limpet.claudeSession(id); } catch (e) {
+    if (accountMenu === menu) head.textContent = `Could not find this tab's session: ${(e && e.message) || e}`;
+    return;  // still unknown -> picks stay disabled
+  }
   if (accountMenu !== menu) return;
+  menu.classList.remove('pending');
   menu.dataset.current = current ? current.cmd : '';
   if (current) {
     head.textContent = `Chat is on ${current.cmd}${current.status ? ` (${current.status})` : ''} · pick another to move it`;
@@ -820,7 +839,7 @@ async function showAccountMenu(id, tabEl) {
 }
 
 async function pickAccount(id, cmd, menu) {
-  if (menu.classList.contains('busy')) return;
+  if (menu.classList.contains('busy') || menu.classList.contains('pending')) return;
   if (menu.dataset.current === cmd) { closeAccountMenu(); return; }
   menu.classList.add('busy');
   menu.querySelector('.head').textContent = `Moving this chat to ${cmd}…`;

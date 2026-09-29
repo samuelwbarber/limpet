@@ -93,7 +93,7 @@
         el.style.visibility = 'hidden';           // revealed later, only if still unconfirmed
         place(el, st.predRow, st.predCol, c);
         overlay.appendChild(el);
-        const p = { el, row: st.predRow, col: st.predCol, sentAt: performance.now(), revealTimer: null };
+        const p = { el, ch: d, row: st.predRow, col: st.predCol, sentAt: performance.now(), revealTimer: null };
         st.predCol++;
         st.q.push(p);
         p.revealTimer = setTimeout(() => { if (st.echoOn) el.style.visibility = 'visible'; }, REVEAL_MS);
@@ -114,6 +114,11 @@
       while (st.q.length) {
         const p = st.q[0];
         if (!(p.row < rr || (p.row === rr && p.col < rc))) break;  // server hasn't reached it yet
+        // The cursor moving past isn't enough: a password prompt echoing `*`
+        // does that too. Only the predicted char actually drawn there confirms.
+        let drawn;
+        try { drawn = b.getLine(b.baseY + p.row)?.getCell(p.col)?.getChars(); } catch (e) { drawn = undefined; }
+        if ((drawn === '' ? ' ' : drawn) !== p.ch) { flush(); stopTick(); return; }
         clearTimeout(p.revealTimer); p.el.remove(); st.q.shift();
         const rtt = performance.now() - p.sentAt;
         st.srtt = st.srtt ? st.srtt * 0.8 + rtt * 0.2 : rtt;

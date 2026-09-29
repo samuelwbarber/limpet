@@ -18,7 +18,8 @@ const path = require('path');
 
 const DEFAULT_COMMAND = { file: 'cmd.exe', args: ['/c', 'codex', 'app-server'] };
 
-const sameFile = (a, b) => path.basename(String(a || '')).toLowerCase() === path.basename(String(b || '')).toLowerCase();
+// Windows paths: win32.basename splits on backslashes on every platform.
+const sameFile = (a, b) => path.win32.basename(String(a || '')).toLowerCase() === path.win32.basename(String(b || '')).toLowerCase();
 
 // Is there a rollout for this thread under <codexHome>/sessions/YYYY/MM/DD?
 function rolloutExists(codexHome, threadId) {
@@ -67,16 +68,23 @@ function importClaudeSession(transcriptPath, {
       if (err) reject(err); else resolve(value);
     };
     const timer = setTimeout(() => finish(new Error('codex app-server timed out')), timeoutMs);
+    // A dead app-server surfaces through 'exit'; writing to it must not throw.
+    const send = (m) => {
+      if (settled || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return;
+      try { child.stdin.write(`${JSON.stringify(m)}\n`); } catch (_) { /* exit handler rejects */ }
+    };
     const request = (method, params) => new Promise((res, rej) => {
       const id = nextId++;
       pending.set(id, { res, rej });
-      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+      send({ id, method, params });
     });
-    const notify = (method, params) => child.stdin.write(`${JSON.stringify({ method, params })}\n`);
+    const notify = (method, params) => send({ method, params });
     let completed = null;
     let importId = null;
     child.on('error', (e) => finish(new Error(`codex app-server could not start: ${e.message}`)));
     child.on('exit', (code) => { if (!settled) finish(new Error(`codex app-server exited (${code}) before the import completed`)); });
+    if (child.stdin) child.stdin.on('error', () => { /* EPIPE: the exit handler rejects */ });
+    child.stdout.setEncoding('utf8');  // multi-byte chars can straddle chunks
     child.stdout.on('data', (d) => {
       buf += d;
       let i;
