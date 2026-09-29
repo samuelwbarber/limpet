@@ -28,7 +28,7 @@ const {
 
 let ptyLib = null;
 try {
-  ptyLib = require('@homebridge/node-pty-prebuilt-multiarch');
+  ptyLib = require('node-pty');
 } catch (e) {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
@@ -1274,7 +1274,8 @@ function ownedSession(event, id) {
 }
 
 function registerIpc() {
-  ipcMain.handle('clip:write', (_e, text) => { clipboard.writeText(String(text || '')); });
+  // Both return Promises from Electron 44 on; handle() waits for them.
+  ipcMain.handle('clip:write', (_e, text) => clipboard.writeText(String(text || '')));
   ipcMain.handle('clip:read', () => clipboard.readText());
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
 

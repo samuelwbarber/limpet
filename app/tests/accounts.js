@@ -104,7 +104,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   ].join('\r\n'));
 
   const electronApp = await _electron.launch({
-    executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
+    executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
     args: [APP], timeout: 60000,
     env: {
       ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,

@@ -61,7 +61,7 @@ async function type(page, text) {
 
 (async () => {
   const app = await _electron.launch({
-    executablePath: path.join(APP, 'node_modules/electron/dist/electron.exe'),
+    executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
     args: [APP],
     timeout: 60000,
     env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },

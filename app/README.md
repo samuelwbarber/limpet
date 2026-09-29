@@ -8,18 +8,18 @@ in the shell (e.g. `xssh user@host`); there's no separate connection UI.
 
 ```powershell
 npm install
-npm run fetch-pty   # downloads the ConPTY binary matching this Electron's ABI
 npm start
 ```
 
-`fetch-pty` is needed because the upstream node-pty package's own installer
-fails on recent Node/Windows; this script fetches the correct prebuilt binary so
-the local shell gets a real ConPTY (line editing, Ctrl+R, arrows, full-screen
-TUIs). Without it the app still runs, but the local shell falls back to a basic
-pipe with no line editing.
+Needs Node 22.12 or newer. The local shell gets a real ConPTY (line editing,
+Ctrl+R, arrows, full-screen TUIs) from Microsoft's `node-pty`, a Node-API module
+that ships prebuilt Windows x64 and arm64 binaries, so it works with any
+Electron version and nothing is compiled on install. If it fails to load the
+app still runs, but the local shell falls back to a basic pipe with no line
+editing.
 
-Electron is pinned to 29.x because that's the newest ABI the prebuilt PTY ships
-a Windows binary for.
+Electron downloads its own binary the first time it runs (Electron 42 dropped
+the install-time download), so the first `npm start` takes a little longer.
 
 ## Tabs, clipboard, and links
 

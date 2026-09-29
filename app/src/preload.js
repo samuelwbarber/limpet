@@ -1,6 +1,6 @@
 // Bridge between the sandboxed renderer and the main process. Terminal
 // channels are tagged with a session id — one session per tab.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('limpet', {
   createSession: () => ipcRenderer.invoke('term:create'),
@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('limpet', {
   sendInput: (id, data) => ipcRenderer.send('term:input', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('term:resize', { id, cols, rows }),
   dropFiles: (id, paths) => ipcRenderer.invoke('term:drop-files', { id, paths }),
+  // A dropped File's local path ('' when it isn't backed by a file on disk).
+  pathForFile: (file) => webUtils.getPathForFile(file),
   considerBackdrop: (id, snapshot, title) => ipcRenderer.invoke('term:backdrop-candidate', { id, snapshot, title }),
   onBackdrop: (cb) => ipcRenderer.on('term:backdrop', (_e, p) => cb(p)),
   onBackdropStatus: (cb) => ipcRenderer.on('term:backdrop-status', (_e, p) => cb(p)),

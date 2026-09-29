@@ -49,6 +49,11 @@ foreach ($profilePath in @((Join-Path $docs 'WindowsPowerShell\profile.ps1'), (J
 # 2. Start Menu shortcut: launch the Electron app by typing 'limpet' in Windows search
 $electron = Join-Path $repo 'app\node_modules\electron\dist\electron.exe'
 $appDir   = Join-Path $repo 'app'
+# Electron fetches its binary on first use rather than at npm install; do that now.
+if (-not (Test-Path $electron) -and (Test-Path (Join-Path $appDir 'node_modules\electron'))) {
+    Push-Location $appDir
+    try { node -e "require('electron')" | Out-Null } finally { Pop-Location }
+}
 if (Test-Path $electron) {
     $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
     $lnkPath   = Join-Path $startMenu 'limpet.lnk'

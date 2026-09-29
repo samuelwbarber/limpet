@@ -865,7 +865,8 @@ window.addEventListener('drop', async (e) => {
   e.preventDefault();
   dragDepth = 0;
   dropEl.classList.remove('show');
-  const paths = Array.from(e.dataTransfer.files).map((f) => f.path).filter(Boolean);
+  // File.path is gone (Electron 32); the preload asks webUtils for the path.
+  const paths = Array.from(e.dataTransfer.files).map((f) => window.limpet.pathForFile(f)).filter(Boolean);
   if (paths.length && activeId !== null) await window.limpet.dropFiles(activeId, paths);
   const t = tabs.get(activeId);
   if (t) t.term.focus();
