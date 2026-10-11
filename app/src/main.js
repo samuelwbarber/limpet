@@ -913,6 +913,8 @@ const accountIo = {
   exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
   readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
   listDir: (p) => { try { return fs.readdirSync(p); } catch (_) { return []; } },
+  commandExists: (name) => process.env.LIMPET_OPENCODE_AVAILABLE !== '0' && (process.env.PATH || '').split(path.delimiter).some((dir) =>
+    ['.exe', '.cmd', '.ps1'].some((ext) => { try { return fs.existsSync(path.join(dir, `${name}${ext}`)); } catch (_) { return false; } })),
 };
 const knownAccounts = () => accounts.listAccounts(claudeHome(), accountIo);
 const claudeAccounts = () => knownAccounts().filter((a) => a.kind === 'claude');
@@ -988,7 +990,24 @@ async function stopAgent(sess, pid) {
 
 const handoffDir = () => path.join(app.getPath('userData'), 'handoff');
 
-const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', copilot: 'Copilot' };
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', copilot: 'Copilot', opencode: 'OpenCode' };
+
+// Use OpenCode's own exporter rather than reading its private database layout.
+function exportOpenCodeSession(id) {
+  if (!/^ses_[a-zA-Z0-9_-]+$/.test(String(id))) return Promise.reject(new Error('invalid OpenCode session id'));
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '& opencode session export $env:LIMPET_OC_SESSION'],
+      { windowsHide: true, env: { ...process.env, LIMPET_OC_SESSION: id } });
+    let out = '', err = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('OpenCode export timed out')); }, 30000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; if (out.length > 30 * 1024 * 1024) child.kill(); });
+    child.stderr.on('data', (d) => { err += d.slice(0, 1000); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => { clearTimeout(timer); code === 0 && out ? resolve(out) : reject(new Error(err.trim() || 'OpenCode export failed')); });
+  });
+}
 
 // Carry the stopped agent's chat over to another account (of another agent,
 // or of Codex, Copilot or agy). Returns the launch options for
@@ -997,13 +1016,19 @@ async function carryAcross(current, target, note) {
   const source = `${AGENT_NAMES[current.kind] || current.kind} (${current.cmd})`;
   // Copilot and agy accounts share one chat store (agy only has one), so the
   // chat is already where the other account looks.
-  if (current.kind === target.kind && (target.kind === 'copilot' || target.kind === 'agy')) {
+  if (current.kind === target.kind && (target.kind === 'copilot' || target.kind === 'agy' || target.kind === 'opencode')) {
     note(36, `resuming ${current.sessionId} under ${target.cmd} (shared history).`);
     return { launch: { resume: current.sessionId }, how: 'resume' };
   }
   const transcript = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
-  if (!transcript) {
+  if (!transcript && current.kind !== 'opencode') {
     note(33, `couldn't find the ${current.cmd} transcript; starting ${target.cmd} fresh.`);
+    return { launch: {}, how: 'fresh' };
+  }
+  const transcriptText = current.kind === 'opencode' ? current.transcriptText : null;
+  const readTranscript = () => transcriptText === null ? fs.readFileSync(transcript, 'utf8') : transcriptText;
+  if (current.kind === 'opencode' && !handoff.parseTranscript('opencode', transcriptText).length) {
+    note(33, 'the OpenCode chat has no messages yet; starting the next agent fresh.');
     return { launch: {}, how: 'fresh' };
   }
   // Native where there's a way in: Codex resumes its own threads and imports
@@ -1041,7 +1066,7 @@ async function carryAcross(current, target, note) {
       note(36, `chat imported into Codex as thread ${threadId}.`);
       return { launch: { resume: threadId }, how: 'import' };
     }
-    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    const turns = handoff.parseTranscript(current.kind, readTranscript());
     const cwd = current.cwd || process.env.USERPROFILE || os.homedir();
     const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
     const dir = path.join(claudeHome(), target.dir, 'projects', handoff.claudeProjectDirName(cwd));
@@ -1054,7 +1079,7 @@ async function carryAcross(current, target, note) {
   }
   // Otherwise: the chat as Markdown plus a one-line prompt to continue from it.
   try {
-    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    const turns = handoff.parseTranscript(current.kind, readTranscript());
     const dir = handoffDir();
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${current.cmd}-to-${target.cmd}.md`);
@@ -1109,6 +1134,17 @@ async function switchAgent(sess, cmd) {
   try {
     const current = await detectAgentSession(sess);
     if (current && current.cmd === cmd) return { ok: false, reason: 'already' };
+    if (current && current.kind === 'opencode' && !current.sessionId) {
+      note(31, 'could not identify the OpenCode session; leaving it running. Start it with plain opencode in a Limpet tab.');
+      return { ok: false, reason: 'session unknown' };
+    }
+    if (current && current.kind === 'opencode') {
+      try { current.transcriptText = await exportOpenCodeSession(current.sessionId); }
+      catch (e) {
+        note(31, `couldn't export the OpenCode chat (${e.message}); leaving it running.`);
+        return { ok: false, reason: 'export failed' };
+      }
+    }
     if (current && !(await stopAgent(sess, current.pid))) {
       note(31, `couldn't stop the running ${current.cmd} (pid ${current.pid}); not switching.`);
       return { ok: false, reason: 'still running' };

@@ -212,6 +212,33 @@ function parseCopilotEvents(text) {
   return turns;
 }
 
+// OpenCode exports { messages: [...] } as JSON. v1 uses { info, parts };
+// v2 uses flat { type: 'user', text } / { type: 'assistant', content }.
+function parseOpenCodeExport(text) {
+  const doc = JSON.parse(text);
+  const turns = [];
+  for (const entry of Array.isArray(doc.messages) ? doc.messages : []) {
+    const role = entry && ((entry.info || entry).role || entry.type);
+    if (role !== 'user' && role !== 'assistant') continue;
+    const texts = role === 'user' && typeof entry.text === 'string' ? [entry.text] : [];
+    const tools = [];
+    const parts = Array.isArray(entry.parts) ? entry.parts : (Array.isArray(entry.content) ? entry.content : []);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) texts.push(part.text.trim());
+      if (part.type === 'tool') {
+        const state = part.state || {};
+        tools.push({ name: String(part.tool || 'tool'), input: summarizeToolInput(part.tool, state.input),
+          output: clip(state.output || state.error || '', TOOL_OUTPUT_CHARS) });
+      }
+    }
+    const value = texts.join('\n');
+    const cleaned = role === 'user' ? cleanUserText(value) : value;
+    if (cleaned || tools.length) pushTurn(turns, role, cleaned, tools);
+  }
+  return turns;
+}
+
 // A transcript of any agent -> turns.
 function parseTranscript(kind, text) {
   switch (kind) {
@@ -219,6 +246,7 @@ function parseTranscript(kind, text) {
     case 'codex': return parseCodexRollout(text);
     case 'agy': return parseAgyTranscript(text);
     case 'copilot': return parseCopilotEvents(text);
+    case 'opencode': return parseOpenCodeExport(text);
     default: return [];
   }
 }
@@ -313,6 +341,6 @@ function titleFromTurns(turns) {
 }
 
 module.exports = {
-  HANDOFF_MAX_BYTES, parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseTranscript,
+  HANDOFF_MAX_BYTES, parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseOpenCodeExport, parseTranscript,
   renderMarkdown, continuePrompt, buildClaudeTranscript, claudeProjectDirName, titleFromTurns, cleanUserText,
 };

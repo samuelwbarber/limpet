@@ -488,10 +488,10 @@ finally {
 $ah = Join-Path $env:TEMP ("limpet_agents_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $savedAgentHome = $env:LIMPET_AGENT_HOME
 try {
-    New-Item -ItemType Directory -Force -Path "$ah\.claude-2", "$ah\.claude-10", "$ah\.codex-1", "$ah\.agy-3", "$ah\.copilot-2", "$ah\.claude-x", "$ah\.claude-01", "$ah\Documents" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$ah\.claude-2", "$ah\.claude-10", "$ah\.codex-1", "$ah\.agy-3", "$ah\.copilot-2", "$ah\.opencode-1", "$ah\.claude-x", "$ah\.claude-01", "$ah\Documents" | Out-Null
     $env:LIMPET_AGENT_HOME = $ah
     $accts = @(Get-LimpetAgentAccounts)
-    Check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' (($accts | ForEach-Object Command) -join ',' -eq 'claude,claude2,claude10,codex,codex1,agy,agy3,copilot,copilot2')
+    Check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' (($accts | ForEach-Object Command) -join ',' -eq 'claude,claude2,claude10,codex,codex1,agy,agy3,copilot,copilot2,opencode')
     Check 'each account maps to its own config dir' (($accts | Where-Object Command -eq 'codex1').ConfigDir -eq "$ah\.codex-1" -and
         ($accts | Where-Object Command -eq 'copilot2').ConfigDir -eq "$ah\.copilot-2")
 
@@ -530,6 +530,8 @@ try {
     New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
     Set-Content -LiteralPath "$fakeBin\codex.cmd" -Encoding Ascii -Value @(
         '@echo off', 'echo HOME=%CODEX_HOME% ARGS=%*', 'for %%f in ("%LIMPET_AGENT_RUN%\*.json") do (echo NOTE=%%~nxf & type "%%f")')
+    Set-Content -LiteralPath "$fakeBin\opencode.cmd" -Encoding Ascii -Value @(
+        '@echo off', 'echo ARGS=%*', 'for %%f in ("%LIMPET_AGENT_RUN%\*.json") do (echo NOTE=%%~nxf & type "%%f")')
     $savedPath = $env:PATH; $savedRun = $env:LIMPET_AGENT_RUN; $savedCodexHome = $env:CODEX_HOME
     try {
         $env:PATH = "$fakeBin;$env:PATH"; $env:LIMPET_AGENT_RUN = $run
@@ -537,6 +539,14 @@ try {
         Check 'codex1 launches Codex with CODEX_HOME at ~/.codex-1, arguments intact' ($out -like "*HOME=$ah\.codex-1 ARGS=resume xyz*")
         Check 'while it runs, the shell notes that it launched codex1 (for the app)' ($out -like "*NOTE=$PID.json*" -and $out -like '*"cmd":"codex1"*')
         Check 'the note goes and CODEX_HOME is put back when it exits' (-not (Test-Path "$run\$PID.json") -and $env:CODEX_HOME -eq $savedCodexHome)
+        $out = (opencode) -join "`n"
+        Check 'plain opencode starts a named session and records it for the app' (
+            $out -match 'ARGS=--session (ses_[0-9a-f]{26})' -and $out -like "*NOTE=$PID.json*" -and $out -like "*`"sessionId`":`"$($Matches[1])`"*")
+        Check 'the OpenCode launch note is removed after exit' (-not (Test-Path "$run\$PID.json"))
+        $out = (opencode --session ses_existing) -join "`n"
+        Check 'opencode resumes the requested session without changing its id' (
+            $out -like '*ARGS=--session ses_existing*' -and $out -like '*"sessionId":"ses_existing"*')
+        Check 'numbered OpenCode accounts are not offered' ($(try { Invoke-LimpetAgent -Command 'opencode1' -Arguments @('--limpet-plan') -ErrorAction Stop; 'ran' } catch { 'refused' }) -eq 'refused')
     }
     finally { $env:PATH = $savedPath; $env:LIMPET_AGENT_RUN = $savedRun }
     Check 'a leading zero is not an account' ($(try { Invoke-LimpetAgent -Command 'claude01' -Arguments @('--limpet-plan') -ErrorAction Stop; 'ran' } catch { 'refused' }) -eq 'refused')

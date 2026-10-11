@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const path = require('path');
 const {
   accountFor, listAccounts, describeAccounts, signInHints, descendants, findClaudeSession, findCodexSession, findSession,
-  findCopilotSession, findAgySession, launchCommand, psQuote, jwtEmail,
+  findCopilotSession, findAgySession, findOpenCodeSession, launchCommand, psQuote, jwtEmail,
 } = require('../src/accounts');
 
 const procs = [
@@ -41,15 +41,31 @@ test('accountFor maps any claudeN / codexN name to its kind and config dir', () 
   assert.deepStrictEqual(accountFor('claude3'), { cmd: 'claude3', kind: 'claude', number: 3, dir: '.claude-3' });
   assert.deepStrictEqual(accountFor('codex'), { cmd: 'codex', kind: 'codex', number: 0, dir: '.codex' });
   assert.deepStrictEqual(accountFor('codex12'), { cmd: 'codex12', kind: 'codex', number: 12, dir: '.codex-12' });
+  assert.deepStrictEqual(accountFor('opencode'), { cmd: 'opencode', kind: 'opencode', number: 0, dir: '.opencode' });
+  assert.strictEqual(accountFor('opencode1'), null);
   for (const bad of ['claude0', 'claude01', 'claudex', 'Claude1', 'codex-1', 'rm', '', null]) assert.strictEqual(accountFor(bad), null, String(bad));
+});
+
+test('OpenCode launch note identifies the tab session and resume command', () => {
+  const tree = [
+    { pid: 1, ppid: 0, name: 'powershell.exe', startedAt: 100 },
+    { pid: 2, ppid: 1, name: 'pwsh.exe', startedAt: 200 },
+    { pid: 3, ppid: 2, name: 'opencode.exe', startedAt: 300 },
+    { pid: 4, ppid: 0, name: 'opencode.exe', startedAt: 400 },
+  ];
+  const id = 'ses_abc123';
+  assert.strictEqual(findOpenCodeSession(tree, 1, [{ pid: 1, cmd: 'opencode', sessionId: id, cwd: 'C:\\work', startedAt: 250 }]).sessionId, id);
+  assert.strictEqual(findOpenCodeSession(tree, 1, []).sessionId, null);
+  assert.strictEqual(launchCommand('opencode', { resume: id }), `opencode --session ${id}`);
+  assert.match(launchCommand('opencode', { prompt: 'read C:\\handoff.md' }), /^opencode --prompt /);
 });
 
 test('listAccounts discovers numbered config dirs, plain ones always first', () => {
   const io = { listDir: (p) => (p === 'C:\\h' ? ['.claude', '.claude-10', '.claude-2', '.codex-1', '.codex-01', '.claude-x', 'Documents', '.claude.json'] : []) };
-  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1', 'agy', 'copilot']);
-  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex', 'agy', 'copilot']);
+  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1', 'agy', 'copilot', 'opencode']);
+  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex', 'agy', 'copilot', 'opencode']);
   const more = { listDir: () => ['.agy-2', '.copilot-1', '.copilot-12', '.agy-02', '.gemini'] };
-  assert.deepStrictEqual(listAccounts('C:\\h', more).map((a) => a.cmd), ['claude', 'codex', 'agy', 'agy2', 'copilot', 'copilot1', 'copilot12']);
+  assert.deepStrictEqual(listAccounts('C:\\h', more).map((a) => a.cmd), ['claude', 'codex', 'agy', 'agy2', 'copilot', 'copilot1', 'copilot12', 'opencode']);
   assert.deepStrictEqual(accountFor('agy3'), { cmd: 'agy3', kind: 'agy', number: 3, dir: '.agy-3' });
   assert.deepStrictEqual(accountFor('copilot'), { cmd: 'copilot', kind: 'copilot', number: 0, dir: '.copilot' });
 });
@@ -247,7 +263,10 @@ test('describeAccounts reports login state and email per discovered config dir, 
     },
   };
   const list = describeAccounts(home, io);
-  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3', 'agy', 'copilot']);
+  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3', 'agy', 'copilot', 'opencode']);
+  assert.strictEqual(list.find((a) => a.cmd === 'opencode').loggedIn, false);
+  assert.strictEqual(describeAccounts(home, { ...io, commandExists: (name) => name === 'opencode' })
+    .find((a) => a.cmd === 'opencode').loggedIn, true);
   const one = list.find((a) => a.cmd === 'claude1');
   assert.deepStrictEqual({ loggedIn: one.loggedIn, email: one.email, configDir: one.configDir },
     { loggedIn: true, email: 'one@example.com', configDir: path.join(home, '.claude-1') });

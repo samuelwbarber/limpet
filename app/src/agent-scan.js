@@ -235,7 +235,8 @@ function readCodexLaunches(dir) {
     if (!/^\d+\.json$/.test(name)) continue;
     let l = null;
     try { l = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')); } catch (_) { continue; }
-    if (l && Number.isInteger(l.pid) && typeof l.cmd === 'string') out.push({ pid: l.pid, cmd: l.cmd, startedAt: Number(l.startedAt) || 0 });
+    if (l && Number.isInteger(l.pid) && typeof l.cmd === 'string') out.push({ pid: l.pid, cmd: l.cmd, startedAt: Number(l.startedAt) || 0,
+      sessionId: typeof l.sessionId === 'string' ? l.sessionId : '', cwd: typeof l.cwd === 'string' ? l.cwd : '' });
   }
   return out;
 }

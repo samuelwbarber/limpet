@@ -195,6 +195,14 @@ Copilot accounts share plain `copilot`'s the same way: each `~/.copilot-N` gets
 its `session-state/` (one folder per chat, which Copilot's resume list is built
 from) junctioned to `~/.copilot`'s.
 
+OpenCode is also available as a single `opencode` entry. Install the
+[OpenCode CLI](https://opencode.ai/docs/cli/) and launch it from a Limpet tab.
+Limpet gives each new interactive chat a stable OpenCode session id and keeps
+that id tied to the tab, so several OpenCode tabs can be switched independently.
+OpenCode uses its normal model and provider configuration. Its usage percentage
+is shown as `usage n/a` because the CLI has no common quota endpoint across
+providers.
+
 ### Switch account, or agent, mid-chat
 
 In the limpet app, right-click a tab to see every account that is signed in,
@@ -221,6 +229,11 @@ shell:
   conversion that fails: the chat is rendered to a Markdown handoff file and
   the new agent starts with a one-line "continue from here" prompt pointing at
   it.
+
+OpenCode follows that handoff path when receiving a chat. When moving away
+from OpenCode, Limpet uses `opencode session export` to carry its conversation
+into Claude or a Markdown handoff for Codex, Copilot or Antigravity. If export
+fails, the running OpenCode session is left open so the conversation is safe.
 
 <p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: the tab menu lists the signed-in accounts with usage left, and a Claude Code chat is moved to Codex, conversation intact" /></p>
 

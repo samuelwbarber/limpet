@@ -29,10 +29,10 @@
 
 const path = require('path');
 
-const KINDS = ['claude', 'codex', 'agy', 'copilot'];
+const KINDS = ['claude', 'codex', 'agy', 'copilot', 'opencode'];
 // Agents only suggested in the menu's footer once one of their accounts is in use.
-const OPTIONAL_KINDS = new Set(['agy', 'copilot']);
-const ACCOUNT_RE = /^(claude|codex|agy|copilot)([1-9]\d*)?$/;
+const OPTIONAL_KINDS = new Set(['agy', 'copilot', 'opencode']);
+const ACCOUNT_RE = /^(claude|codex|agy|copilot)([1-9]\d*)?$|^(opencode)$/;
 const DIR_RE = /^\.(claude|codex|agy|copilot)(?:-([1-9]\d*))?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -43,7 +43,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function accountFor(cmd) {
   const m = ACCOUNT_RE.exec(String(cmd || ''));
   if (!m) return null;
-  const kind = m[1];
+  const kind = m[1] || m[3];
   const number = m[2] ? Number(m[2]) : 0;
   return { cmd: `${kind}${number || ''}`, kind, number, dir: number ? `.${kind}-${number}` : `.${kind}` };
 }
@@ -80,6 +80,10 @@ function jwtEmail(token) {
 function describeAccounts(home, io) {
   return listAccounts(home, io).map(({ cmd, kind, number, dir }) => {
     const configDir = path.join(home, dir);
+    if (kind === 'opencode') {
+      const loggedIn = !!(io.commandExists && io.commandExists('opencode'));
+      return { cmd, kind, number, dir, configDir, loggedIn, present: loggedIn, email: loggedIn ? 'OpenCode CLI' : '' };
+    }
     if (kind === 'agy') {
       // The shell keeps an agy account's login in login.dat (encrypted) and its
       // email in account.json. Plain agy's login normally sits in Credential
@@ -127,7 +131,7 @@ function signInHints(described) {
     if (OPTIONAL_KINDS.has(kind) && !mine.some((a) => a.loggedIn || a.present)) continue;
     for (const a of mine) if (!a.loggedIn) out.push(a.cmd);
     const next = mine.reduce((m, a) => Math.max(m, a.number), 0) + 1;
-    out.push(`${kind}${next}`);
+    if (kind !== 'opencode') out.push(`${kind}${next}`);
   }
   return out;
 }
@@ -258,6 +262,22 @@ function findAgySession(conversations, procs, shellPid, launches = [], active = 
   return chatSession('agy', agentLauncher('agy', mine[0], procs, shellPid, launches) || active || 'agy', mine[0], chat);
 }
 
+// Limpet's OpenCode wrapper starts a named session and records that id in the
+// shell launch note. This identifies the right chat even with several tabs.
+function findOpenCodeSession(procs, shellPid, launches = []) {
+  const mine = agentProcs('opencode', procs, shellPid);
+  if (!mine.length) return null;
+  const proc = mine[0];
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  for (let p = byPid.get(proc.ppid); p; p = p.pid === shellPid ? null : byPid.get(p.ppid)) {
+    const note = launches.find((l) => l.pid === p.pid && l.cmd === 'opencode' &&
+      l.startedAt >= (p.startedAt || 0) && l.startedAt <= (proc.startedAt || 0) + LAUNCH_SLACK_MS);
+    if (note) return { kind: 'opencode', cmd: 'opencode', pid: proc.pid, status: '',
+      sessionId: note.sessionId || null, cwd: note.cwd || '', rolloutPath: null };
+  }
+  return chatSession('opencode', 'opencode', proc, null);
+}
+
 // Whatever agent is running under the tab's shell, Claude first (one agent
 // launched from inside another is rare; prefer the one with a session id we
 // can act on).
@@ -265,7 +285,8 @@ function findSession({ sessionFiles = [], rollouts = [], launches = [], writers 
   return findClaudeSession(sessionFiles, procs, shellPid)
     || findCodexSession(rollouts, procs, shellPid, launches, writers)
     || findCopilotSession(copilotChats, procs, shellPid, launches)
-    || findAgySession(agyConversations, procs, shellPid, launches, agyActive);
+    || findAgySession(agyConversations, procs, shellPid, launches, agyActive)
+    || findOpenCodeSession(procs, shellPid, launches);
 }
 
 // A PowerShell single-quoted literal: only the quote itself needs escaping and
@@ -282,6 +303,7 @@ const CLI_FLAGS = {
   codex: { resume: 'resume', prompt: '', addDir: '' },
   agy: { resume: '--conversation', prompt: '-i', addDir: '--add-dir' },
   copilot: { resume: '--resume', prompt: '-i', addDir: '--add-dir' },
+  opencode: { resume: '--session', prompt: '--prompt', addDir: '' },
 };
 
 // The line typed into the shell to bring a chat up under `cmd`:
@@ -294,7 +316,7 @@ const CLI_FLAGS = {
 function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
   const account = accountFor(cmd);
   if (!account) throw new Error(`unknown account: ${cmd}`);
-  if (resume && !UUID_RE.test(String(resume))) throw new Error(`not a session id: ${resume}`);
+  if (resume && !(account.kind === 'opencode' ? /^ses_[a-zA-Z0-9_-]+$/.test(String(resume)) : UUID_RE.test(String(resume)))) throw new Error(`not a session id: ${resume}`);
   if (/[\r\n]/.test(String(prompt))) throw new Error('prompt must be a single line');
   const flags = CLI_FLAGS[account.kind];
   let line = account.cmd;
@@ -306,5 +328,5 @@ function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
 
 module.exports = {
   KINDS, ACCOUNT_RE, DIR_RE, UUID_RE, accountFor, listAccounts, jwtEmail, describeAccounts, signInHints,
-  descendants, findClaudeSession, findCodexSession, findCopilotSession, findAgySession, findSession, psQuote, launchCommand,
+  descendants, findClaudeSession, findCodexSession, findCopilotSession, findAgySession, findOpenCodeSession, findSession, psQuote, launchCommand,
 };

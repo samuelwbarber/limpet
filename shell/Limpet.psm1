@@ -828,7 +828,7 @@ function limpet {
 
 # The agents, in menu order, and the variable that points each at an account's
 # directory (agy has none; its login is swapped instead).
-$script:LimpetAgentKinds = [ordered]@{ claude = 'CLAUDE_CONFIG_DIR'; codex = 'CODEX_HOME'; agy = $null; copilot = 'COPILOT_HOME' }
+$script:LimpetAgentKinds = [ordered]@{ claude = 'CLAUDE_CONFIG_DIR'; codex = 'CODEX_HOME'; agy = $null; copilot = 'COPILOT_HOME'; opencode = $null }
 $script:LimpetAgentPattern = '(' + ($script:LimpetAgentKinds.Keys -join '|') + ')'
 
 # Where the account directories live. Tests point this at a temp folder.
@@ -841,7 +841,7 @@ function Get-LimpetAgentAccounts {
     $found = @{}
     foreach ($kind in $script:LimpetAgentKinds.Keys) { $found[$kind] = @() }
     foreach ($d in @(Get-ChildItem -LiteralPath $AgentHome -Directory -Force -ErrorAction SilentlyContinue)) {
-        if ($d.Name -match "^\.$($script:LimpetAgentPattern)-([1-9]\d*)$") { $found[$Matches[1]] += [int]$Matches[2] }
+        if ($d.Name -match "^\.$($script:LimpetAgentPattern)-([1-9]\d*)$" -and $Matches[1] -ne 'opencode') { $found[$Matches[1]] += [int]$Matches[2] }
     }
     foreach ($kind in $script:LimpetAgentKinds.Keys) {
         [pscustomobject]@{ Command = $kind; Kind = $kind; Number = 0; ConfigDir = (Join-Path $AgentHome ".$kind") }
@@ -858,6 +858,7 @@ function Resolve-LimpetAgentCommand {
     if ($Command -notmatch "^$($script:LimpetAgentPattern)([1-9]\d*)?$") { return $null }
     $kind = $Matches[1]
     $n = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+    if ($kind -eq 'opencode' -and $n) { return $null }
     $dir = if ($n) { ".$kind-$n" } else { ".$kind" }
     [pscustomobject]@{ Command = $Command; Kind = $kind; Number = $n; ConfigDir = (Join-Path $AgentHome $dir) }
 }
@@ -1584,7 +1585,7 @@ function Exit-LimpetAgyAccount([string]$Command) {
 # which account wrote them. LIMPET_AGENT_RUN overrides the folder (tests).
 function Get-LimpetAgentRunDir { if ($env:LIMPET_AGENT_RUN) { $env:LIMPET_AGENT_RUN } else { Join-Path $env:APPDATA 'limpet\agents' } }
 
-function Set-LimpetAgentLaunch([string]$Command) {
+function Set-LimpetAgentLaunch([string]$Command, [string]$SessionId = '', [string]$Cwd = '') {
     # Note that this shell is launching $Command; returns the note's path
     # ($null if it couldn't be written). Notes left by shells that were
     # closed mid-launch are cleared on the way.
@@ -1597,7 +1598,7 @@ function Set-LimpetAgentLaunch([string]$Command) {
             }
         }
         $note = Join-Path $dir "$PID.json"
-        $json = '{{"cmd":"{0}","pid":{1},"startedAt":{2}}}' -f $Command, $PID, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $json = @{ cmd = $Command; pid = $PID; startedAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); sessionId = $SessionId; cwd = $Cwd } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($note, $json)
         return $note
     }
@@ -1626,10 +1627,10 @@ function Invoke-LimpetAgent {
     )
     $account = Resolve-LimpetAgentCommand -Command $Command
     if (-not $account) {
-        Write-Error "limpet: '$Command' is not an agent account (claude, claude1, ..., codex, codex1, ..., agy, agy1, ..., copilot, copilot1, ...)."
+        Write-Error "limpet: '$Command' is not an agent account (claude, claude1, ..., codex, codex1, ..., agy, agy1, ..., copilot, copilot1, ..., opencode)."
         return
     }
-    New-Item -ItemType Directory -Force -Path $account.ConfigDir | Out-Null
+    if ($account.Kind -ne 'opencode') { New-Item -ItemType Directory -Force -Path $account.ConfigDir | Out-Null }
     $envName = $script:LimpetAgentKinds[$account.Kind]
     # Wire up every account of this agent, not just this one, so the plain
     # account's history is in the shared store too.
@@ -1646,13 +1647,31 @@ function Invoke-LimpetAgent {
         }
     }
     if (-not $exe) {
-        $what = @{ claude = 'claude CLI (Claude Code)'; codex = 'codex CLI (npm i -g @openai/codex)'; agy = 'agy CLI (Antigravity)'; copilot = 'copilot CLI (npm i -g @github/copilot)' }[$account.Kind]
+        $what = @{ claude = 'claude CLI (Claude Code)'; codex = 'codex CLI (npm i -g @openai/codex)'; agy = 'agy CLI (Antigravity)'; copilot = 'copilot CLI (npm i -g @github/copilot)'; opencode = 'opencode CLI (npm i -g @opencode/cli)' }[$account.Kind]
         Write-Warning "limpet: the $what is not on PATH. Install it, then rerun $Command."
         return
     }
     if ($account.Kind -eq 'agy' -and -not (Enter-LimpetAgyAccount $account.Command)) { return }
     $prev = if ($envName) { [Environment]::GetEnvironmentVariable($envName, 'Process') }
-    $note = if ($account.Kind -ne 'claude') { Set-LimpetAgentLaunch $account.Command }
+    $sessionId = ''
+    if ($account.Kind -eq 'opencode') {
+        for ($i = 0; $i -lt $Arguments.Count; $i++) {
+            $arg = [string]$Arguments[$i]
+            if ($arg -eq '--session' -or $arg -eq '-s') {
+                if ($i + 1 -lt $Arguments.Count) { $sessionId = [string]$Arguments[$i + 1] }
+                break
+            }
+            if ($arg -match '^--session=(.+)$') { $sessionId = $Matches[1]; break }
+        }
+        if (-not $sessionId -and $Arguments -notcontains '--continue' -and $Arguments -notcontains '-c' -and
+            $Arguments -notcontains '--help' -and $Arguments -notcontains '-h' -and
+            $Arguments -notcontains '--version' -and $Arguments -notcontains '-v' -and
+            ($Arguments.Count -eq 0 -or [string]$Arguments[0] -notmatch '^(auth|session|models|stats|run|serve|service|api|acp|debug|mcp|plugin|upgrade|update|uninstall)$')) {
+            $sessionId = 'ses_' + ([guid]::NewGuid().ToString('N').Substring(0, 26))
+            $Arguments = @($Arguments) + @('--session', $sessionId)
+        }
+    }
+    $note = if ($account.Kind -ne 'claude') { Set-LimpetAgentLaunch $account.Command $sessionId (Get-Location).Path }
     try {
         if ($envName) { [Environment]::SetEnvironmentVariable($envName, $account.ConfigDir, 'Process') }
         & $exe @Arguments
@@ -1678,6 +1697,11 @@ foreach ($acct in @(Get-LimpetAgentAccounts | Where-Object { $_.Number -gt 0 }))
 # may have swapped out, and must not start while another agy account runs.
 function agy { Invoke-LimpetAgent -Command 'agy' -Arguments $args }
 $script:LimpetAgentFunctions += 'agy'
+
+# Plain OpenCode is wrapped too, so Limpet can tie the running tab to a stable
+# session id and carry its transcript when the user switches agents.
+function opencode { Invoke-LimpetAgent -Command 'opencode' -Arguments $args }
+$script:LimpetAgentFunctions += 'opencode'
 
 # Finish any agyN launch whose shell was closed before it could put plain
 # agy's login back.
