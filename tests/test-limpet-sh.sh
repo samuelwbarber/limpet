@@ -347,11 +347,11 @@ out=$(claude10 2>&1); contains "$out" 'not on PATH'; check 'a missing CLI is rep
 if command -v zsh >/dev/null 2>&1; then
   uz="$TMP/userzdot"; mkdir -p "$uz"
   printf 'export U_ENV=1\n' > "$uz/.zshenv"; printf 'export U_PROFILE=1\n' > "$uz/.zprofile"; printf 'export U_RC=1\nalias mine=echo\n' > "$uz/.zshrc"; printf 'export U_LOGIN=1\n' > "$uz/.zlogin"
-  out=$(ZDOTDIR="$REPO/shell/rc/zsh" LIMPET_USER_ZDOTDIR="$uz" LIMPET_SHELL_DIR="$REPO/shell" zsh -ilc 'echo "env=$U_ENV profile=$U_PROFILE rc=$U_RC login=$U_LOGIN zdot=$ZDOTDIR"; type xssh >/dev/null && echo HAVE_XSSH; alias mine' 2>/dev/null)
+  out=$(skip_global_compinit=1 ZDOTDIR="$REPO/shell/rc/zsh" LIMPET_USER_ZDOTDIR="$uz" LIMPET_SHELL_DIR="$REPO/shell" zsh -ilc 'echo "env=$U_ENV profile=$U_PROFILE rc=$U_RC login=$U_LOGIN zdot=$ZDOTDIR"; type xssh >/dev/null && echo HAVE_XSSH; alias mine' 2>/dev/null)
   contains "$out" 'env=1 profile=1 rc=1 login=1'; check "zsh rc: the user's .zshenv/.zprofile/.zshrc/.zlogin all run" $?
   contains "$out" HAVE_XSSH && contains "$out" 'mine=echo'; check 'zsh rc: limpet loads on top of the user rc' $?
   contains "$out" "zdot=$uz"; check "zsh rc: ZDOTDIR is handed back to the user's" $?
-  out=$(ZDOTDIR="$REPO/shell/rc/zsh" LIMPET_USER_ZDOTDIR="$TMP/nouser" LIMPET_SHELL_DIR="$REPO/shell" zsh -ilc 'echo "zdot=[$ZDOTDIR]"; type xssh >/dev/null && echo HAVE_XSSH' 2>/dev/null)
+  out=$(skip_global_compinit=1 ZDOTDIR="$REPO/shell/rc/zsh" LIMPET_USER_ZDOTDIR="$TMP/nouser" LIMPET_SHELL_DIR="$REPO/shell" zsh -ilc 'echo "zdot=[$ZDOTDIR]"; type xssh >/dev/null && echo HAVE_XSSH' 2>/dev/null)
   contains "$out" HAVE_XSSH && contains "$out" "zdot=[$TMP/nouser]"; check 'zsh rc: works with no user rc files at all' $?
 fi
 if command -v bash >/dev/null 2>&1; then
