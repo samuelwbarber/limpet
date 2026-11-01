@@ -36,12 +36,21 @@ async function type(page, t) { // Focus the terminal first: on macOS a fresh Ele
     // runs right after startup, and flaked on CI that way).
     await waitFor(() => screenText(page).then((t) => p.promptOnly(t)), 10000);
     await clip(p.echo(marker));
+    const seen = async () => ((await screenText(page)).match(new RegExp(marker, 'g')) || []).length;
     await page.keyboard.press(shortcut);
-    await page.keyboard.press('Enter');
-    await waitFor(() => screenText(page).then((t) => (t.match(new RegExp(marker, 'g')) || []).length >= 2), 8000);
+    // The paste is asynchronous (the renderer fetches the clipboard from the
+    // main process before feeding the terminal) while Enter goes straight to
+    // the pty, so wait for the pasted line to show before pressing it; on a
+    // slow runner Enter otherwise ran an empty line first, and the marker was
+    // seen once. A double paste shows up here already, as two on one line.
+    await waitFor(async () => (await seen()) >= 1, 8000);
     await sleep(300);
-    const count = ((await screenText(page)).match(new RegExp(marker, 'g')) || []).length;
-    check(`${shortcut} pastes exactly once${count === 2 ? '' : ` (marker seen ${count}x, want 2)`}`, count === 2);
+    const pasted = await seen();
+    await page.keyboard.press('Enter');
+    await waitFor(async () => (await seen()) >= 2, 8000);
+    await sleep(300);
+    const count = await seen();
+    check(`${shortcut} pastes exactly once${pasted === 1 && count === 2 ? '' : ` (marker seen ${pasted}x before Enter, ${count}x after; want 1 and 2)`}`, pasted === 1 && count === 2);
   }
 
   // ---- the copy shortcut copies a selection ----
