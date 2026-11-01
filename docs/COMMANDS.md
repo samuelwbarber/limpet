@@ -174,7 +174,7 @@ Linux shims (the shell already has `ls -la` and friends):
 | `wput <files> [-To user@host] [-Dest dir] [-Port N] [-Key path]` | yes | `--to`, `--dest`, `--port`, `--key` work too; the last `xssh` host is remembered in `${TMPDIR:-/tmp}/limpet-last-ssh.txt` |
 | `peek`, `peak`, `reels`, `download`, `upload` | yes | the same helpers `xssh` sends to remote hosts, loaded locally |
 | `limpet` | yes | the banner |
-| `limpet-enroll user@host [-p port]` | replaces `Enable-LimpetHello` | makes `~/.ssh/limpet_ed25519` with a random passphrase kept in the login Keychain (`security add-generic-password -s limpet-ssh-key`), installs it on the host (password typed once), remembers the host in `~/.config/limpet/hello/hosts.txt`; `xssh` then unlocks the key from the Keychain. On Linux the passphrase is kept in `secret-tool` when available, else in a 0600 file |
+| `limpet-enroll user@host [-p port]` | replaces `Enable-LimpetHello` | makes `~/.ssh/limpet_ed25519` with a random passphrase kept in the login Keychain (`security add-generic-password -s limpet-ssh-key`), installs it on the host (password typed once), remembers the host in `~/.config/limpet/hello/hosts.txt`; `xssh` then unlocks the key from the Keychain. On Linux there is no Keychain: the passphrase is kept in a 0600 file under `~/.config/limpet/hello/` and `limpet-enroll` says so |
 | `limpet-forget user@host [--remove-remote]` | replaces `Disable-LimpetHello` | |
 | `limpet-status` | replaces `Get-LimpetHelloStatus` | |
 | `claude1`, `codex2`, `agy1`, `copilot3`, ... | yes | functions for the directories that exist, `command_not_found_handler` (zsh) / `command_not_found_handle` (bash) for any other number; `--limpet-plan` prints the plan instead of launching |

@@ -50,6 +50,8 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq zsh tmux lsof
+          else
+            command -v tmux >/dev/null || brew install -q tmux
           fi
           zsh --version; bash --version | head -n 1; tmux -V; command -v lsof
       - name: Shell suite under zsh
