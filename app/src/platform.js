@@ -171,10 +171,24 @@ function parseLsof(text, paths) {
 async function fileHolders(paths) {
   if (!paths.length) return {};
   if (isWindows) return require('./agent-scan').fileHoldersWindows(paths);
-  const out = await run('lsof', ['-n', '-P', '-F', 'pn', '--', ...paths], { timeoutMs: 20000 });
+  // lsof reports the path as the kernel sees it, so ask with symlinks resolved
+  // (macOS: ~/... under /var/folders is really /private/var/folders) and map
+  // the answers back to the paths asked about.
+  const asked = {};
+  for (const p of paths) {
+    let real = p;
+    try { real = fs.realpathSync(p); } catch (_) { /* not there: no holder either */ }
+    (asked[real] = asked[real] || []).push(p);
+  }
+  const reals = Object.keys(asked);
+  const out = await run('lsof', ['-n', '-P', '-F', 'pn', '--', ...reals], { timeoutMs: 20000 });
   // lsof exits 1 when some file has no holder, with the rest still listed;
   // only a missing lsof (null) means we don't know.
-  return out === null ? null : parseLsof(out, paths);
+  if (out === null) return null;
+  const byReal = parseLsof(out, reals);
+  const holders = {};
+  for (const real of reals) for (const p of asked[real]) holders[p] = byReal[real];
+  return holders;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
