@@ -944,7 +944,7 @@ function readClaudeSessionFiles() {
 }
 
 // Where the shell's codexN wrapper notes which account it launched (see
-// agent-scan.js): %APPDATA%\limpetgents on Windows, ~/Library/Application
+// agent-scan.js): %APPDATA%\limpet\agents on Windows, ~/Library/Application
 // Support/limpet/agents on macOS, ~/.config/limpet/agents on Linux (what
 // Electron's appData is on each, and what limpet.sh / Limpet.psm1 write to).
 // LIMPET_AGENT_RUN moves the folder (tests).

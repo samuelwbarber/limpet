@@ -7,6 +7,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const settings = require('../src/settings');
+// The pre-settings-page behaviour these tests pin is the Windows/Linux one;
+// macOS has its own Cmd defaults (tested below), so the platform is explicit.
 const backdrop = require('../src/backdrop');
 
 function scratch() {
@@ -16,13 +18,13 @@ function scratch() {
 
 function freshStore() {
   const { dir, file } = scratch();
-  const store = settings.createStore(file);
+  const store = settings.createStore(file, fs, 'win32');
   store.load();
   return { dir, file, store };
 }
 
 test('defaults are what limpet did before the settings page', () => {
-  const d = settings.defaults();
+  const d = settings.defaults('win32');
   assert.deepEqual(d.terminal, {
     fontFamily: "'Cascadia Mono', Consolas, monospace", fontSize: 14, lineHeight: 1,
     cursorStyle: 'block', cursorBlink: true, scrollback: 1000,
@@ -43,15 +45,15 @@ test('defaults are what limpet did before the settings page', () => {
 
 test('a missing file loads the defaults and writes nothing', () => {
   const { file, store } = freshStore();
-  assert.deepEqual(store.get(), settings.defaults());
+  assert.deepEqual(store.get(), settings.defaults('win32'));
   assert.equal(fs.existsSync(file), false);
 });
 
 test('schema metadata is plain data covering every setting', () => {
-  const meta = settings.schemaMetadata();
+  const meta = settings.schemaMetadata('win32');
   assert.doesNotThrow(() => JSON.stringify(meta));
   assert.deepEqual(JSON.parse(JSON.stringify(meta)), meta); // no functions dropped silently
-  const d = settings.defaults();
+  const d = settings.defaults('win32');
   for (const section of meta) {
     assert.deepEqual(section.fields.map((f) => f.key).sort(), Object.keys(d[section.id]).sort());
     for (const f of section.fields) assert.equal(f.default, d[section.id][f.key]);
@@ -101,7 +103,7 @@ for (const [section, fields] of Object.entries(BAD)) {
         const reason = r.errors[`${section}.${key}`];
         assert.ok(typeof reason === 'string' && reason.length > 3, `no reason for ${JSON.stringify(v)}`);
       }
-      assert.deepEqual(store.get(), settings.defaults());
+      assert.deepEqual(store.get(), settings.defaults('win32'));
       assert.equal(fs.existsSync(file), false, 'a refused value is never saved');
     });
   }
@@ -185,7 +187,7 @@ test('saves atomically and only what differs from the defaults', () => {
     writeFileSync: (p, ...rest) => { calls.push(['write', p]); return fs.writeFileSync(p, ...rest); },
     renameSync: (a, b) => { calls.push(['rename', a, b]); return fs.renameSync(a, b); },
   };
-  const spied = settings.createStore(file, io);
+  const spied = settings.createStore(file, io, 'win32');
   spied.load();
   assert.equal(spied.get().terminal.fontSize, 16, 'reloads what was saved');
   spied.set({ terminal: { fontSize: 17 } });
@@ -195,7 +197,7 @@ test('saves atomically and only what differs from the defaults', () => {
   assert.deepEqual(calls[1], ['rename', calls[0][1], file]);
 
   // A failed write leaves the old file whole and no temp file.
-  const failing = settings.createStore(file, { ...fs, renameSync: () => { throw new Error('disk full'); } });
+  const failing = settings.createStore(file, { ...fs, renameSync: () => { throw new Error('disk full'); } }, 'win32');
   failing.load();
   assert.throws(() => failing.set({ terminal: { fontSize: 20 } }), /disk full/);
   assert.equal(failing.get().terminal.fontSize, 17, 'an unsaved change is not applied');
@@ -208,10 +210,10 @@ test('a corrupt file falls back to defaults and is kept aside', () => {
   const { file } = scratch();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, '{ "terminal": { "fontSize": 20, ');
-  const store = settings.createStore(file);
+  const store = settings.createStore(file, fs, 'win32');
   const errors = console.error;
   console.error = () => {};
-  try { assert.deepEqual(store.load(), settings.defaults()); } finally { console.error = errors; }
+  try { assert.deepEqual(store.load(), settings.defaults('win32')); } finally { console.error = errors; }
   assert.equal(fs.readFileSync(`${file}.bad`, 'utf8'), '{ "terminal": { "fontSize": 20, ');
   // and it still saves over the broken file
   assert.equal(store.set({ terminal: { fontSize: 12 } }).ok, true);
@@ -223,7 +225,7 @@ test('a file of the wrong shape, bad values or unknown keys keeps only the good 
   fs.mkdirSync(path.dirname(file), { recursive: true });
   for (const junk of ['null', '[]', '"text"', '42']) {
     fs.writeFileSync(file, junk);
-    assert.deepEqual(settings.createStore(file).load(), settings.defaults(), junk);
+    assert.deepEqual(settings.createStore(file, fs, 'win32').load(), settings.defaults('win32'), junk);
   }
   fs.writeFileSync(file, JSON.stringify({
     terminal: { fontSize: 99, cursorStyle: 'bar', secret: 'x' },
@@ -231,7 +233,7 @@ test('a file of the wrong shape, bad values or unknown keys keeps only the good 
     extra: { a: 1 },
     keybindings: { newTab: 'ctrl+shift+w', closeTab: 'Ctrl+Shift+W', openSettings: 'Ctrl+C' },
   }));
-  const v = settings.createStore(file).load();
+  const v = settings.createStore(file, fs, 'win32').load();
   assert.equal(v.terminal.fontSize, 14);
   assert.equal(v.terminal.cursorStyle, 'bar');
   assert.equal(v.terminal.secret, undefined);
