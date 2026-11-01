@@ -85,17 +85,25 @@ async function type(page, text) {
   // Enter never ends a line).
   app.process().stderr.on('data', (d) => process.stderr.write(`[main] ${d}`));
   console.log('node-pty:', await app.evaluate(async (_electron, isWin) => {
+    let modes = [];
     try {
-      const pty = require('node-pty');
+      // Playwright's main-process evaluate has no `require`; the main module's does.
+      const req = process.mainModule.require;
+      const fs = req('fs'); const path = req('path');
+      const dir = path.dirname(req.resolve('node-pty/package.json'));
+      for (const rel of ['build/Release', ...(fs.existsSync(path.join(dir, 'prebuilds')) ? fs.readdirSync(path.join(dir, 'prebuilds')).map((d) => `prebuilds/${d}`) : [])]) {
+        try { for (const f of fs.readdirSync(path.join(dir, rel))) modes.push(`${rel}/${f}=${(fs.statSync(path.join(dir, rel, f)).mode & 0o777).toString(8)}`); } catch (_) { /* none */ }
+      }
+      const pty = req('node-pty');
       const proc = isWin ? pty.spawn('cmd.exe', ['/c', 'echo PTY_OK'], { name: 'xterm', cols: 20, rows: 5, env: process.env })
         : pty.spawn('/bin/sh', ['-c', 'echo PTY_OK'], { name: 'xterm', cols: 20, rows: 5, env: process.env });
       return await new Promise((resolve) => {
         let out = '';
         proc.onData((d) => { out += d; });
-        proc.onExit((e) => resolve(`exit ${e.exitCode}: ${out.trim()}`));
+        proc.onExit((e) => resolve(`exit ${e.exitCode}: ${out.trim()} [${modes.join(' ')}]`));
         setTimeout(() => resolve(`timeout: ${out.trim()}`), 5000);
       });
-    } catch (e) { return `error: ${e.message}`; }
+    } catch (e) { return `error: ${e.message} [${modes.join(' ')}]`; }
   }, p.isWin));
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));

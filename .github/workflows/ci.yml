@@ -134,6 +134,12 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - name: Install dependencies (validates node-pty's darwin prebuild)
         run: npm ci --no-audit --no-fund
+      - name: node-pty's spawn helper must be executable
+        # npm's prebuild download can drop the bit; without it every pty spawn
+        # fails with "posix_spawnp failed" and the app falls back to pipes.
+        run: |
+          chmod +x node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper 2>/dev/null || true
+          ls -l node_modules/node-pty/prebuilds/*/ node_modules/node-pty/build/Release/ 2>/dev/null || true
       - name: Parse-check sources
         run: for f in src/*.js; do node --check "$f"; done
       - name: Protocol unit tests

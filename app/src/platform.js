@@ -79,6 +79,29 @@ function shellSpawn({ shellDir, token, env = process.env }) {
   return { file, args: ['-il'], env: common, cwd: os.homedir() };
 }
 
+// node-pty on macOS/Linux forks through a small `spawn-helper` binary beside
+// its prebuilt module. npm's prebuild download doesn't always keep that file
+// executable, and then every pty spawn fails with "posix_spawnp failed" and
+// the app would silently fall back to pipes. Set the bit on the helpers under
+// `ptyDir` (the node-pty package folder) before the first spawn. A signed app
+// bundle must not be modified, so the caller only does this unpackaged; the
+// build does the same before packaging.
+function fixSpawnHelpers(ptyDir) {
+  if (isWindows) return [];
+  const fixed = [];
+  const candidates = [path.join(ptyDir, 'build', 'Release', 'spawn-helper')];
+  try {
+    for (const d of fs.readdirSync(path.join(ptyDir, 'prebuilds'))) candidates.push(path.join(ptyDir, 'prebuilds', d, 'spawn-helper'));
+  } catch (_) { /* no prebuilds folder */ }
+  for (const file of candidates) {
+    try {
+      const st = fs.statSync(file);
+      if ((st.mode & 0o111) !== 0o111) { fs.chmodSync(file, st.mode | 0o755); fixed.push(file); }
+    } catch (_) { /* not there */ }
+  }
+  return fixed;
+}
+
 // ---- processes -------------------------------------------------------------
 
 // ps's etime ([[dd-]hh:]mm:ss) in milliseconds.
@@ -249,7 +272,7 @@ function readClaudeCredentials(configDir, { plain = false, now = Date.now(), exe
 
 module.exports = {
   isWindows, isMac, isLinux,
-  defaultShell, shellSpawn,
+  defaultShell, shellSpawn, fixSpawnHelpers,
   parseEtime, parsePs, listProcesses, parseLsof, fileHolders, killTree,
   psQuote, posixQuote, shellQuote, shellKind,
   backdrop, codexAppServerCommand,

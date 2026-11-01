@@ -61,6 +61,8 @@ jobs:
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json version v$v"; exit 1; }
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+      - name: node-pty's spawn helper must be executable (it is packaged as is)
+        run: chmod +x node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper 2>/dev/null || true
       - name: Unit tests
         run: npm test
       - name: Build and publish (dmg + zip, arm64 and x64)

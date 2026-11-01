@@ -33,9 +33,17 @@ let ptyLib = null;
 try {
   // Installed, node-pty loads from app.asar.unpacked: its ConPTY worker script
   // and forked helper have to be real files, not asar entries.
-  ptyLib = require(app.isPackaged
+  const ptyPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'node-pty')
-    : 'node-pty');
+    : 'node-pty';
+  ptyLib = require(ptyPath);
+  // Unpackaged (npm start, the e2e): make sure node-pty's spawn-helper is
+  // executable, or every pty spawn fails on macOS/Linux. A packaged bundle is
+  // left alone (it may be signed); the build sets the bit before packaging.
+  if (!app.isPackaged) {
+    const fixed = platform.fixSpawnHelpers(path.dirname(require.resolve('node-pty/package.json')));
+    if (fixed.length) console.error('[limpet] made node-pty\'s spawn helper executable:', fixed.join(', '));
+  }
 } catch (e) {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
