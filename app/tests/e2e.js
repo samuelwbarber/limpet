@@ -14,6 +14,15 @@ const TEST_PNG = path.join(APP, '..', 'tools', 'demo', 'test.png');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;
+// After a failing check, show what the terminal had on screen (the last few
+// lines), so a CI log says what the shell actually did.
+let traced = 0;
+async function trace(page) {
+  if (failures === traced) return;
+  traced = failures;
+  const lines = (await screenText(page)).trimEnd().split('\n').filter((l) => l.trim());
+  console.log(`  screen: ${JSON.stringify(lines.slice(-6))}`);
+}
 function check(name, cond) {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`);
   if (!cond) failures++;
@@ -102,6 +111,7 @@ async function type(page, text) {
   await sleep(4000);
   const withImage = await imagePixels(page);
   check(`peek paints the image (${before} -> ${withImage} px)`, withImage > before + 50);
+  await trace(page);
   await type(page, p.echo('peek-done'));
   await sleep(1500);
   check('prompt keeps working under the image', (await screenText(page)).includes('peek-done'));
@@ -121,6 +131,7 @@ async function type(page, text) {
   const reelsShown = () => page.evaluate(() => document.getElementById('reels').classList.contains('show'));
   await type(page, 'reels https://example.com');
   check('reels opens', !!(await waitFor(reelsShown, 8000)));
+  await trace(page);
   await type(page, 'reels');
   check('reels closes', !!(await waitFor(async () => !(await reelsShown()), 8000)));
 
@@ -132,6 +143,7 @@ async function type(page, text) {
   const saved = await waitFor(() => fs.existsSync(dl) && fs.readFileSync(dl, 'utf8') === 'hello limpet', 8000);
   check('streamed download saves to Downloads', !!saved);
   check('streamed download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
+  await trace(page);
   fs.rmSync(dl, { force: true });
 
   // ...but only when it carries the app's token: output that merely contains the
@@ -139,6 +151,7 @@ async function type(page, text) {
   await type(page, p.rawDownload('bGltcGV0LWNpLnR4dA==', 'aGVsbG8gbGltcGV0', '0000'));
   const refused = await waitFor(async () => (await screenText(page)).includes('ignored a download'), 8000);
   check('untokened download is refused', !!refused && !fs.existsSync(dl));
+  await trace(page);
   fs.rmSync(dl, { force: true });
 
   // ---- settings page: the shortcut opens it, a font size change reaches the terminal ----
