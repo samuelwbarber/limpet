@@ -66,6 +66,8 @@ async function waitFor(fn, timeout, every = 500) {
 }
 
 async function type(page, text) {
+  // Focus the terminal first: on macOS a fresh Electron window does not take the keyboard on its own.
+  await page.locator('.term-pane.active .xterm-helper-textarea').focus().catch(() => {});
   await page.keyboard.type(text, { delay: 10 });
   await page.keyboard.press('Enter');
 }

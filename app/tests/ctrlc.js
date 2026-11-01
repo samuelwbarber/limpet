@@ -11,7 +11,9 @@ let failures = 0;
 function check(name, cond) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`); if (!cond) failures++; }
 const screenText = (page) => page.evaluate(() => { const el = document.querySelector('.term-pane.active .xterm-rows'); return el ? el.innerText : ''; });
 async function waitFor(fn, timeout, every = 300) { const end = Date.now() + timeout; for (;;) { const v = await fn(); if (v) return v; if (Date.now() > end) return null; await sleep(every); } }
-async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await page.keyboard.press('Enter'); }
+async function type(page, t) { // Focus the terminal first: on macOS a fresh Electron window does not take the keyboard on its own.
+  await page.locator('.term-pane.active .xterm-helper-textarea').focus().catch(() => {});
+  await page.keyboard.type(t, { delay: 10 }); await page.keyboard.press('Enter'); }
 
 (async () => {
   const app = await _electron.launch({
