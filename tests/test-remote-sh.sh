@@ -184,13 +184,20 @@ if command -v tmux >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
   # script exits early (broken-pipe printfs). Real sessions get a capable
   # TERM from the app's xterm.js, so force one here too.
   export TERM=xterm-256color
+  # The bootstrap under a pty, stdin piped in. util-linux script (Linux) takes
+  # the command with -c; BSD script (macOS) takes it after the typescript file.
+  if script --version >/dev/null 2>&1; then
+    in_pty() { script -qec 'sh -c "$BOOT"' /dev/null; }
+  else
+    in_pty() { script -q /dev/null sh -c 'sh -c "$BOOT"'; }
+  fi
   { sleep 2; printf 'export M=alive; type peek >/dev/null 2>&1 && echo TMUX-OK\n'; sleep 1; printf 'tmux detach\n'; sleep 1; } \
-    | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t1.log" 2>&1
+    | in_pty > "$TMP/t1.log" 2>&1
   grep -qa 'TMUX-OK' "$TMP/t1.log"; check 'resume bootstrap: helpers live inside tmux' $?
   tmux has-session -t =limpet-other 2>/dev/null; check 'resume bootstrap: leaves sessions of other versions running' $?
   tmux kill-session -t limpet-other 2>/dev/null
   { sleep 2; printf '[ "$M" = alive ] && echo TMUX-RESUMED\n'; sleep 1; printf 'tmux kill-session -t limpet-test\n'; sleep 1; } \
-    | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t2.log" 2>&1
+    | in_pty > "$TMP/t2.log" 2>&1
   grep -qa 'TMUX-RESUMED' "$TMP/t2.log"; check 'resume bootstrap: reconnect resumes the same shell' $?
 else
   echo 'SKIP  tmux/script unavailable: resume bootstrap untested'
