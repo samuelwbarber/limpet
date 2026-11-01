@@ -319,7 +319,11 @@ plan=$(claude10 --limpet-plan --resume abc)
 contains "$plan" 'kind=claude' && contains "$plan" 'envName=CLAUDE_CONFIG_DIR' && contains "$plan" "configDir=$ah/.claude-10" && contains "$plan" 'args=--resume abc'; check 'claude10 runs Claude with CLAUDE_CONFIG_DIR at ~/.claude-10, arguments intact' $?
 plan=$(codex1 --limpet-plan resume xyz)
 contains "$plan" 'kind=codex' && contains "$plan" 'envName=CODEX_HOME' && contains "$plan" "configDir=$ah/.codex-1" && contains "$plan" 'args=resume xyz'; check 'codex1 runs Codex with CODEX_HOME at ~/.codex-1' $?
-type claude7 >/dev/null 2>&1; [ $? != 0 ]; check 'a number with no dir is not a command yet' $?
+if _limpet_bash_has_cnf; then
+  type claude7 >/dev/null 2>&1; [ $? != 0 ]; check 'a number with no dir is not a command yet (the hook catches it)' $?
+else
+  type claude7 >/dev/null 2>&1 && type codex99 >/dev/null 2>&1; check 'a number with no dir is predefined (bash < 4 has no command-not-found hook)' $?
+fi
 plan=$(claude7 --limpet-plan -c 2>/dev/null)
 contains "$plan" "configDir=$ah/.claude-7" && [ -d "$ah/.claude-7" ] && contains "$plan" 'args=-c'; check 'claude7 still runs, through the command-not-found hook, and gets its dir' $?
 plan=$(codex42 --limpet-plan 2>/dev/null)

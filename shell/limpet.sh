@@ -1127,6 +1127,11 @@ for _limpet_cmd in $(_limpet_define_account_functions); do
 done
 unset _limpet_cmd
 
+# Can this shell catch unknown commands? zsh and bash 4+ can; macOS's bash 3.2
+# can't, so there the numbers are predefined (below). LIMPET_NO_CNF=1 forces
+# that fallback (the test suite exercises it on a newer bash).
+_limpet_bash_has_cnf() { [ "${LIMPET_NO_CNF:-}" != 1 ] && { [ -n "${ZSH_VERSION:-}" ] || [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; }; }
+
 _limpet_cnf() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   local cmd=$1
@@ -1154,7 +1159,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     }
     _limpet_zsh_install_cnf
   '
-else
+elif _limpet_bash_has_cnf; then
   if declare -f command_not_found_handle >/dev/null 2>&1; then
     case "$(declare -f command_not_found_handle)" in
       *_limpet_cnf*) ;;
@@ -1162,6 +1167,19 @@ else
     esac
   fi
   command_not_found_handle() { _limpet_cnf "$@"; }
+fi
+
+# bash 3.2 (macOS's /bin/bash) has no command-not-found hook, so there every
+# number up to 99 is predefined instead; any other number still errors.
+if ! _limpet_bash_has_cnf; then
+  for _limpet_kind in claude codex agy copilot; do
+    _limpet_n=1
+    while [ "$_limpet_n" -le 99 ]; do
+      eval "$_limpet_kind$_limpet_n() { limpet_invoke_agent $_limpet_kind$_limpet_n \"\$@\"; }"
+      _limpet_n=$((_limpet_n + 1))
+    done
+  done
+  unset _limpet_kind _limpet_n
 fi
 
 # Finish any agyN launch whose shell was closed before it put plain agy's login back.
