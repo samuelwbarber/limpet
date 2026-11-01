@@ -125,10 +125,12 @@ const unix = {
   standIn: {
     exe: '/bin/sh',
     name: (kind) => kind,
+    // The lock and mark dir travel as $1 and $2 (quoted once, by the outer
+    // shell) rather than being spliced into the -c script.
     run: (exe, lock = '', markDir = '') => {
-      const hold = lock ? `exec 3<>${q(lock)}; ` : '';
-      const mark = markDir ? `echo $$ > ${q(markDir)}/inuse.$$.lock; ` : '';
-      return `${q(exe)} -c '${hold}${mark}echo SESSPID_$$; sleep 120'`;
+      const hold = lock ? 'exec 3<>"$1"; ' : '';
+      const mark = markDir ? 'echo $$ > "$2/inuse.$$.lock"; ' : '';
+      return `${q(exe)} -c '${hold}${mark}echo SESSPID_$$; sleep 120' sh ${q(lock)} ${q(markDir)}`;
     },
     holdLock: (lock) => require('child_process').spawn('/bin/sh', ['-c', `exec 3<>${q(lock)}; sleep 120`], { stdio: 'ignore' }),
   },
