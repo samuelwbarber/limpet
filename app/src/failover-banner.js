@@ -61,5 +61,10 @@ window.limpet.onFailoverOffer(({ id, text, to, clear }) => {
 // Esc hides the front tab's banner. It still reaches the terminal too: the
 // banner isn't what has the keyboard.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && failoverBanners.has(activeId) && !failoverBanners.get(activeId).classList.contains('busy')) closeFailoverBanner(activeId);
+  if (e.key !== 'Escape' || !failoverBanners.has(activeId) || failoverBanners.get(activeId).classList.contains('busy')) return;
+  // Consumed here: an ESC byte reaching the shell would make zsh read the next
+  // key as a Meta chord.
+  e.preventDefault();
+  e.stopPropagation();
+  closeFailoverBanner(activeId);
 }, true);

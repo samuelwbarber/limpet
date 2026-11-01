@@ -703,7 +703,15 @@ function closeAccountMenu() {
   accountMenu = null;
 }
 document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.contains(e.target)) closeAccountMenu(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAccountMenu(); }, true);
+// Escape closes the menu and goes no further: the terminal keeps the keyboard
+// while the menu is up, and an ESC byte reaching the shell makes zsh read the
+// next key as a Meta chord (ESC ' is quote-line, ESC e a word command).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !accountMenu) return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeAccountMenu();
+}, true);
 window.addEventListener('blur', closeAccountMenu);
 
 // "resets in 2h 10m" for an ISO time; '' if unknown.

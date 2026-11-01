@@ -133,10 +133,6 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // `markDir` if given.
   async function standIn(exe, lock = '', markDir = '') {
     await page.locator('.term-pane.active').click();
-    // Let the click's focus change land before typing: on the macOS runner the
-    // first characters typed straight after it were lost, leaving zsh in an
-    // open quote.
-    await sleep(300);
     await type(page, p.standIn.run(exe, lock, markDir));
     const seen = new Set();
     for (const m of (await screenText(page)).matchAll(/SESSPID_(\d+)/g)) seen.add(m[1]);
