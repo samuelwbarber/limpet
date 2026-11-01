@@ -13,13 +13,15 @@
 //   copilot -> claude1   a synthesized Claude transcript
 //   agy     -> agy1      the conversation whose database agy holds, resumed
 //   agy     -> codex     a handoff file
-// The agents are stood in for by nested PowerShells (detection needs a live
-// pid under the tab's shell plus the files the real agents leave behind), the
-// launch line is captured instead of run, and usage comes from a fixture.
+// The agents are stood in for by nested shells under the agent's name
+// (PowerShell on Windows, /bin/sh elsewhere: detection needs a live pid under
+// the tab's shell plus the files the real agents leave behind), the launch
+// line is captured instead of run, and usage comes from a fixture.
 const { _electron } = require('playwright-core');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const p = require('./platform');
 
 const APP = path.join(__dirname, '..');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,6 +29,21 @@ let failures = 0;
 function check(name, condition) {
   console.log(`${condition ? 'PASS' : 'FAIL'}  ${name}`);
   if (!condition) failures++;
+}
+// After a failing check, show the last screen lines (and, off Windows, the
+// shells and sleeps alive), so a CI log says what the terminal actually did.
+let traced = 0;
+async function trace(page) {
+  if (failures === traced) return;
+  traced = failures;
+  const lines = (await screenText(page)).trimEnd().split('\n').filter((l) => l.trim());
+  console.log(`  screen: ${JSON.stringify(lines.slice(-8))}`);
+  if (!p.isWin) {
+    try {
+      const ps = require('child_process').execFileSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' });
+      console.log(`  ps: ${JSON.stringify(ps.split('\n').filter((l) => /sleep 120|SESSPID|bin\/(sh|zsh|bash|codex|copilot|agy)/.test(l)).slice(0, 12))}`);
+    } catch (_) { /* no ps */ }
+  }
 }
 async function waitFor(fn, timeout, every = 250) {
   const end = Date.now() + timeout;
@@ -42,6 +59,8 @@ const screenText = (page) => page.evaluate(() => {
   return el ? el.innerText : '';
 });
 async function type(page, text) {
+  // Focus the terminal first: on macOS a fresh Electron window does not take the keyboard on its own.
+  await page.locator('.term-pane.active .xterm-helper-textarea').focus().catch(() => {});
   await page.keyboard.type(text, { delay: 5 });
   await page.keyboard.press('Enter');
 }
@@ -77,49 +96,35 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     codex: { fiveHour: null, weekly: { left: 0, resetsAt: null }, plan: 'prolite' },
     codex1: { fiveHour: { left: 25, resetsAt: null }, weekly: { left: 90, resetsAt: null }, plan: 'plus' },
   }));
-  // A stand-in "codex.exe": PowerShell under another name, so the process tree looks right.
+  // A stand-in "codex": the shell under another name, so the process tree looks right.
   const bin = path.join(home, 'bin');
   fs.mkdirSync(bin);
-  fs.copyFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), path.join(bin, 'codex.exe'));
+  const standInExe = (kind) => path.join(bin, p.standIn.name(kind));
+  fs.copyFileSync(p.standIn.exe, standInExe('codex'));
   // A stand-in for the backdrop setup script, installing into a scratch folder:
   // the first run fails, the second hangs mid-download (to be cancelled), the
   // third finishes.
   const localAi = path.join(home, 'local-ai');
-  const fakeSetup = path.join(home, 'fake-setup.ps1');
-  fs.writeFileSync(fakeSetup, [
-    'param([switch]$Force, [string]$LocalRoot)',
-    '$ErrorActionPreference = "Stop"',
-    '$home_ = Split-Path $LocalRoot',
-    '$runs = Join-Path $home_ "setup-runs"',
-    '$n = 1 + [int](Get-Content $runs -ErrorAction SilentlyContinue)',
-    'Set-Content $runs $n',
-    'Set-Content (Join-Path $home_ "setup-pid") $PID',
-    'if ($n -eq 1) { $host.UI.WriteErrorLine("Simulated: no network"); exit 1 }',
-    'New-Item -ItemType Directory -Force (Join-Path $LocalRoot "bin"), (Join-Path $LocalRoot "models") | Out-Null',
-    'Set-Content (Join-Path $LocalRoot "bin\\sd-cli.exe") "stand-in"',
-    '$model = Join-Path $LocalRoot "models\\sdxs-512-tinySDdistilled_Q8_0.gguf"',
-    '[IO.File]::WriteAllBytes("$model.partial", (New-Object byte[] 3145728))',
-    'Start-Sleep -Seconds $(if ($n -eq 2) { 120 } else { 2 })',
-    'Move-Item "$model.partial" $model -Force',
-  ].join('\r\n'));
+  const fakeSetup = p.fakeSetup(home);
 
   const electronApp = await _electron.launch({
     executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
-    args: [APP], timeout: 60000,
-    env: {
-      ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,
+    args: p.launchArgs(APP), timeout: 60000,
+    env: p.launchEnv({
+      LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,
       LIMPET_LOCAL_AI_DIR: localAi, LIMPET_BACKDROP_SETUP: fakeSetup,
-    },
+    }),
   });
   const page = await electronApp.firstWindow();
+  electronApp.process().stderr.on('data', (d) => process.stderr.write(`[main] ${d}`));
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
-  check('prompt appears', !!(await waitFor(async () => /PS [A-Z]:/.test(await screenText(page)), 30000)));
+  check('prompt appears', !!(await waitFor(async () => p.promptRe.test(await screenText(page)), 30000)));
 
   // Capture the launch line instead of starting an agent.
-  await electronApp.evaluate(() => {
-    global.__limpetClaudeLaunch = (cmd, opts = {}) => `Write-Output "SWAPPED_${cmd}_${opts.resume || (opts.prompt ? 'PROMPT' : 'FRESH')}"`;
-  });
+  await electronApp.evaluate((_, echoCmd) => {
+    global.__limpetClaudeLaunch = (cmd, opts = {}) => `${echoCmd} "SWAPPED_${cmd}_${opts.resume || (opts.prompt ? 'PROMPT' : 'FRESH')}"`;
+  }, p.echo('').trim());
   const userData = await electronApp.evaluate(({ app }) => app.getPath('userData'));
 
   // Stand in for an agent: a nested process under the tab's shell that prints
@@ -128,9 +133,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // `markDir` if given.
   async function standIn(exe, lock = '', markDir = '') {
     await page.locator('.term-pane.active').click();
-    const hold = lock ? `$l=[IO.File]::Open(''${lock}'',''OpenOrCreate'',''ReadWrite'',''None''); ` : '';
-    const mark = markDir ? `Set-Content -LiteralPath (Join-Path ''${markDir}'' (''inuse.'' + $PID + ''.lock'')) -Value $PID; ` : '';
-    await type(page, `& '${exe}' -NoProfile -Command '${hold}${mark}Write-Output SESSPID_$PID; Start-Sleep 120'`);
+    await type(page, p.standIn.run(exe, lock, markDir));
     const seen = new Set();
     for (const m of (await screenText(page)).matchAll(/SESSPID_(\d+)/g)) seen.add(m[1]);
     return waitFor(async () => {
@@ -139,7 +142,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     }, 15000);
   }
   async function claudeStandIn(sid, dir = c1) {
-    const pid = await standIn('powershell.exe');
+    const pid = await standIn(p.standIn.exe);
     fs.writeFileSync(path.join(dir, 'sessions', `${pid}.json`), JSON.stringify({ pid, sessionId: sid, cwd: home, kind: 'interactive', status: 'idle', updatedAt: Date.now() }));
     return pid;
   }
@@ -188,25 +191,25 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     JSON.stringify({ type: 'assistant', isSidechain: false, uuid: 'a1', parentUuid: 'u1', sessionId: sid, message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'HANDOFF_REPLY done, it is blue now' }] } }),
   ].join('\n') + '\n');
   let pid = await claudeStandIn(sid, claudeDir(2));
-  check('stand-in Claude on the unsigned account runs under the tab', !!pid);
+  check('stand-in Claude on the unsigned account runs under the tab', !!pid); await trace(page);
   menu = await openMenu();
   check('menu adds and marks the unsigned account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="claude2"]').count().then((n) => n === 1), 15000)));
-  check('menu head names the current account', /on claude2/.test(await page.locator('.account-menu .head').textContent()));
+  check('menu head names the current account', /on claude2/.test(await page.locator('.account-menu .head').textContent())); await trace(page);
   check('the other accounts are still the signed-in ones only', (await page.locator('.account-menu .item').count()) === 6);
   await page.keyboard.press('Escape');
   check('claude2 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
   check('claude2 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('claude2 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`)));
+  check('claude2 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`))); await trace(page);
 
   // ---- claude1 -> claude3: resume by id ----
   pid = await claudeStandIn(sid);
-  check('stand-in Claude runs under the tab', !!pid);
+  check('stand-in Claude runs under the tab', !!pid); await trace(page);
   menu = await openMenu();
-  check('menu marks the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="claude1"]').count().then((n) => n === 1), 15000)));
+  check('menu marks the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="claude1"]').count().then((n) => n === 1), 15000))); await trace(page);
   await page.keyboard.press('Escape');
   check('claude1 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
   check('claude1 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('claude1 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`)));
+  check('claude1 -> claude3: the same session resumes in the same shell', !!(await seenOnScreen(`SWAPPED_claude3_${sid}`))); await trace(page);
 
   // ---- claude1 -> codex1: native import (stubbed), aimed at codex1's home ----
   await electronApp.evaluate(() => {
@@ -214,7 +217,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   });
   pid = await claudeStandIn(sid);
   check('claude1 -> codex1: move completes', !!(await swapTo('codex1')));
-  check('claude1 -> codex1: the imported thread is resumed under codex1', !!(await seenOnScreen('SWAPPED_codex1_01a00000-0000-7000-8000-00000000abcd')));
+  check('claude1 -> codex1: the imported thread is resumed under codex1', !!(await seenOnScreen('SWAPPED_codex1_01a00000-0000-7000-8000-00000000abcd'))); await trace(page);
   check('claude1 -> codex1: the importer was pointed at ~/.codex-1', (await electronApp.evaluate(() => global.__limpetImportedInto)) === codexHome(1));
 
   // ---- claude1 -> codex: importer fails, so a handoff file and prompt ----
@@ -222,7 +225,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   pid = await claudeStandIn(sid);
   check('claude1 -> codex (fallback): move completes', !!(await swapTo('codex')));
   check('claude1 -> codex (fallback): codex starts with a continue prompt', !!(await seenOnScreen('SWAPPED_codex_PROMPT')));  const handoffs = fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('claude1-to-codex')) : [];
-  check('claude1 -> codex (fallback): a handoff file was written', handoffs.length >= 1);
+  check('claude1 -> codex (fallback): a handoff file was written', handoffs.length >= 1); await trace(page);
   if (handoffs.length) {
     const md = fs.readFileSync(path.join(userData, 'handoff', handoffs[handoffs.length - 1]), 'utf8');
     check('claude1 -> codex (fallback): the handoff carries the chat', md.includes('HANDOFF_ASK make the widget blue') && md.includes('HANDOFF_REPLY done'));
@@ -240,19 +243,19 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CODEX_REPLY renamed it' }] } }),
   ].join('\n') + '\n');
   const thread = '01a00000-0000-7000-8000-0000000000aa';
-  pid = await standIn(path.join(bin, 'codex.exe'));
-  check('stand-in codex runs under the tab', !!pid);
+  pid = await standIn(standInExe('codex'));
+  check('stand-in codex runs under the tab', !!pid); await trace(page);
   writeRollout(codexDir, thread);
   menu = await openMenu();
-  check('menu marks codex as the agent the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex"]').count().then((n) => n === 1), 15000)));
+  check('menu marks codex as the agent the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex"]').count().then((n) => n === 1), 15000))); await trace(page);
   await page.keyboard.press('Escape');
   check('codex -> claude1: move completes', !!(await swapTo('claude1')));
   check('codex -> claude1: the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
   const swapped = await waitFor(async () => { const m = /SWAPPED_claude1_([0-9a-f-]{36})/.exec(await screenText(page)); return m ? m[1] : null; }, 15000);
-  check('codex -> claude1: a new Claude session is resumed', !!swapped && UUID.test(swapped));
+  check('codex -> claude1: a new Claude session is resumed', !!swapped && UUID.test(swapped)); await trace(page);
   if (swapped) {
     const file = path.join(projectDir, `${swapped}.jsonl`);
-    check('codex -> claude1: the transcript was written to the account\'s project folder', fs.existsSync(file));
+    check('codex -> claude1: the transcript was written to the account\'s project folder', fs.existsSync(file)); await trace(page);
     if (fs.existsSync(file)) {
       const rows = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
       check('codex -> claude1: the transcript carries the chat, tools included',
@@ -264,14 +267,14 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   // ---- codex -> codex1: the rollout is copied into the other home ----
   const thread2 = '01a00000-0000-7000-8000-0000000000bb';
-  pid = await standIn(path.join(bin, 'codex.exe'));
+  pid = await standIn(standInExe('codex'));
   writeRollout(codexDir, thread2);
   menu = await openMenu();
   check('menu tells which codex account the chat is on from the rollout\'s home', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex"]').count().then((n) => n === 1), 15000)));
   await page.keyboard.press('Escape');
   check('codex -> codex1: move completes', !!(await swapTo('codex1')));
   check('codex -> codex1: the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('codex -> codex1: the same thread is resumed under codex1', !!(await seenOnScreen(`SWAPPED_codex1_${thread2}`)));
+  check('codex -> codex1: the same thread is resumed under codex1', !!(await seenOnScreen(`SWAPPED_codex1_${thread2}`))); await trace(page);
   const copied = path.join(codexHome(1), 'sessions', '2026', '09', '04', rolloutName(thread2));
   check('codex -> codex1: the rollout was copied into ~/.codex-1 at the same dated path', fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(codexDir, 'sessions', '2026', '09', '04', rolloutName(thread2)), 'utf8'));
 
@@ -279,22 +282,22 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // ~/.codex-1/sessions is a junction to ~/.codex/sessions, so the rollout's
   // folder no longer says which account is running; the shell's note does.
   fs.rmSync(path.join(codexHome(1), 'sessions'), { recursive: true, force: true });
-  fs.symlinkSync(path.join(codexDir, 'sessions'), path.join(codexHome(1), 'sessions'), 'junction');
+  fs.symlinkSync(path.join(codexDir, 'sessions'), path.join(codexHome(1), 'sessions'), p.symlinkType);
   await page.locator('.term-pane.active').click();
-  await type(page, 'Write-Output "SHELLPID_$PID"');
+  await type(page, p.shellPid);
   const shellPid = Number(await waitFor(async () => { const m = /SHELLPID_(\d+)/.exec(await screenText(page)); return m ? m[1] : null; }, 10000));
   fs.mkdirSync(runDir, { recursive: true });
   const launchNote = path.join(runDir, `${shellPid}.json`);
   fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'codex1', pid: shellPid, startedAt: Date.now() }));
   const thread3 = '01a00000-0000-7000-8000-0000000000cc';
-  pid = await standIn(path.join(bin, 'codex.exe'));
+  pid = await standIn(standInExe('codex'));
   writeRollout(codexDir, thread3);
   menu = await openMenu();
   check('shared history: the menu tells the codex account from the shell\'s launch note', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="codex1"]').count().then((n) => n === 1), 15000)));
   await page.keyboard.press('Escape');
   check('codex1 -> codex (shared): move completes', !!(await swapTo('codex')));
   check('codex1 -> codex (shared): the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await seenOnScreen(`SWAPPED_codex_${thread3}`)));
+  check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await seenOnScreen(`SWAPPED_codex_${thread3}`))); await trace(page);
   check('codex1 -> codex (shared): nothing was copied', fs.readdirSync(path.join(codexDir, 'sessions'), { recursive: true }).filter((n) => String(n).includes(thread3)).length === 1 &&
     fs.lstatSync(path.join(codexHome(1), 'sessions')).isSymbolicLink());
 
@@ -305,10 +308,9 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   fs.mkdirSync(locks, { recursive: true });
   const mineThread = '01a00000-0000-7000-8000-0000000000dd';
   const otherThread = '01a00000-0000-7000-8000-0000000000ee';
-  const holdLock = (thread) => `$l=[IO.File]::Open('${path.join(locks, `${thread}.lock`)}','OpenOrCreate','ReadWrite','None'); Start-Sleep 120`;
-  const other = require('child_process').spawn('powershell.exe', ['-NoProfile', '-Command', holdLock(otherThread)], { windowsHide: true });
+  const other = p.standIn.holdLock(path.join(locks, `${otherThread}.lock`));
   fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'codex1', pid: shellPid, startedAt: Date.now() }));
-  pid = await standIn(path.join(bin, 'codex.exe'), path.join(locks, `${mineThread}.lock`));
+  pid = await standIn(standInExe('codex'), path.join(locks, `${mineThread}.lock`));
   writeRollout(codexDir, mineThread);
   await sleep(1500);
   writeRollout(codexDir, otherThread); // written later, as a busy chat elsewhere would be
@@ -330,19 +332,19 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     { type: 'user.message', data: { content: 'COPILOT_ASK tidy the readme' } },
     { type: 'assistant.message', data: { content: 'COPILOT_REPLY tidied', toolRequests: [] } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
-  fs.copyFileSync(path.join(bin, 'codex.exe'), path.join(bin, 'copilot.exe'));
+  fs.copyFileSync(standInExe('codex'), standInExe('copilot'));
   fs.writeFileSync(launchNote, JSON.stringify({ cmd: 'copilot1', pid: shellPid, startedAt: Date.now() }));
-  pid = await standIn(path.join(bin, 'copilot.exe'), '', chatDir);
-  check('copilot: stand-in runs under the tab', !!pid);
+  pid = await standIn(standInExe('copilot'), '', chatDir);
+  check('copilot: stand-in runs under the tab', !!pid); await trace(page);
   menu = await openMenu();
-  check('copilot: the menu marks copilot1 as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="copilot1"]').count().then((n) => n === 1), 15000)));
+  check('copilot: the menu marks copilot1 as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="copilot1"]').count().then((n) => n === 1), 15000))); await trace(page);
   await page.keyboard.press('Escape');
   check('copilot1 -> copilot: move completes', !!(await swapTo('copilot')));
   check('copilot1 -> copilot: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('copilot1 -> copilot: the same chat is resumed', !!(await seenOnScreen(`SWAPPED_copilot_${copilotChat}`)));
+  check('copilot1 -> copilot: the same chat is resumed', !!(await seenOnScreen(`SWAPPED_copilot_${copilotChat}`))); await trace(page);
   fs.unlinkSync(launchNote);
   for (const n of fs.readdirSync(chatDir)) if (n.startsWith('inuse.')) fs.unlinkSync(path.join(chatDir, n));
-  pid = await standIn(path.join(bin, 'copilot.exe'), '', chatDir);
+  pid = await standIn(standInExe('copilot'), '', chatDir);
   check('copilot -> claude1: move completes', !!(await swapTo('claude1')));
   const fromCopilot = await waitFor(async () => { const m = /SWAPPED_claude1_([0-9a-f-]{36})/.exec((await screenText(page)).split(`SWAPPED_copilot_${copilotChat}`).pop()); return m ? m[1] : null; }, 15000);
   const carried = fromCopilot && path.join(projectDir, `${fromCopilot}.jsonl`);
@@ -362,15 +364,15 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   ].map((r) => JSON.stringify(r)).join('\n') + '\n');
   fs.mkdirSync(path.join(home, '.agy-1'), { recursive: true });
   fs.writeFileSync(path.join(home, '.agy-1', 'login.dat'), 'x'); // agy1 has a kept login
-  fs.copyFileSync(path.join(bin, 'codex.exe'), path.join(bin, 'agy.exe'));
-  pid = await standIn(path.join(bin, 'agy.exe'), path.join(agyRoot, 'conversations', `${conv}.db`));
+  fs.copyFileSync(standInExe('codex'), standInExe('agy'));
+  pid = await standIn(standInExe('agy'), path.join(agyRoot, 'conversations', `${conv}.db`));
   menu = await openMenu();
-  check('agy: the menu marks plain agy as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="agy"]').count().then((n) => n === 1), 15000)));
+  check('agy: the menu marks plain agy as the account the chat is on', !!(await waitFor(() => page.locator('.account-menu .item.current[data-cmd="agy"]').count().then((n) => n === 1), 15000))); await trace(page);
   await page.keyboard.press('Escape');
   check('agy -> agy1: move completes', !!(await swapTo('agy1')));
   check('agy -> agy1: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('agy -> agy1: the same conversation is resumed', !!(await seenOnScreen(`SWAPPED_agy1_${conv}`)));
-  pid = await standIn(path.join(bin, 'agy.exe'), path.join(agyRoot, 'conversations', `${conv}.db`));
+  check('agy -> agy1: the same conversation is resumed', !!(await seenOnScreen(`SWAPPED_agy1_${conv}`))); await trace(page);
+  pid = await standIn(standInExe('agy'), path.join(agyRoot, 'conversations', `${conv}.db`));
   check('agy -> codex: move completes', !!(await swapTo('codex')));
   const agyHandoffs = await waitFor(() => (fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('agy-to-codex')) : []).find(Boolean), 15000);
   check('agy -> codex: codex starts with a continue prompt from a handoff file', !!(await seenOnScreen('SWAPPED_codex_PROMPT')) && !!agyHandoffs &&

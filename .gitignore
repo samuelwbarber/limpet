@@ -22,3 +22,6 @@ tools/demo/vids/
 tools/demo/gifs/
 tools/demo/package.json
 tools/demo/package-lock.json
+
+# zsh writes this beside the rc files it loads (a distro-level compinit); never ship it
+shell/rc/zsh/.zcompdump*

@@ -5,15 +5,17 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { PACKAGED, unpacked, userData } = require('./paths');
+const platform = require('./platform');
 
 // LIMPET_LOCAL_AI_DIR and LIMPET_BACKDROP_SETUP let the tests install into a
 // scratch folder with a stand-in setup script. The installed app can't write
 // to its own folder, so it keeps the model in its per-user data instead.
 const LOCAL_AI_DIR = process.env.LIMPET_LOCAL_AI_DIR ||
   (PACKAGED ? userData('local-ai') : path.join(__dirname, '..', 'local-ai'));
+// setup-local-backdrop.ps1 on Windows, setup-local-backdrop.sh elsewhere.
 const SETUP_SCRIPT = process.env.LIMPET_BACKDROP_SETUP ||
-  unpacked(path.join(__dirname, '..', 'scripts', 'setup-local-backdrop.ps1'));
-const SD_EXE = path.join(LOCAL_AI_DIR, 'bin', 'sd-cli.exe');
+  unpacked(path.join(__dirname, '..', 'scripts', platform.backdrop.setupScriptName));
+const SD_EXE = path.join(LOCAL_AI_DIR, 'bin', platform.backdrop.exeName);
 const MODEL = path.join(LOCAL_AI_DIR, 'models', 'sdxs-512-tinySDdistilled_Q8_0.gguf');
 const MODEL_BYTES = 682847200; // the pinned model's size, as the setup script checks it
 const OUTPUT_DIR = path.join(LOCAL_AI_DIR, 'backgrounds');
@@ -28,6 +30,7 @@ const MIN_SCENE_CHANGE_CONFIDENCE = 2;
 const GENERIC_TITLES = new Set([
   'limpet', 'terminal', 'powershell', 'windows powershell', 'pwsh',
   'command prompt', 'cmd', 'shell', 'claude', 'claude code', 'codex',
+  'zsh', '-zsh', 'bash', '-bash', 'sh', '-sh', 'login',
 ]);
 
 const STOP_WORDS = new Set((`
@@ -294,11 +297,14 @@ function buildPrompt(snapshot, profile = null, conversationTitle = '') {
   return plan && plan.prompt;
 }
 
+// `unsupported` names why there can be no generator on this machine (an
+// Intel Mac: the pinned release has no build for it), '' otherwise.
 function backendStatus() {
   return {
     ready: fs.existsSync(SD_EXE) && fs.existsSync(MODEL),
     executable: SD_EXE,
     model: MODEL,
+    unsupported: platform.backdrop.unsupported,
   };
 }
 
@@ -318,10 +324,9 @@ function setupProgress({ exe = SD_EXE, model = MODEL } = {}) {
 // `npm run setup:backdrop` runs). Rejects with the script's own reason.
 function runSetup({ onSpawn } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-File', SETUP_SCRIPT, '-LocalRoot', LOCAL_AI_DIR,
-    ], { windowsHide: true });
+    if (platform.backdrop.unsupported) { reject(new Error(platform.backdrop.unsupported)); return; }
+    const cmd = platform.backdrop.setupCommand(SETUP_SCRIPT, LOCAL_AI_DIR);
+    const child = spawn(cmd.file, cmd.args, { windowsHide: true });
     if (onSpawn) onSpawn(child);
     // curl's progress meter shares stderr; the reason is the last line.
     let errors = '';

@@ -36,9 +36,52 @@ jobs:
       - name: Helper + bootstrap suite
         run: bash tests/test-remote-sh.sh
 
+  shell-unix:
+    name: Shell integration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure zsh, tmux and lsof
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zsh tmux lsof
+          else
+            command -v tmux >/dev/null || brew install -q tmux
+          fi
+          zsh --version; bash --version | head -n 1; tmux -V; command -v lsof
+      - name: Shell suite under zsh
+        run: zsh tests/test-limpet-sh.sh
+      - name: Shell suite under bash
+        run: bash tests/test-limpet-sh.sh
+      - name: Remote helpers + bootstrap suite
+        run: bash tests/test-remote-sh.sh
+
   unit-linux:
     name: App unit tests (Linux)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies (pure JS only; no native builds)
+        run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: Unit tests
+        run: npm test
+
+  unit-mac:
+    name: App unit tests (macOS)
+    runs-on: macos-latest
     defaults:
       run:
         working-directory: app
@@ -74,4 +117,34 @@ jobs:
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download)
+        run: npm run test:e2e
+
+  app-mac:
+    name: Electron app (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install dependencies (validates node-pty's darwin prebuild)
+        run: npm ci --no-audit --no-fund
+      - name: node-pty's spawn helper must be executable
+        # npm's prebuild download can drop the bit; without it every pty spawn
+        # fails with "posix_spawnp failed" and the app falls back to pipes.
+        run: |
+          chmod +x node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper 2>/dev/null || true
+          ls -l node_modules/node-pty/prebuilds/*/ node_modules/node-pty/build/Release/ 2>/dev/null || true
+      - name: Parse-check sources
+        run: for f in src/*.js; do node --check "$f"; done
+      - name: Protocol unit tests
+        run: npm test
+      - name: End-to-end (launch app, peek, resize, reels, download, accounts)
+        env:
+          LIMPET_SHELL: /bin/zsh
         run: npm run test:e2e

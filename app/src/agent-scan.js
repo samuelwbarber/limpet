@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { unpacked } = require('./paths');
+const platform = require('./platform');
 
 const realPath = (p) => { try { return fs.realpathSync.native(p); } catch (_) { return null; } };
 
@@ -201,9 +202,10 @@ function powershell(args, { env = process.env, timeoutMs = 15000 } = {}) {
 }
 
 // Which pids hold each of these files open: { path: [pid, ...] }, or null if
-// that couldn't be found out. Asks the Windows Restart Manager through
-// lock-holders.ps1 (about a second, the files asked about side by side).
-async function fileHolders(paths) {
+// that couldn't be found out. On Windows that is the Restart Manager through
+// lock-holders.ps1 (about a second, the files asked about side by side); on
+// macOS/Linux platform.js asks lsof.
+async function fileHoldersWindows(paths) {
   if (!paths.length) return {};
   const out = await powershell(['-ExecutionPolicy', 'Bypass', '-File', unpacked(path.join(__dirname, 'lock-holders.ps1'))],
     { env: { ...process.env, LIMPET_LOCKS: JSON.stringify(paths) }, timeoutMs: 20000 });
@@ -215,16 +217,19 @@ async function fileHolders(paths) {
   } catch (_) { return null; }
 }
 
-// pid, parent pid, name and start time of every process. Node has no
-// parent-pid API on Windows, so ask CIM (about a second), fine for a right-click.
-async function listProcesses() {
+// pid, parent pid, name and start time of every process on Windows. Node has
+// no parent-pid API there, so ask CIM (about a second), fine for a right-click.
+// macOS/Linux go through ps (platform.js), which also carries the command line.
+async function listProcessesWindows() {
   const out = await powershell(['-Command',
     "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,@{n='Start';e={ if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { 0 } }} | ConvertTo-Json -Compress"]);
   try {
     const rows = JSON.parse(out);
-    return (Array.isArray(rows) ? rows : [rows]).map((r) => ({ pid: r.ProcessId, ppid: r.ParentProcessId, name: r.Name, startedAt: Number(r.Start) || 0 }));
+    return (Array.isArray(rows) ? rows : [rows]).map((r) => ({ pid: r.ProcessId, ppid: r.ParentProcessId, name: r.Name, args: '', startedAt: Number(r.Start) || 0 }));
   } catch (_) { return []; }
 }
+
+const { listProcesses, fileHolders } = platform;
 
 // Which codex account each shell launched: the shell's codexN wrapper
 // (Invoke-LimpetAgent in shell/Limpet.psm1) leaves <dir>/<shell pid>.json
@@ -247,7 +252,7 @@ async function scanAgents({ shellPid, claudeSessionFiles = [], codexHomes = [], 
   const writers = listCodexWriters(codexHomes);
   const conversations = geminiDir ? listAgyConversations(geminiDir) : [];
   // A process list without the tab's own shell in it is a failed listing
-  // (CIM does fail now and then); one more try before concluding anything.
+  // (CIM does fail now and then; ps hardly ever); one more try before concluding anything.
   const processes = async () => {
     const first = await listProcesses();
     return first.some((p) => p.pid === shellPid) ? first : listProcesses();
@@ -272,5 +277,6 @@ async function scanAgents({ shellPid, claudeSessionFiles = [], codexHomes = [], 
 
 module.exports = {
   realPath, readFirstJsonLine, codexFolders, codexRolloutFiles, codexRollout, listCodexRollouts, listCodexWriters,
-  listCopilotChats, listAgyConversations, readAgyActive, fileHolders, listProcesses, readCodexLaunches, scanAgents,
+  listCopilotChats, listAgyConversations, readAgyActive, fileHolders, listProcesses, fileHoldersWindows, listProcessesWindows,
+  readCodexLaunches, scanAgents,
 };

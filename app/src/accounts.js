@@ -110,7 +110,9 @@ function describeAccounts(home, io) {
     const oauth = config && config.oauthAccount;
     return {
       cmd, kind, number, dir, configDir,
-      loggedIn: io.exists(path.join(configDir, '.credentials.json')),
+      // .credentials.json on Windows and Linux; on macOS the login is in the
+      // Keychain, which io.claudeCredentials (platform.js) reads.
+      loggedIn: io.exists(path.join(configDir, '.credentials.json')) || !!(io.claudeCredentials && io.claudeCredentials(configDir, number === 0)),
       email: oauth && typeof oauth.emailAddress === 'string' ? oauth.emailAddress : '',
     };
   });
@@ -195,8 +197,14 @@ function agentLauncher(kind, proc, procs, shellPid, launches) {
 }
 const codexLauncher = (proc, procs, shellPid, launches) => agentLauncher('codex', proc, procs, shellPid, launches);
 
+// Is this process an agent's CLI? By name (codex, codex.exe), or, since the
+// CLIs run through node on macOS/Linux (`node .../codex/bin/codex.js`), by a
+// path component of the command line equal to the agent's name followed by a
+// slash, a space or the end. Our own wrappers are shell functions, never
+// processes, so there is nothing of ours to mistake.
+const isAgentProc = (kind) => (p) => new RegExp(`^${kind}(\\.exe)?$`, 'i').test(String(p.name || ''))
+  || new RegExp(`(^|[\\\\/])${kind}(?=[\\\\/ ]|$)`, 'i').test(String(p.args || ''));
 // The processes of an agent's CLI under the tab's shell, oldest first.
-const isAgentProc = (kind) => (p) => new RegExp(`^${kind}(\\.exe)?$`, 'i').test(String(p.name || ''));
 function agentProcs(kind, procs, shellPid) {
   const under = descendants(procs, shellPid);
   return procs.filter((p) => under.has(p.pid) && isAgentProc(kind)(p)).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
@@ -268,12 +276,11 @@ function findSession({ sessionFiles = [], rollouts = [], launches = [], writers 
     || findAgySession(agyConversations, procs, shellPid, launches, agyActive);
 }
 
-// A PowerShell single-quoted literal: only the quote itself needs escaping and
-// nothing inside is interpolated, so a prompt is safe to type at the prompt.
-// PowerShell also reads U+2018..U+201B as single quotes; doubling escapes those.
-function psQuote(s) {
-  return `'${String(s).replace(/['\u2018-\u201b]/g, '$&$&')}'`;
-}
+// Quoting for the line typed into the shell: PowerShell single quotes
+// (U+2018..U+201B doubled too, PowerShell reads those as quotes) or POSIX
+// single quotes. Both are literal inside, so a prompt is safe to type.
+const { psQuote, posixQuote } = require('./platform');
+const QUOTE = { powershell: psQuote, posix: posixQuote };
 
 // How each agent's CLI takes a chat to resume, a first prompt, and an extra
 // directory it may read (for the handoff file; Codex has no such flag).
@@ -291,7 +298,11 @@ const CLI_FLAGS = {
 //            it after -i), and where the CLI allows, `--add-dir` so it can
 //            read the handoff file unprompted
 //   neither: just `<cmd>`, a fresh start.
-function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
+// `shell` is the shell the line is typed into: 'powershell' or 'posix'
+// (zsh/bash), which decides the quoting.
+function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}, shell = 'powershell') {
+  const quote = QUOTE[shell];
+  if (!quote) throw new Error(`unknown shell kind: ${shell}`);
   const account = accountFor(cmd);
   if (!account) throw new Error(`unknown account: ${cmd}`);
   if (resume && !UUID_RE.test(String(resume))) throw new Error(`not a session id: ${resume}`);
@@ -299,12 +310,13 @@ function launchCommand(cmd, { resume = '', prompt = '', addDir = '' } = {}) {
   const flags = CLI_FLAGS[account.kind];
   let line = account.cmd;
   if (resume) line += ` ${flags.resume} ${resume}`;
-  if (addDir && flags.addDir) line += ` ${flags.addDir} ${psQuote(addDir)}`;
-  if (prompt) line += ` ${flags.prompt ? `${flags.prompt} ` : ''}${psQuote(prompt)}`;
+  if (addDir && flags.addDir) line += ` ${flags.addDir} ${quote(addDir)}`;
+  if (prompt) line += ` ${flags.prompt ? `${flags.prompt} ` : ''}${quote(prompt)}`;
   return line;
 }
 
 module.exports = {
   KINDS, ACCOUNT_RE, DIR_RE, UUID_RE, accountFor, listAccounts, jwtEmail, describeAccounts, signInHints,
-  descendants, findClaudeSession, findCodexSession, findCopilotSession, findAgySession, findSession, psQuote, launchCommand,
+  descendants, isAgentProc, findClaudeSession, findCodexSession, findCopilotSession, findAgySession, findSession,
+  psQuote, posixQuote, launchCommand,
 };

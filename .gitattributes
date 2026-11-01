@@ -1,3 +1,8 @@
 # limpet-remote.sh is base64-encoded and run by bash on the remote host; CRLF
-# would break it. Keep all shell scripts LF regardless of platform.
+# would break it. Keep all shell scripts LF regardless of platform: the zsh
+# and bash integration (shell/limpet.sh, shell/rc/) and install.sh are read by
+# a Unix shell straight from the checkout too.
 *.sh text eol=lf
+*.zsh text eol=lf
+*.bash text eol=lf
+shell/rc/** text eol=lf

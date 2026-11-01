@@ -147,12 +147,20 @@ LIMPET_DEPTH=1 xssh host3 >/dev/null 2>&1
 grep -q 'LIMPET_DEPTH=2;' "$SSH_CAPTURE"; check 'hop: depth counts up per hop' $?
 
 # ---- the real bootstrap templates out of Limpet.psm1 ----
-mapfile -t TPLS < <(sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" shell/Limpet.psm1 | sed "s/''/'/g")
+TPLS=()
+# (a while-read loop, not mapfile: macOS ships bash 3.2)
+while IFS= read -r tpl_line; do TPLS+=("$tpl_line"); done < <(tr -d '\r' < shell/Limpet.psm1 | sed -n "s/^ *\$tpl = '\(.*\)'\$/\1/p" | sed "s/''/'/g")
 [ "${#TPLS[@]}" = 2 ]; check 'found both bootstrap templates in Limpet.psm1' $?
+# shell/limpet.sh (the zsh/bash xssh) carries the same two templates; they
+# must stay byte-identical so both clients bootstrap a remote the same way.
+for name in _LIMPET_TPL_RESUME _LIMPET_TPL_PLAIN; do
+  sh_tpl=$(sed -n "s/^$name='\(.*\)'\$/\1/p" shell/limpet.sh)
+  printf '%s\n' "${TPLS[@]}" | grep -qxF -- "$sh_tpl"; check "$name in limpet.sh matches Limpet.psm1" $?
+done
 # The templates decode with `base64 -d | gunzip`, so the payload must be
 # gzip-then-base64 -- exactly what Limpet.psm1 builds (it gzips before base64 to
 # keep the single ssh.exe arg short enough to survive PowerShell arg passing).
-b64=$(gzip -c shell/limpet-remote.sh | base64 -w0)
+b64=$(gzip -c shell/limpet-remote.sh | base64 | tr -d "\n")
 RESUME=''; PLAIN=''
 for t in "${TPLS[@]}"; do
   t=${t/__B64__/$b64}
@@ -176,13 +184,20 @@ if command -v tmux >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
   # script exits early (broken-pipe printfs). Real sessions get a capable
   # TERM from the app's xterm.js, so force one here too.
   export TERM=xterm-256color
+  # The bootstrap under a pty, stdin piped in. util-linux script (Linux) takes
+  # the command with -c; BSD script (macOS) takes it after the typescript file.
+  if script --version >/dev/null 2>&1; then
+    in_pty() { script -qec 'sh -c "$BOOT"' /dev/null; }
+  else
+    in_pty() { script -q /dev/null sh -c 'sh -c "$BOOT"'; }
+  fi
   { sleep 2; printf 'export M=alive; type peek >/dev/null 2>&1 && echo TMUX-OK\n'; sleep 1; printf 'tmux detach\n'; sleep 1; } \
-    | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t1.log" 2>&1
+    | in_pty > "$TMP/t1.log" 2>&1
   grep -qa 'TMUX-OK' "$TMP/t1.log"; check 'resume bootstrap: helpers live inside tmux' $?
   tmux has-session -t =limpet-other 2>/dev/null; check 'resume bootstrap: leaves sessions of other versions running' $?
   tmux kill-session -t limpet-other 2>/dev/null
   { sleep 2; printf '[ "$M" = alive ] && echo TMUX-RESUMED\n'; sleep 1; printf 'tmux kill-session -t limpet-test\n'; sleep 1; } \
-    | script -qec 'sh -c "$BOOT"' /dev/null > "$TMP/t2.log" 2>&1
+    | in_pty > "$TMP/t2.log" 2>&1
   grep -qa 'TMUX-RESUMED' "$TMP/t2.log"; check 'resume bootstrap: reconnect resumes the same shell' $?
 else
   echo 'SKIP  tmux/script unavailable: resume bootstrap untested'

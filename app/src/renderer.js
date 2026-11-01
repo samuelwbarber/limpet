@@ -1,6 +1,7 @@
 // Renderer: tabbed xterm.js sessions (one PTY each, Ctrl+Shift+T / Ctrl+Shift+W
-// / Ctrl+Tab like Windows Terminal), plus drag-drop that "pastes" files into
-// whatever session is in front (local or an ssh you started with xssh).
+// / Ctrl+Tab like Windows Terminal; Cmd+T / Cmd+W / Cmd+Shift+] like
+// Terminal.app on a Mac), plus drag-drop that "pastes" files into whatever
+// session is in front (local or an ssh you started with xssh).
 /* global Terminal, FitAddon, ImageAddon, WebLinksAddon */
 
 const termsEl = document.getElementById('terms');
@@ -30,7 +31,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   closeEl.draggable = false;
   closeEl.textContent = '×';
   const closeKeys = window.LimpetSettings.get('keybindings', 'closeTab');
-  closeEl.title = closeKeys ? `Close tab (${closeKeys})` : 'Close tab';
+  closeEl.title = closeKeys ? `Close tab (${window.LimpetSettings.display(closeKeys)})` : 'Close tab';
   closeEl.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); });
   tabEl.append(titleEl, closeEl);
   tabEl.addEventListener('mousedown', (e) => { if (e.target !== closeEl) activate(id); });
@@ -437,16 +438,33 @@ function consumeKey(e) {
 // Ctrl+Shift+C / Ctrl+Shift+V, Ctrl+C copies when there's a selection
 // (otherwise it falls through as the usual interrupt), and the tab and
 // settings shortcuts, whose keys come from the settings page.
+//
+// On a Mac the command key does what Terminal.app users expect: Cmd+C copies
+// the selection (and is swallowed even with nothing selected, since Cmd+C is
+// never a control character) and Cmd+V pastes, each through exactly one path
+// into the PTY (there is no Edit menu to race them). Ctrl+C is then always the
+// interrupt, selection or not, so a Mac user never loses a SIGINT to a stray
+// selection; Ctrl+Shift+C/V keep working for Windows muscle memory.
+const IS_MAC = window.limpet.platform === 'darwin';
 function handleKeys(e, id, term) {
   if (e.type !== 'keydown') return true;
   const k = e.key.toLowerCase();
   if (window.LimpetSettings.runAction(e, id)) return consumeKey(e);
+  if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    if (k === 'c') { copySelection(term); return consumeKey(e); }
+    if (k === 'v') { pasteClipboard(id); return consumeKey(e); }
+  }
   if (e.ctrlKey && e.shiftKey && k === 'c') { copySelection(term); return consumeKey(e); }
   if (e.ctrlKey && k === 'v') { pasteClipboard(id); return consumeKey(e); }
   // Ctrl+C: copy if something is (or was just) selected, otherwise let it through
-  // as the usual interrupt.
-  if (e.ctrlKey && !e.shiftKey && k === 'c') { if (copySelection(term)) return consumeKey(e); }
+  // as the usual interrupt. Not on a Mac, where Cmd+C is the copy.
+  if (!IS_MAC && e.ctrlKey && !e.shiftKey && k === 'c') { if (copySelection(term)) return consumeKey(e); }
   return true;
+}
+
+// The application menu (macOS) picked something.
+if (typeof window.limpet.onMenuAction === 'function') {
+  window.limpet.onMenuAction((action) => { if (action === 'new-tab') newTab(); });
 }
 
 function cycleTabs(dir) {
@@ -685,7 +703,15 @@ function closeAccountMenu() {
   accountMenu = null;
 }
 document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.contains(e.target)) closeAccountMenu(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAccountMenu(); }, true);
+// Escape closes the menu and goes no further: the terminal keeps the keyboard
+// while the menu is up, and an ESC byte reaching the shell makes zsh read the
+// next key as a Meta chord (ESC ' is quote-line, ESC e a word command).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !accountMenu) return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeAccountMenu();
+}, true);
 window.addEventListener('blur', closeAccountMenu);
 
 // "resets in 2h 10m" for an ISO time; '' if unknown.

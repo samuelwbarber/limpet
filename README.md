@@ -13,6 +13,9 @@
 how hard the waves hit, which is basically what xssh does. Type
 <code>limpet</code> in the shell to meet the mascot.</i></p>
 
+<p align="center">Windows (PowerShell) and, since the macOS port, macOS and Linux
+(zsh or bash): see <a href="#macos-and-linux">macOS and Linux</a>.</p>
+
 ---
 
 ## Linux muscle memory, PowerShell underneath
@@ -269,13 +272,66 @@ npm start              # or launch "limpet" from the Start Menu after install.ps
 - SSH keys: `.\setup-ssh.ps1` generates a key, loads `ssh-agent`, and can
   install it on a host (`-RemoteHost user@host`).
 
+## macOS and Linux
+
+Everything above works on a Mac (Apple silicon or Intel) and on Linux, done
+the native way: the app runs your login shell (zsh, or bash) with limpet's
+integration loaded, so `xssh`, `peek`, `reels`, `wput`, drag and drop, the
+agent accounts and the account menu all behave as on Windows. The Linux
+command shims aren't needed (the shell is Unix already), Windows Hello becomes
+the login Keychain, and junctions become symlinks.
+
+```sh
+git clone https://github.com/samuelwbarber/limpet
+cd limpet
+./install.sh           # adds limpet to ~/.zshrc (and ~/.bashrc), installs the app
+open app               # or: cd app && npm start
+```
+
+- **The app.** Download `limpet-<version>-arm64.dmg` (Apple silicon) or
+  `limpet-<version>-x64.dmg` (Intel) from
+  [Releases](https://github.com/samuelwbarber/limpet/releases), drag limpet
+  to Applications. The build is unsigned unless the release was made with a
+  Developer ID, so the first launch needs a right-click → **Open** (or
+  `xattr -d com.apple.quarantine /Applications/limpet.app`). The shell
+  integration ships inside the app, so it works before `install.sh` has run;
+  `install.sh` is what makes `xssh`, `peek` and `claude1` available in
+  Terminal, iTerm and the rest.
+- **The shell integration** (`shell/limpet.sh`) is one file that zsh and bash
+  both source. It adds `xssh` (same flags, `-NoResume`/`--no-resume`,
+  `-Raw`/`--raw`), `peek`, `reels`, `wput`, `download`/`upload` (the same
+  helpers `xssh` sends to remote hosts), the `limpet` banner, and every
+  `claudeN`/`codexN`/`agyN`/`copilotN` account command.
+- **Password once, then the Keychain.** Instead of `Enable-LimpetHello`, run
+  `limpet-enroll user@host`: limpet makes a dedicated `~/.ssh/limpet_ed25519`
+  key with a random passphrase kept in your login Keychain, installs it on
+  the host (you type that host's password this one time) and from then on
+  `xssh user@host` connects, and reconnects, without asking. `limpet-forget`
+  and `limpet-status` go with it. Hosts that only take a password still get
+  the reconnect cache: `xssh` asks once per session and replays it.
+- **Agent accounts are identical**: `claude1` runs Claude Code with
+  `CLAUDE_CONFIG_DIR=~/.claude-1`, `codex2` with `CODEX_HOME=~/.codex-2`, and so
+  on, with the shared `/resume` history wired by symlinks. One macOS detail:
+  Claude Code keeps its login in the Keychain there (item `Claude
+  Code-credentials`, suffixed per config directory), which is where the
+  account menu reads the signed-in state and usage from. Antigravity's login
+  swap is best effort on macOS: it moves the `agy` Keychain item and hasn't
+  been verified against a real Antigravity install yet.
+- **Shortcuts** follow the platform: ⌘T new tab, ⌘W close tab, ⌘⇧] / ⌘⇧[ next
+  and previous tab, ⌘, settings, ⌘C / ⌘V copy and paste (Ctrl+C stays the
+  interrupt). All rebindable in Settings.
+- **Generative backgrounds** need the local image model, which the pinned
+  generator only ships for Apple silicon Macs (and x86_64 Linux); on an Intel
+  Mac the picker says so. `npm run setup:backdrop:unix` in `app/` is the
+  command-line install.
+
 ## How it fits together
 
 | Layer | Job | What provides it |
 |-------|-----|------------------|
 | Terminal | tabs, rendering, inline images, drop target | limpet app (`app/`) |
 | Session | survive bad links without re-auth | `xssh` (client-side) plus optional remote `tmux` |
-| Shell | `ls -la`, `grep`, `wput`, `peek` | Limpet module (`shell/`) |
+| Shell | `ls -la`, `grep`, `wput`, `peek` | Limpet module (`shell/Limpet.psm1`) on Windows; `shell/limpet.sh` in zsh/bash on macOS and Linux |
 
 In-session `peek`, `download` and `upload` talk to the app over private
 terminal escape sequences, so they tunnel through SSH with no server-side
@@ -290,12 +346,14 @@ in Downloads, never over existing files.
 
 ```
 shell/       Limpet PowerShell module + limpet-remote.sh (in-session helpers) + Hello auth
-app/         tabbed Electron terminal (xterm.js + ConPTY)
-install.ps1  idempotent setup (profile, Start Menu shortcut)
+             limpet.sh (the zsh/bash integration) + rc/ (how the app loads it into your shell)
+app/         tabbed Electron terminal (xterm.js + node-pty: ConPTY on Windows, a pty elsewhere)
+install.ps1  idempotent setup on Windows (profile, Start Menu shortcut)
+install.sh   idempotent setup on macOS/Linux (~/.zshrc, ~/.bashrc, the app)
 setup-ssh.ps1  SSH key setup helper
-tests/       Test-Limpet.ps1 smoke test
+tests/       Test-Limpet.ps1 / Test-Xssh.ps1 (PowerShell), test-limpet-sh.sh (zsh + bash), test-remote-sh.sh
 tools/demo/  scripts that record the README GIFs
-docs/        COMMANDS.md reference, demo media
+docs/        COMMANDS.md reference, PORTING.md (how the macOS port is built), demo media
 ```
 
 ## Test
@@ -306,8 +364,14 @@ CI runs all of these on every push (see `.github/workflows/ci.yml`):
 .\tests\Test-Limpet.ps1    # every shell command + peek/reels protocol + Hello helpers
 .\tests\Test-Xssh.ps1      # xssh bootstrap variants + reconnect policy (ssh stubbed)
 bash tests/test-remote-sh.sh   # remote helpers + the real xssh bootstrap templates (Linux/WSL)
+zsh tests/test-limpet-sh.sh    # the zsh/bash integration: accounts, history sync, xssh, peek (macOS/Linux)
+bash tests/test-limpet-sh.sh   # the same suite under bash
 
 cd app
 npm test                   # terminal-protocol + account-switch unit tests (node --test)
 npm run test:e2e           # launches the real app: peek, resize survival, reels, download, tab detach, account switch
 ```
+
+The e2e drivers run on Windows and macOS (CI runs both); set
+`LIMPET_E2E_USER_DATA=<folder>` to keep a local run off your real limpet
+profile.

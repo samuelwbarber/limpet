@@ -2,15 +2,20 @@
   "name": "limpet",
   "productName": "limpet",
   "version": "0.1.1",
-  "description": "limpet - a hybrid PowerShell/Linux terminal with resilient SSH and drag-and-drop upload",
+  "description": "limpet - a tabbed terminal with resilient SSH, inline images, drag-and-drop upload and any number of coding-agent accounts (Windows, macOS, Linux)",
   "author": "samuelwbarber",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --publish never",
+    "setup": "npm install --ignore-scripts --no-audit --no-fund && node node_modules/electron/install.js",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:linux": "electron-builder --linux --publish never",
     "demo:backdrop": "node scripts/show-backdrop-demo.js",
     "setup:backdrop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-backdrop.ps1",
-    "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js tests/accounts.test.js tests/handoff.test.js tests/codex-import.test.js tests/usage.test.js tests/osc.test.js tests/settings.test.js tests/failover.test.js tests/remote-copy.test.js",
+    "setup:backdrop:unix": "bash scripts/setup-local-backdrop.sh",
+    "test": "node --test tests/protocol.test.js tests/predict.test.js tests/backdrop.test.js tests/accounts.test.js tests/handoff.test.js tests/codex-import.test.js tests/usage.test.js tests/osc.test.js tests/settings.test.js tests/failover.test.js tests/remote-copy.test.js tests/platform.test.js",
     "test:e2e": "node tests/e2e.js && node tests/ctrlc.js && node tests/tabs-links.js && node tests/accounts.js"
   },
   "license": "MIT",
@@ -38,14 +43,15 @@
     "files": [
       "src/**/*",
       "scripts/setup-local-backdrop.ps1",
+      "scripts/setup-local-backdrop.sh",
       "build/limpet.ico",
       "!**/*.pdb",
-      "!node_modules/node-pty/{src,deps,third_party,scripts}/**",
-      "!node_modules/node-pty/prebuilds/darwin-*/**"
+      "!node_modules/node-pty/{src,deps,third_party,scripts}/**"
     ],
     "asarUnpack": [
       "src/lock-holders.ps1",
       "scripts/setup-local-backdrop.ps1",
+      "scripts/setup-local-backdrop.sh",
       "node_modules/node-pty/**"
     ],
     "extraResources": [
@@ -65,7 +71,11 @@
           ]
         }
       ],
-      "icon": "build/limpet.ico"
+      "icon": "build/limpet.ico",
+      "files": [
+        "!node_modules/node-pty/prebuilds/darwin-*/**",
+        "!node_modules/node-pty/prebuilds/linux-*/**"
+      ]
     },
     "nsis": {
       "oneClick": true,
@@ -75,6 +85,67 @@
       "shortcutName": "limpet",
       "runAfterFinish": true,
       "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "files": [
+        "!node_modules/node-pty/prebuilds/win32-*/**",
+        "!node_modules/node-pty/prebuilds/linux-*/**"
+      ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "files": [
+        "!node_modules/node-pty/prebuilds/win32-*/**",
+        "!node_modules/node-pty/prebuilds/darwin-*/**"
+      ]
     },
     "publish": {
       "provider": "github",

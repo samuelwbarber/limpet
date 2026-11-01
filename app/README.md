@@ -1,25 +1,32 @@
 # limpet (app)
 
 The limpet terminal app — Electron + xterm.js, running local PowerShell with the
-Limpet Linux-shim module preloaded. You connect to remotes however you like right
-in the shell (e.g. `xssh user@host`); there's no separate connection UI.
+Limpet Linux-shim module preloaded on Windows, or your login shell (zsh or
+bash) with `shell/limpet.sh` loaded on macOS and Linux. You connect to remotes
+however you like right in the shell (e.g. `xssh user@host`); there's no
+separate connection UI.
 
 ## Setup
 
 ```powershell
-npm install
+npm run setup          # npm install with package scripts skipped, then Electron's download
 npm start
 ```
 
-Needs Node 22.12 or newer. The local shell gets a real ConPTY (line editing,
-Ctrl+R, arrows, full-screen TUIs) from Microsoft's `node-pty`, a Node-API module
-that ships prebuilt Windows x64 and arm64 binaries, so it works with any
-Electron version and nothing is compiled on install. If it fails to load the
-app still runs, but the local shell falls back to a basic pipe with no line
-editing.
+Needs Node 22.12 or newer. The local shell gets a real pty (line editing,
+Ctrl+R, arrows, full-screen TUIs) from Microsoft's `node-pty`, a Node-API
+module that ships prebuilt binaries for Windows (x64, arm64; ConPTY), macOS
+(arm64, x64) and Linux, so it works with any Electron version and nothing is
+compiled on install. If it fails to load the app still runs, but the local
+shell falls back to a basic pipe with no line editing.
 
 Electron downloads its own binary the first time it runs (Electron 42 dropped
 the install-time download), so the first `npm start` takes a little longer.
+
+On macOS and Linux the app starts `$SHELL` as an interactive login shell, with
+limpet's integration added through `ZDOTDIR` (zsh) or `--rcfile` (bash) so your
+own dotfiles still run and nothing of yours is edited; `LIMPET_SHELL=/bin/bash`
+picks another shell (the tests use it).
 
 ## Building an installer
 
@@ -43,6 +50,25 @@ which case electron-builder signs the app and installer with that certificate:
 
 An unsigned installer works, but SmartScreen warns before running it.
 
+### macOS
+
+```sh
+npm run dist:mac
+```
+
+This writes `limpet-<version>-arm64.dmg` / `-x64.dmg` (and the `.zip` the
+auto-updater uses) to `app/dist`, the shell integration bundled in
+`limpet.app/Contents/Resources/shell`. The build is signed and notarized when
+these are set, otherwise unsigned (Gatekeeper then needs a right-click →
+**Open** the first time, or `xattr -d com.apple.quarantine limpet.app`):
+
+- `CSC_LINK` / `CSC_KEY_PASSWORD`: a Developer ID Application certificate (`.p12`) and its password
+- `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID`: for notarization (`--config.mac.notarize=true`)
+
+The hardened-runtime entitlements the app needs (JIT and the native pty
+module) are in `build/entitlements.mac.plist`; the icon is made from
+`build/icon.png`. `npm run dist:linux` builds an AppImage the same way.
+
 ## Auto-update
 
 The installed app (not `npm start`) checks the GitHub Releases of
@@ -56,9 +82,13 @@ Being offline, or there being no such release yet, is only logged. The feed is
 
 To release: bump `version` in `package.json` (and `package-lock.json`), commit,
 then push a matching tag, e.g. `git tag v0.1.2 && git push origin v0.1.2`. The
-Release workflow (`.github/workflows/release.yml`) builds the installer and
-publishes it with `latest.yml` and the `.blockmap` as a GitHub Release, signed
-if the `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` repo secrets are set.
+Release workflow (`.github/workflows/release.yml`) builds the Windows installer
+and the macOS disk images and publishes them, with `latest.yml`,
+`latest-mac.yml` and the `.blockmap`s, as one GitHub Release: signed if the
+`WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` (Windows) and `CSC_LINK`/`CSC_KEY_PASSWORD`
+(macOS, plus `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID` for
+notarization) repo secrets are set. On macOS the updater only applies an update
+to a signed app, so an unsigned build logs the check and leaves it at that.
 
 ## Tabs, clipboard, and links
 
@@ -68,8 +98,14 @@ new limpet window; the PTY is handed over rather than restarted.
 
 `Ctrl+V` and `Ctrl+Shift+V` paste once, while `Ctrl+C` copies selected terminal
 text and remains the normal interrupt when nothing is selected. Plain web URLs
-and OSC 8 hyperlinks open in the Windows default browser, including agent login
+and OSC 8 hyperlinks open in the system default browser, including agent login
 links.
+
+On macOS the defaults are the Mac ones: `⌘T` new tab, `⌘W` close tab, `⌘⇧]` /
+`⌘⇧[` next and previous tab, `⌘,` settings, `⌘C` copies the selection (and
+never interrupts), `⌘V` pastes; `Ctrl+C` stays the interrupt and
+`Ctrl+Shift+V` still pastes. The app keeps a minimal menu bar (limpet, Window)
+with no Edit menu, so each shortcut has exactly one path into the terminal.
 
 ## Settings
 
@@ -102,11 +138,14 @@ the keyboard back to the terminal.
 | Agents | When an account runs out | offer (offer, auto, off) |
 
 To rebind a shortcut, focus its field and press the new combination
-(Backspace unbinds it). It needs Ctrl or Alt, or an F key, so it can't swallow
-typing, and `Ctrl+C`, `Ctrl+V`, `Ctrl+Shift+C` and `Ctrl+Shift+V` stay copy and
-paste. The defaults are what limpet did before there was a settings page.
+(Backspace unbinds it). It needs Ctrl or Alt (or Cmd on macOS), or an F key, so
+it can't swallow typing, and `Ctrl+C`, `Ctrl+V`, `Ctrl+Shift+C` and
+`Ctrl+Shift+V` (`⌘C` / `⌘V` on macOS) stay copy and paste. The defaults are
+what limpet did before there was a settings page; on macOS the keyboard
+defaults are `Cmd+T`, `Cmd+W`, `Cmd+Shift+]`, `Cmd+Shift+[` and `Cmd+,`.
 
-The settings live in `%APPDATA%\limpet\settings.json`, which holds only what
+The settings live in `%APPDATA%\limpet\settings.json` (`~/Library/Application
+Support/limpet/settings.json` on macOS, `~/.config/limpet/` on Linux), which holds only what
 differs from the defaults and is replaced whole on each save (written beside it,
 then renamed over it). A file that isn't valid JSON is set aside as
 `settings.json.bad` and the defaults are used; a value in it that limpet
@@ -129,8 +168,13 @@ is installed asks whether to install it, then shows progress with a Cancel
 button (a cancelled download resumes next time). The same setup from a prompt:
 
 ```powershell
-npm run setup:backdrop
+npm run setup:backdrop         # Windows
+npm run setup:backdrop:unix    # macOS (Apple silicon) and Linux x86_64
 ```
+
+The pinned generator release has no Intel Mac build, so on those the picker
+says the Generative background isn't available. On macOS the model lives in
+`~/Library/Application Support/limpet/local-ai` for the installed app.
 
 Generation uses a repo-local `stable-diffusion.cpp` CPU build and the one-step,
 Q8-quantized SDXS-512 model. Its output is reduced locally to a 160x100 limited

@@ -161,3 +161,46 @@ here" prompt.
 
 `Remove-Module Limpet` restores the built-in `ls/cp/mv/rm/cat` aliases for the
 current session.
+
+## macOS and Linux (zsh / bash)
+
+`shell/limpet.sh`, sourced by `~/.zshrc` or `~/.bashrc` (`install.sh` adds the
+line) and by the limpet app itself, provides the same commands without the
+Linux shims (the shell already has `ls -la` and friends):
+
+| Command | Same as on Windows | Notes |
+|---------|--------------------|-------|
+| `xssh user@host` | yes | `-Raw`/`--raw`, `-NoResume`/`--no-resume`, `-Resume`/`--resume`; the password cache uses `shell/limpet-askpass.sh` with `SSH_ASKPASS_REQUIRE=force`; `LIMPET_NO_PWCACHE=1` turns it off |
+| `wput <files> [-To user@host] [-Dest dir] [-Port N] [-Key path]` | yes | `--to`, `--dest`, `--port`, `--key` work too; the last `xssh` host is remembered in `${TMPDIR:-/tmp}/limpet-last-ssh.txt` |
+| `peek`, `peak`, `reels`, `download`, `upload` | yes | the same helpers `xssh` sends to remote hosts, loaded locally |
+| `limpet` | yes | the banner |
+| `limpet-enroll user@host [-p port]` | replaces `Enable-LimpetHello` | makes `~/.ssh/limpet_ed25519` with a random passphrase kept in the login Keychain (`security add-generic-password -s limpet-ssh-key`), installs it on the host (password typed once), remembers the host in `~/.config/limpet/hello/hosts.txt`; `xssh` then unlocks the key from the Keychain. On Linux there is no Keychain: the passphrase is kept in a 0600 file under `~/.config/limpet/hello/` and `limpet-enroll` says so |
+| `limpet-forget user@host [--remove-remote]` | replaces `Disable-LimpetHello` | |
+| `limpet-status` | replaces `Get-LimpetHelloStatus` | |
+| `claude1`, `codex2`, `agy1`, `copilot3`, ... | yes | functions for the directories that exist, `command_not_found_handler` (zsh) / `command_not_found_handle` (bash) for any other number; `--limpet-plan` prints the plan instead of launching |
+| `limpet_agent_accounts`, `limpet_invoke_agent <cmd> [args]`, `limpet_sync_claude_history`, `limpet_sync_codex_history`, `limpet_sync_copilot_history` | `Get-LimpetAgentAccounts`, `Invoke-LimpetAgent`, `Sync-Limpet*History` | |
+
+Differences worth knowing:
+
+- Shared history is wired with symlinks (`~/.claude-N/projects ->
+  ~/.claude-shared/projects`, `~/.codex-N/sessions -> ~/.codex/sessions`, ...)
+  and a hard link for Codex's `session_index.jsonl`, same layout as the
+  junctions on Windows. A folder in use is never a problem on Unix: a rename
+  keeps a running agent's open file, so the fold-in completes in one go.
+- The launch note a `codexN`/`agyN`/`copilotN` shell leaves for the app is
+  `~/Library/Application Support/limpet/agents/<shell pid>.json` on macOS and
+  `${XDG_CONFIG_HOME:-~/.config}/limpet/agents/` on Linux (`LIMPET_AGENT_RUN`
+  overrides). Which process holds a Codex thread lock or an agy conversation
+  is asked with `lsof`.
+- Claude Code on macOS keeps its login in the Keychain: item `Claude
+  Code-credentials` for plain `claude`, `Claude Code-credentials-<h>` for
+  `claudeN` where `h` is the first 8 hex characters of the SHA-256 of the
+  config directory path, account `claude-code-user`. The app reads
+  `.credentials.json` when it exists and the Keychain otherwise.
+- Antigravity: `agyN` moves the `agy` Keychain item (service
+  `gemini:antigravity`, or `gemini`/`antigravity`; `LIMPET_AGY_KEYCHAIN_SERVICE`
+  overrides) and keeps each account's copy as `limpet:agy:<cmd>`; on Linux it
+  swaps the token file `~/.gemini/antigravity-cli/antigravity-oauth-token`.
+  This is best effort and not yet verified against a real agy on macOS.
+- Not ported: the TPM-sealed Windows Hello flow (the Keychain stands in), the
+  Linux command shims, the Start Menu shortcut.
