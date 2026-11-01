@@ -5,8 +5,8 @@
 // size, line height, cursor and scrollback on every open terminal, predictive
 // echo on or off, the shortcut map.
 //
-// The page is an overlay opened with Ctrl+, (rebindable) or "Settings…" in a
-// tab's right-click menu. Each field saves as you go; a refused value keeps the
+// The page is an overlay opened with Ctrl+, (Cmd+, on a Mac; rebindable) or
+// "Settings…" in a tab's right-click menu. Each field saves as you go; a refused value keeps the
 // old one and says why under the field. Esc closes and gives the keyboard back
 // to the terminal.
 /* global tabs, activeId, newTab, closeTab, cycleTabs, syncSize, closeAccountMenu */
@@ -35,7 +35,19 @@
   }
 
   // ---- keys ----
-  // The same canonical form settings.js stores: Ctrl, Alt, Shift, then the key.
+  // The same canonical form settings.js stores: Ctrl, Cmd, Alt, Shift, then
+  // the key. Cmd is the Meta modifier (the command key on a Mac). On macOS
+  // the page shows the Apple symbols for the modifiers; what is stored and
+  // matched is always the canonical text.
+  const IS_MAC = window.limpet.platform === 'darwin';
+  const MAC_SYMBOLS = { Ctrl: '⌃', Cmd: '⌘', Alt: '⌥', Shift: '⇧' };
+  function display(acc) {
+    if (!acc) return '';
+    if (!IS_MAC) return acc;
+    const parts = String(acc).split('+');
+    const key = parts.pop();
+    return `${parts.map((m) => MAC_SYMBOLS[m] || m).join('')}${key}`;
+  }
   const CODE_KEYS = {
     Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']',
     Minus: '-', Equal: '=', Backquote: '`', Backslash: '\\', Tab: 'Tab', Space: 'Space', Enter: 'Enter',
@@ -53,7 +65,7 @@
   function accelerator(e) {
     const key = keyName(e);
     if (!key) return '';
-    return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', key].filter(Boolean).join('+');
+    return [e.ctrlKey && 'Ctrl', e.metaKey && 'Cmd', e.altKey && 'Alt', e.shiftKey && 'Shift', key].filter(Boolean).join('+');
   }
   // Which action a keydown is bound to, or null.
   function actionFor(e) {
@@ -124,7 +136,7 @@
   const shortcut = (action) => get('keybindings', action);
   function labelShortcuts() {
     const btn = document.getElementById('newtab');
-    if (btn) btn.title = shortcut('newTab') ? `New tab (${shortcut('newTab')})` : 'New tab';
+    if (btn) btn.title = shortcut('newTab') ? `New tab (${display(shortcut('newTab'))})` : 'New tab';
   }
   labelShortcuts();
 
@@ -160,7 +172,7 @@
   function setInput(f, value) {
     const { field, input } = f;
     if (field.type === 'boolean') input.checked = !!value;
-    else if (field.type === 'keybinding') input.value = value || '';
+    else if (field.type === 'keybinding') input.value = display(value) || '';
     else input.value = value === undefined || value === null ? '' : String(value);
   }
 
@@ -220,14 +232,14 @@
       // Esc still closes the page, so the recorder never traps the keyboard.
       input.addEventListener('keydown', (e) => {
         if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
-        const mods = e.ctrlKey || e.altKey;
+        const mods = e.ctrlKey || e.altKey || e.metaKey;
         if (!mods && (e.key === 'Tab' || e.key === 'Escape')) return;
         e.preventDefault();
         e.stopPropagation();
         if (!mods && !e.shiftKey && (e.key === 'Backspace' || e.key === 'Delete')) { input.value = ''; commit(''); return; }
         const acc = accelerator(e);
         if (!acc) { showError(id, `${e.key} can't be bound`); return; }
-        input.value = acc;
+        input.value = display(acc);
         commit(acc);
       });
     } else {
@@ -350,7 +362,7 @@
     const row = el('div', 'open-settings');
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
-    row.append(el('span', '', 'Settings…'), el('span', 'keys', shortcut('openSettings') || ''));
+    row.append(el('span', '', 'Settings…'), el('span', 'keys', display(shortcut('openSettings')) || ''));
     const pick = () => { if (onPick) onPick(); open(); };
     row.addEventListener('click', pick);
     row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
@@ -358,7 +370,7 @@
   }
 
   window.LimpetSettings = {
-    get, termOptions, actionFor, runAction, makePredictor, selectionChanged, menuItem,
+    get, display, termOptions, actionFor, runAction, makePredictor, selectionChanged, menuItem,
     open, close: closePanel, isOpen: () => !!panel,
   };
 })();

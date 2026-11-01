@@ -21,6 +21,8 @@ const settings = require('./settings');
 const failover = require('./failover');
 const remoteCopy = require('./remote-copy');
 const updater = require('./updater');
+const platform = require('./platform');
+const { installAppMenu, onActivate } = require('./menu');
 const {
   MIN_SCENE_CHANGE_CONFIDENCE,
   createTopicProfile, updateTopicProfile, buildBackdropPlan,
@@ -38,10 +40,12 @@ try {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
 
-// The installer ships shell/ as resources\shell (extraResources in package.json).
-const LIMPET_MODULE = app.isPackaged
-  ? path.join(process.resourcesPath, 'shell', 'Limpet.psd1')
-  : path.join(__dirname, '..', '..', 'shell', 'Limpet.psd1');
+// The installer ships shell/ as resources/shell (extraResources in
+// package.json): the PowerShell module on Windows, limpet.sh and the rc files
+// the tab's zsh or bash loads on macOS/Linux (platform.shellSpawn).
+const SHELL_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'shell')
+  : path.join(__dirname, '..', '..', 'shell');
 
 // Injected into the docked reels page to make the reel float on a
 // terminal-matching background with no scrollbars or nav/chat chrome. Instagram's
@@ -620,13 +624,14 @@ function sessionExited(sess) {
 }
 
 function startShell(sess) {
-  const args = ['-NoExit', '-NoLogo', '-Command', `Import-Module "${LIMPET_MODULE}"`];
+  // PowerShell with the Limpet module on Windows; the user's login shell with
+  // limpet.sh loaded on macOS/Linux.
+  const { file, args, env, cwd } = platform.shellSpawn({ shellDir: SHELL_DIR, token: oscToken() });
 
   if (ptyLib) {
     try {
-      const p = ptyLib.spawn('powershell.exe', args, {
-        name: 'xterm-256color', cols: sess.cols, rows: sess.rows,
-        cwd: process.env.USERPROFILE || process.cwd(), env: { ...process.env, LIMPET_TOKEN: oscToken() },
+      const p = ptyLib.spawn(file, args, {
+        name: 'xterm-256color', cols: sess.cols, rows: sess.rows, cwd, env,
       });
       p.onData((d) => forwardOutput(sess, d));
       p.onExit(() => sessionExited(sess));
@@ -643,7 +648,7 @@ function startShell(sess) {
     }
   }
 
-  const cp = spawn('powershell.exe', args, { windowsHide: true, env: { ...process.env, LIMPET_TOKEN: oscToken() } });
+  const cp = spawn(file, args, { windowsHide: true, env, cwd });
   cp.stdout.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.stderr.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.on('exit', () => sessionExited(sess));
@@ -855,8 +860,10 @@ function broadcast(channel, payload) {
 
 function backdropSetupState() {
   if (backdropSetup) return { state: 'installing', ...setupProgress() };
+  const backend = backendStatus();
+  if (!backend.ready && backend.unsupported) return { state: 'unsupported', reason: backend.unsupported, dir: LOCAL_AI_DIR };
   return {
-    state: backendStatus().ready ? 'ready' : 'missing',
+    state: backend.ready ? 'ready' : 'missing',
     dir: LOCAL_AI_DIR,
     disabled: process.env.LIMPET_DISABLE_BACKDROPS === '1',
   };
@@ -888,7 +895,7 @@ function cancelBackdropSetup() {
   const job = backdropSetup;
   if (!job || !job.child) return false;
   job.cancelled = true;
-  try { spawn('taskkill', ['/PID', String(job.child.pid), '/T', '/F'], { windowsHide: true }); } catch (_) { /* ignore */ }
+  platform.killTree(job.child.pid).catch(() => {});
   return true;
 }
 
@@ -913,6 +920,8 @@ const accountIo = {
   exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
   readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
   listDir: (p) => { try { return fs.readdirSync(p); } catch (_) { return []; } },
+  // Claude Code's login where there is no .credentials.json: the macOS Keychain.
+  claudeCredentials: (configDir, plain) => platform.readClaudeCredentials(configDir, { plain }),
 };
 const knownAccounts = () => accounts.listAccounts(claudeHome(), accountIo);
 const claudeAccounts = () => knownAccounts().filter((a) => a.kind === 'claude');
@@ -935,7 +944,10 @@ function readClaudeSessionFiles() {
 }
 
 // Where the shell's codexN wrapper notes which account it launched (see
-// agent-scan.js). LIMPET_AGENT_RUN moves the folder (tests).
+// agent-scan.js): %APPDATA%\limpetgents on Windows, ~/Library/Application
+// Support/limpet/agents on macOS, ~/.config/limpet/agents on Linux (what
+// Electron's appData is on each, and what limpet.sh / Limpet.psm1 write to).
+// LIMPET_AGENT_RUN moves the folder (tests).
 const agentRunDir = () => process.env.LIMPET_AGENT_RUN || path.join(app.getPath('appData'), 'limpet', 'agents');
 
 async function detectAgentSession(sess) {
@@ -980,7 +992,7 @@ async function stopAgent(sess, pid) {
     await sleep(250);
   }
   if (pidAlive(pid)) {
-    try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch (_) { /* ignore */ }
+    await platform.killTree(pid).catch(() => {});
     for (let i = 0; i < 20 && pidAlive(pid); i++) await sleep(100);
   }
   return !pidAlive(pid);
@@ -1042,7 +1054,7 @@ async function carryAcross(current, target, note) {
       return { launch: { resume: threadId }, how: 'import' };
     }
     const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
-    const cwd = current.cwd || process.env.USERPROFILE || os.homedir();
+    const cwd = current.cwd || os.homedir();
     const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
     const dir = path.join(claudeHome(), target.dir, 'projects', handoff.claudeProjectDirName(cwd));
     fs.mkdirSync(dir, { recursive: true });
@@ -1129,7 +1141,7 @@ async function switchAgent(sess, cmd) {
     } else {
       ({ launch: options, how } = await carryAcross(current, target, note));
     }
-    const line = launch(cmd, options);
+    const line = launch(cmd, options, platform.shellKind);
     if (current) await sleep(150); // let the prompt come back before typing
     // The shell may have exited during the awaits above.
     if (!sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
@@ -1214,8 +1226,9 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
 
   // Hiding the stock menu leaves its Ctrl+C/Ctrl+V accelerators active. Those
   // race xterm's handlers and were the source of intermittent copy and double
-  // paste, so remove the menu rather than merely hiding it.
-  browserWin.removeMenu();
+  // paste, so remove the menu rather than merely hiding it. macOS keeps an
+  // application menu (menu.js), built without Edit roles for the same reason.
+  if (!platform.isMac) browserWin.removeMenu();
 
   if (detached) {
     const sess = sessions.get(sessionId);
@@ -1388,9 +1401,11 @@ function registerIpc() {
 }
 
 registerIpc();
-app.whenReady().then(() => { createWindow(); updater.start(); });
+app.whenReady().then(() => { installAppMenu(); createWindow(); updater.start(); });
+// macOS keeps the app alive with no window (Cmd+Q quits); a dock click opens one.
+onActivate(() => createWindow());
 app.on('before-quit', () => {
   if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
   cancelBackdropSetup();
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (!platform.isMac) app.quit(); });

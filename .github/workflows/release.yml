@@ -1,8 +1,9 @@
 name: Release
 
 # Push a tag matching app/package.json's version (e.g. v0.1.1) to build the
-# Windows installer and publish it, with the latest.yml + .blockmap the
-# installed app's auto-updater reads, as a GitHub Release.
+# Windows installer and the macOS disk image and publish them, with the
+# latest.yml / latest-mac.yml + .blockmap files the installed apps' auto-updater
+# reads, as one GitHub Release.
 on:
   push:
     tags: ['v*']
@@ -40,3 +41,47 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win --publish always
+
+  macos:
+    name: Build and publish macOS app
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Tag matches package version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json version v$v"; exit 1; }
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        run: npm test
+      - name: Build and publish (dmg + zip, arm64 and x64)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional Developer ID signing and notarization; unsigned when the
+          # secrets aren't set (the README tells users how to open it).
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          extra=()
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo 'No signing certificate: building unsigned.'
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          elif [ -n "${APPLE_ID:-}" ]; then
+            echo 'Signing and notarizing.'
+            extra+=(--config.mac.notarize=true)
+          else
+            echo 'Signing without notarization (no APPLE_ID).'
+          fi
+          npx electron-builder --mac --publish always "${extra[@]}"

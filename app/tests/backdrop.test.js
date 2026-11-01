@@ -147,3 +147,11 @@ test('reads install progress from the files the setup leaves behind', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('backendStatus says whether this machine can have a generator at all', () => {
+  const status = backendStatus();
+  assert.equal(typeof status.ready, 'boolean');
+  assert.equal(typeof status.unsupported, 'string');
+  assert.match(status.executable, process.platform === 'win32' ? /sd-cli\.exe$/ : /sd-cli$/);
+  if (process.platform === 'win32') assert.equal(status.unsupported, '');
+});

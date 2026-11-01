@@ -66,3 +66,14 @@ test('readUsage reports a rejected token, an HTTP error and an outage as errors,
   assert.deepStrictEqual(await readUsage(a, io, { fetchImpl: async () => { throw new Error('ENOTFOUND'); } }), { error: 'offline' });
   assert.deepStrictEqual(await readUsage(a, io, { fetchImpl: async () => reply(200, null) }), { error: 'unexpected reply' });
 });
+
+test('readUsage falls back to the Keychain reader for a Claude account with no .credentials.json', async () => {
+  const calls = [];
+  const fetchImpl = async (url, { headers }) => { calls.push([url, headers.Authorization]); return reply(200, { five_hour: { utilization: 10, resets_at: null }, seven_day: { utilization: 20, resets_at: null } }); };
+  const io = { readJson: () => null, claudeCredentials: (dir, plain) => (plain ? null : { claudeAiOauth: { accessToken: 'kc-token', expiresAt: Date.now() + 60000 } }) };
+  const r = await readUsage({ kind: 'claude', cmd: 'claude1', number: 1, configDir: path.join('/Users', 'me', '.claude-1') }, io, { fetchImpl });
+  assert.deepStrictEqual(r, { fiveHour: { left: 90, resetsAt: null }, weekly: { left: 80, resetsAt: null }, plan: '' });
+  assert.deepStrictEqual(calls, [[CLAUDE_USAGE_URL, 'Bearer kc-token']]);
+  const none = await readUsage({ kind: 'claude', cmd: 'claude', number: 0, configDir: path.join('/Users', 'me', '.claude') }, io, { fetchImpl });
+  assert.deepStrictEqual(none, { error: 'not signed in' });
+});

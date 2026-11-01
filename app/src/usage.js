@@ -75,7 +75,9 @@ async function readUsage(account, io, { fetchImpl = globalThis.fetch, timeoutMs 
     }, timeoutMs);
     return res.error ? res : parseCodexUsage(res.doc);
   }
-  const creds = io.readJson(path.join(account.configDir, '.credentials.json'));
+  // .credentials.json, or on macOS the Keychain item (io.claudeCredentials, platform.js).
+  const creds = io.readJson(path.join(account.configDir, '.credentials.json'))
+    || (io.claudeCredentials ? io.claudeCredentials(account.configDir, account.number === 0) : null);
   const oauth = creds && creds.claudeAiOauth;
   if (!oauth || !oauth.accessToken) return { error: 'not signed in' };
   if (oauth.expiresAt && Number(oauth.expiresAt) < now) return { error: `sign-in expired; run ${account.cmd} to refresh` };

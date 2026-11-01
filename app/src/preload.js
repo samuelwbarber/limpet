@@ -3,6 +3,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('limpet', {
+  // 'win32' | 'darwin' | 'linux': the renderer picks key handling and the
+  // modifier symbols by it (it has no Node access of its own).
+  platform: process.platform,
+  // An application-menu item was picked (macOS has a menu bar): 'new-tab'.
+  onMenuAction: (cb) => ipcRenderer.on('menu:action', (_e, action) => cb(action)),
   createSession: () => ipcRenderer.invoke('term:create'),
   sessionReady: (id) => ipcRenderer.invoke('term:ready', id),
   closeSession: (id) => ipcRenderer.send('term:close', id),

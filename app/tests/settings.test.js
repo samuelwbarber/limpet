@@ -273,3 +273,61 @@ test('normalizeAccelerator', () => {
   assert.equal(n('Ctrl+Nope'), null);
   assert.equal(n(null), null);
 });
+
+test('the Mac command key is the Cmd modifier, canonical order Ctrl, Cmd, Alt, Shift', () => {
+  const n = settings.normalizeAccelerator;
+  assert.deepEqual(settings.MODIFIERS, ['Ctrl', 'Cmd', 'Alt', 'Shift']);
+  assert.equal(n('meta+shift+t'), 'Cmd+Shift+T');
+  assert.equal(n('command+,'), 'Cmd+,');
+  assert.equal(n('⌘+,'), 'Cmd+,');
+  assert.equal(n('shift+cmd+ctrl+alt+x'), 'Ctrl+Cmd+Alt+Shift+X');
+  assert.equal(n('option+cmd+]'), 'Cmd+Alt+]');
+  assert.equal(n('Cmd+Meta+T'), null, 'one modifier twice');
+  assert.ok(settings.RESERVED.includes('Cmd+C') && settings.RESERVED.includes('Cmd+V'));
+});
+
+test('on macOS the defaults are the command-key shortcuts; elsewhere they are unchanged', () => {
+  const mac = settings.defaults('darwin');
+  assert.deepEqual(mac.keybindings, {
+    newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,',
+  });
+  // Only the shortcuts differ.
+  const win = settings.defaults('win32');
+  assert.deepEqual({ ...mac, keybindings: win.keybindings }, win);
+  assert.deepEqual(settings.defaults('linux'), win);
+  assert.deepEqual(settings.defaults('win32').keybindings, {
+    newTab: 'Ctrl+Shift+T', closeTab: 'Ctrl+Shift+W', nextTab: 'Ctrl+Tab', prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,',
+  });
+  // The schema the page is built from carries that platform's default.
+  const kb = settings.schemaMetadata('darwin').find((s) => s.id === 'keybindings');
+  assert.equal(kb.fields.find((f) => f.key === 'newTab').default, 'Cmd+T');
+  assert.equal(settings.schemaMetadata('win32').find((s) => s.id === 'keybindings').fields.find((f) => f.key === 'newTab').default, 'Ctrl+Shift+T');
+});
+
+test('a store made for macOS starts from, saves relative to and falls back on the Mac defaults', () => {
+  const { file } = scratch();
+  const store = settings.createStore(file, fs, 'darwin');
+  store.load();
+  assert.equal(store.platform, 'darwin');
+  assert.deepEqual(store.get(), settings.defaults('darwin'));
+  assert.deepEqual(store.defaults(), settings.defaults('darwin'));
+  assert.equal(store.schema().find((s) => s.id === 'keybindings').fields.find((f) => f.key === 'closeTab').default, 'Cmd+W');
+  // Cmd+C / Cmd+V are copy and paste there too; Cmd alone is modifier enough.
+  let r = store.set({ keybindings: { newTab: 'Cmd+C' } });
+  assert.equal(r.ok, false);
+  assert.match(r.errors['keybindings.newTab'], /copy\/paste/);
+  r = store.set({ keybindings: { newTab: 'Cmd+N' } });
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { keybindings: { newTab: 'Cmd+N' } });
+  // Setting a Mac default back writes nothing for it.
+  assert.equal(store.set({ keybindings: { newTab: 'Cmd+T' } }).ok, true);
+  assert.equal(fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : '{}', '{}');
+  // A hand-edited clash falls back to the Mac default, or unbound if that is taken.
+  fs.writeFileSync(file, JSON.stringify({ keybindings: { newTab: 'Cmd+W', closeTab: 'Cmd+W' } }));
+  const v = settings.createStore(file, fs, 'darwin').load();
+  assert.equal(v.keybindings.newTab, 'Cmd+W');
+  assert.equal(v.keybindings.closeTab, '');
+  // The same file read as a Windows store keeps the Windows defaults for the rest.
+  const w = settings.createStore(file, fs, 'win32').load();
+  assert.equal(w.keybindings.openSettings, 'Ctrl+,');
+});

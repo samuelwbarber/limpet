@@ -39,9 +39,11 @@ function webUrl(v) {
 }
 
 // ---- keybindings ----
-// Canonical form: modifiers in the order Ctrl, Alt, Shift, then one key, joined
-// by "+" ("Ctrl+Shift+T", "Ctrl+,", "F5"). The renderer builds the same string
-// from a keydown, so matching is plain string equality. '' means unbound.
+// Canonical form: modifiers in the order Ctrl, Cmd, Alt, Shift, then one key,
+// joined by "+" ("Ctrl+Shift+T", "Cmd+,", "F5"). Cmd is the macOS command key
+// (the Meta modifier; "command", "meta" and "⌘" are accepted when typed). The
+// renderer builds the same string from a keydown, so matching is plain string
+// equality; on macOS it only *shows* ⌃ ⌘ ⌥ ⇧. '' means unbound.
 const NAMED_KEYS = [
   'Tab', 'Space', 'Enter', 'Backspace', 'Delete', 'Insert', 'Home', 'End', 'PageUp', 'PageDown',
   'Up', 'Down', 'Left', 'Right',
@@ -49,7 +51,8 @@ const NAMED_KEYS = [
 ];
 const PUNCTUATION = [',', '.', '/', ';', "'", '[', ']', '-', '=', '`', '\\'];
 // Copy and paste belong to the terminal and can't be taken by an action.
-const RESERVED = ['Ctrl+C', 'Ctrl+V', 'Ctrl+Shift+C', 'Ctrl+Shift+V'];
+const RESERVED = ['Ctrl+C', 'Ctrl+V', 'Ctrl+Shift+C', 'Ctrl+Shift+V', 'Cmd+C', 'Cmd+V'];
+const MODIFIERS = ['Ctrl', 'Cmd', 'Alt', 'Shift'];
 
 function normalizeKey(raw) {
   const k = String(raw).trim();
@@ -73,11 +76,14 @@ function normalizeAccelerator(value) {
   if (!key) return null;
   const mods = new Set();
   for (const p of parts) {
-    const m = { ctrl: 'Ctrl', control: 'Ctrl', ctl: 'Ctrl', alt: 'Alt', shift: 'Shift' }[p.toLowerCase()];
+    const m = {
+      ctrl: 'Ctrl', control: 'Ctrl', ctl: 'Ctrl', alt: 'Alt', option: 'Alt', shift: 'Shift',
+      cmd: 'Cmd', command: 'Cmd', meta: 'Cmd', super: 'Cmd', '\u2318': 'Cmd',
+    }[p.toLowerCase()];
     if (!m || mods.has(m)) return null;
     mods.add(m);
   }
-  return [...['Ctrl', 'Alt', 'Shift'].filter((m) => mods.has(m)), key].join('+');
+  return [...MODIFIERS.filter((m) => mods.has(m)), key].join('+');
 }
 
 function keybinding(v) {
@@ -87,8 +93,8 @@ function keybinding(v) {
   if (acc === '') return '';
   if (RESERVED.includes(acc)) return `${acc} is copy/paste and can't be rebound`;
   const key = acc.split('+').pop();
-  const hasMod = /^(Ctrl|Alt)\+/.test(acc);
-  if (!hasMod && !/^F\d+$/.test(key)) return 'needs Ctrl or Alt (or an F key), or it would swallow typing';
+  const hasMod = /^(Ctrl|Cmd|Alt)\+/.test(acc);
+  if (!hasMod && !/^F\d+$/.test(key)) return 'needs Ctrl, Cmd or Alt (or an F key), or it would swallow typing';
   return '';
 }
 
@@ -147,22 +153,37 @@ const SECTIONS = [
 ];
 const SECTION = Object.fromEntries(SECTIONS.map((s) => [s.id, s]));
 
-function defaults() {
+// Where a platform's convention differs from the field's default above: the
+// macOS shortcuts are the command-key ones Terminal.app users expect (Cmd+T,
+// Cmd+W, Cmd+Shift+] / [, Cmd+,). Everything else is the same everywhere.
+const PLATFORM_DEFAULTS = {
+  darwin: {
+    keybindings: { newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,' },
+  },
+};
+
+// The defaults for `platform` (process.platform values: 'win32', 'darwin', ...).
+function defaults(platform = process.platform) {
   const out = {};
+  const overlay = PLATFORM_DEFAULTS[platform] || {};
   for (const s of SECTIONS) {
     out[s.id] = {};
-    for (const [key, f] of Object.entries(s.fields)) out[s.id][key] = f.default;
+    for (const [key, f] of Object.entries(s.fields)) {
+      out[s.id][key] = overlay[s.id] && Object.prototype.hasOwnProperty.call(overlay[s.id], key) ? overlay[s.id][key] : f.default;
+    }
   }
   return out;
 }
 
 // The schema without its functions, for the renderer to build the form from.
-function schemaMetadata() {
+// `default` is the platform's.
+function schemaMetadata(platform = process.platform) {
+  const d = defaults(platform);
   return SECTIONS.map((s) => ({
     id: s.id, label: s.label,
     fields: Object.entries(s.fields).map(([key, f]) => {
-      const { validate, ...rest } = f;
-      return { key, ...rest };
+      const { validate, default: _d, ...rest } = f;
+      return { key, ...rest, default: d[s.id][key] };
     }),
   }));
 }
@@ -187,8 +208,8 @@ function bindingClashes(bindings, changed) {
 }
 
 // Keep the known keys that validate, default the rest, drop unknown ones.
-function sanitize(raw) {
-  const out = defaults();
+function sanitize(raw, platform = process.platform) {
+  const out = defaults(platform);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const s of SECTIONS) {
     const section = raw[s.id];
@@ -202,10 +223,11 @@ function sanitize(raw) {
   // A hand-edited file may give two actions one key: the later one goes back
   // to its default, or to unbound if that is taken too.
   const kb = out.keybindings;
+  const kbDefaults = defaults(platform).keybindings;
   const seen = new Set();
   for (const action of Object.keys(SECTION.keybindings.fields)) {
     if (kb[action] && seen.has(kb[action])) {
-      const d = SECTION.keybindings.fields[action].default;
+      const d = kbDefaults[action];
       kb[action] = seen.has(d) ? '' : d;
     }
     if (kb[action]) seen.add(kb[action]);
@@ -214,8 +236,8 @@ function sanitize(raw) {
 }
 
 // Only what differs from the default is written.
-function overrides(values) {
-  const d = defaults();
+function overrides(values, platform = process.platform) {
+  const d = defaults(platform);
   const out = {};
   for (const s of SECTIONS) {
     for (const key of Object.keys(s.fields)) {
@@ -225,8 +247,9 @@ function overrides(values) {
   return out;
 }
 
-function createStore(filePath, io = fs) {
-  let values = defaults();
+// `platform` picks the defaults (see PLATFORM_DEFAULTS); the tests pass one in.
+function createStore(filePath, io = fs, platform = process.platform) {
+  let values = defaults(platform);
   const subscribers = new Set();
 
   // Missing file: defaults. Unreadable or not JSON: defaults, and the bad file
@@ -241,7 +264,7 @@ function createStore(filePath, io = fs) {
         try { io.writeFileSync(`${filePath}.bad`, text); } catch (_) { /* best effort */ }
       }
     }
-    values = sanitize(raw);
+    values = sanitize(raw, platform);
     return get();
   }
 
@@ -251,7 +274,7 @@ function createStore(filePath, io = fs) {
     io.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmp = `${filePath}.${process.pid}.tmp`;
     try {
-      io.writeFileSync(tmp, `${JSON.stringify(overrides(next), null, 2)}\n`);
+      io.writeFileSync(tmp, `${JSON.stringify(overrides(next, platform), null, 2)}\n`);
       io.renameSync(tmp, filePath);
     } catch (e) {
       try { io.unlinkSync(tmp); } catch (_) { /* never written */ }
@@ -303,9 +326,9 @@ function createStore(filePath, io = fs) {
     return () => subscribers.delete(fn);
   }
 
-  return { load, get, set, subscribe, schema: schemaMetadata, defaults, path: filePath };
+  return { load, get, set, subscribe, schema: () => schemaMetadata(platform), defaults: () => defaults(platform), platform, path: filePath };
 }
 
 module.exports = {
-  createStore, defaults, schemaMetadata, normalizeAccelerator, sanitize, RESERVED,
+  createStore, defaults, schemaMetadata, normalizeAccelerator, sanitize, RESERVED, MODIFIERS, PLATFORM_DEFAULTS,
 };

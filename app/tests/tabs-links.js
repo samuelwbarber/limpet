@@ -2,6 +2,7 @@
 // terminal URLs are handed to the OS rather than opened as Electron popups.
 const { _electron } = require('playwright-core');
 const path = require('path');
+const p = require('./platform');
 
 const APP = path.join(__dirname, '..');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,17 +32,17 @@ async function type(page, text) {
 (async () => {
   const electronApp = await _electron.launch({
     executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
-    args: [APP], timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
+    args: p.launchArgs(APP), timeout: 60000,
+    env: p.launchEnv(),
   });
   const source = await electronApp.firstWindow();
   const pageErrors = [];
   source.on('pageerror', (e) => pageErrors.push(e.message));
-  check('first prompt appears', !!(await waitFor(async () => /PS [A-Z]:/.test(await screenText(source)), 30000)));
+  check('first prompt appears', !!(await waitFor(async () => p.promptRe.test(await screenText(source)), 30000)));
 
   await source.click('#newtab');
   check('second tab opens', !!(await waitFor(() => source.locator('.tab').count().then((n) => n === 2), 10000)));
-  await type(source, "$global:LimpetDetachMarker = 'LIVE_PTY_7733'; Write-Output DETACH_READY_7733");
+  await type(source, p.setVar('LimpetDetachMarker', 'LIVE_PTY_7733', 'DETACH_READY_7733'));
   check('second PTY is ready before detach', !!(await waitFor(async () => (await screenText(source)).includes('DETACH_READY_7733'), 8000)));
 
   const detachedWindow = electronApp.waitForEvent('window', { timeout: 10000 });
@@ -64,11 +65,11 @@ async function type(page, text) {
 
   await detached.locator('.term-pane.active').click();
   await sleep(500);
-  await type(detached, "if ($global:LimpetDetachMarker -eq 'LIVE_PTY_7733') { Write-Output LIVE_PTY_PRESERVED_7733 } else { Write-Output PTY_RESTARTED_7733 }");
+  await type(detached, p.testVar('LimpetDetachMarker', 'LIVE_PTY_7733', 'LIVE_PTY_PRESERVED_7733', 'PTY_RESTARTED_7733'));
   check('detached tab keeps the live PTY', !!(await waitFor(async () => (await screenText(detached)).includes('LIVE_PTY_PRESERVED_7733'), 8000)));
 
-  await type(detached, "[Console]::Write([char]27); [Console]::Write(']2;Claude Code - Building a slot machine app'); [Console]::Write([char]7); Start-Sleep -Milliseconds 1500; Write-Output TITLE_READY_7733");
   const expectedTitle = 'Claude Code - Building a slot machine app';
+  await type(detached, p.setTitle(expectedTitle, 'TITLE_READY_7733'));
   const titleSeen = await waitFor(async () => {
     const observed = await detached.locator('.tab.active .title').textContent();
     return observed === expectedTitle ? observed : null;
@@ -84,7 +85,7 @@ async function type(page, text) {
     shell.openExternal = async (url) => { global.__limpetOpenedUrl = url; };
   });
   const url = 'https://example.com/limpet-link-check';
-  await type(detached, `Write-Output '${url}'`);
+  await type(detached, p.echoQuoted(url));
   const linkPoint = await waitFor(() => detached.evaluate((needle) => {
     const rows = [...document.querySelectorAll('.term-pane.active .xterm-rows > div')];
     const row = rows.reverse().find((el) => el.textContent.includes(needle));

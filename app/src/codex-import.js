@@ -16,7 +16,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const DEFAULT_COMMAND = { file: 'cmd.exe', args: ['/c', 'codex', 'app-server'] };
+// How to start Codex's app-server: through cmd.exe on Windows (codex is an
+// npm .cmd shim there), the codex binary itself elsewhere.
+const DEFAULT_COMMAND = require('./platform').codexAppServerCommand;
 
 // Windows paths: win32.basename splits on backslashes on every platform.
 const sameFile = (a, b) => path.win32.basename(String(a || '')).toLowerCase() === path.win32.basename(String(b || '')).toLowerCase();

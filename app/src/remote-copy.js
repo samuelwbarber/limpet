@@ -130,7 +130,7 @@ function runScp({ paths, target, port, dir, key }, say) {
     }
     child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4096); });
     child.on('error', (e) => finish(false, 31, e.code === 'ENOENT'
-      ? 'scp not found (install the Windows OpenSSH client), or use wput'
+      ? `scp not found (install the ${process.platform === 'win32' ? 'Windows ' : ''}OpenSSH client), or use wput`
       : `scp failed: ${e.message}`));
     child.on('close', (code) => {
       if (code === 0) finish(true, 32, `done: ${plural(paths.length, 'item')} in ${where} (${((Date.now() - started) / 1000).toFixed(1)}s)`);

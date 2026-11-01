@@ -1,11 +1,13 @@
-// End-to-end test: launches the real limpet app (Electron + ConPTY PowerShell),
-// exercises peek (including resize survival), the reels OSC toggle, and the
-// download OSC channel, asserting on terminal DOM text and canvas pixels.
-// Run: npm run test:e2e   (needs a display; works on GitHub windows runners)
+// End-to-end test: launches the real limpet app (Electron + a real PTY running
+// PowerShell on Windows, the login shell elsewhere), exercises peek (including
+// resize survival), the reels OSC toggle, and the download OSC channel,
+// asserting on terminal DOM text and canvas pixels.
+// Run: npm run test:e2e   (needs a display; works on GitHub windows and macos runners)
 const { _electron } = require('playwright-core');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const p = require('./platform');
 
 const APP = path.join(__dirname, '..');
 const TEST_PNG = path.join(APP, '..', 'tools', 'demo', 'test.png');
@@ -62,15 +64,15 @@ async function type(page, text) {
 (async () => {
   const app = await _electron.launch({
     executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
-    args: [APP],
+    args: p.launchArgs(APP),
     timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
+    env: p.launchEnv(),
   });
   const page = await app.firstWindow();
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
-  check('prompt appears', !!(await waitFor(async () => /PS [A-Z]:/.test(await screenText(page)), 30000)));
+  check('prompt appears', !!(await waitFor(async () => p.promptRe.test(await screenText(page)), 30000)));
 
   const pixelCheck = await page.evaluate(async () => {
     const source = document.createElement('canvas');
@@ -96,15 +98,15 @@ async function type(page, text) {
 
   // ---- peek renders pixels, prompt returns below ----
   const before = await imagePixels(page);
-  await type(page, `peek ${TEST_PNG}`);
+  await type(page, `peek ${p.isWin ? TEST_PNG : p.q(TEST_PNG)}`);
   await sleep(4000);
   const withImage = await imagePixels(page);
   check(`peek paints the image (${before} -> ${withImage} px)`, withImage > before + 50);
-  await type(page, 'echo peek-done');
+  await type(page, p.echo('peek-done'));
   await sleep(1500);
   check('prompt keeps working under the image', (await screenText(page)).includes('peek-done'));
 
-  // ---- images survive a window resize (ConPTY repaint) ----
+  // ---- images survive a window resize (the PTY repaints) ----
   const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [W, H]) => {
     BrowserWindow.getAllWindows()[0].setSize(W, H);
   }, [w, h]);
@@ -126,8 +128,7 @@ async function type(page, text) {
   const dl = path.join(os.homedir(), 'Downloads', 'limpet-ci.txt');
   fs.rmSync(dl, { force: true });
   // header (name "limpet-ci.txt", kind file), one data chunk ("hello limpet"), finish
-  const E = '$([char]27)'; const B = '$([char]7)';
-  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;" + $env:LIMPET_TOKEN + "${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  await type(page, p.rawDownload('bGltcGV0LWNpLnR4dA==', 'aGVsbG8gbGltcGV0', true));
   const saved = await waitFor(() => fs.existsSync(dl) && fs.readFileSync(dl, 'utf8') === 'hello limpet', 8000);
   check('streamed download saves to Downloads', !!saved);
   check('streamed download content intact', saved && fs.readFileSync(dl, 'utf8') === 'hello limpet');
@@ -135,15 +136,15 @@ async function type(page, text) {
 
   // ...but only when it carries the app's token: output that merely contains the
   // sequence (a `cat`-ed file, a hostile host) must not write to Downloads.
-  await type(page, `Write-Host -NoNewline ("${E}]5379;dl;h;bGltcGV0LWNpLnR4dA==;file;0000${B}${E}]5379;dl;d;aGVsbG8gbGltcGV0${B}${E}]5379;dl;f${B}")`);
+  await type(page, p.rawDownload('bGltcGV0LWNpLnR4dA==', 'aGVsbG8gbGltcGV0', '0000'));
   const refused = await waitFor(async () => (await screenText(page)).includes('ignored a download'), 8000);
   check('untokened download is refused', !!refused && !fs.existsSync(dl));
   fs.rmSync(dl, { force: true });
 
-  // ---- settings page: Ctrl+, opens it, a font size change reaches the terminal ----
+  // ---- settings page: the shortcut opens it, a font size change reaches the terminal ----
   await page.locator('.term-pane.active .xterm-helper-textarea').focus();
-  await page.keyboard.press('Control+Comma');
-  check('Ctrl+, opens the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 1), 5000)));
+  await page.keyboard.press(p.openSettingsKey);
+  check(`${p.openSettingsKey} opens the settings page`, !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 1), 5000)));
   const fontSize = () => page.evaluate(() => tabs.get(activeId).term.options.fontSize);
   const sizeBefore = await fontSize();
   await page.locator('#setting-terminal-fontSize').fill(String(sizeBefore + 4));

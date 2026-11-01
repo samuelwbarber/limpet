@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const path = require('path');
 const {
   accountFor, listAccounts, describeAccounts, signInHints, descendants, findClaudeSession, findCodexSession, findSession,
-  findCopilotSession, findAgySession, launchCommand, psQuote, jwtEmail,
+  findCopilotSession, findAgySession, launchCommand, psQuote, posixQuote, jwtEmail, isAgentProc,
 } = require('../src/accounts');
 
 const procs = [
@@ -195,6 +195,47 @@ test('psQuote doubles the typographic single quotes PowerShell also honours', ()
   assert.strictEqual(psQuote('\u2018x\u201a\u201b'), "'\u2018\u2018x\u201a\u201a\u201b\u201b'");
   assert.strictEqual(psQuote("\u2019; Remove-Item C:\\ '"), "'\u2019\u2019; Remove-Item C:\\ '''");
   assert.strictEqual(psQuote('\u201c"ok"\u201d'), "'\u201c\"ok\"\u201d'", 'double quotes are literal inside single quotes');
+});
+
+test('launchCommand quotes for zsh/bash when told the shell is posix', () => {
+  assert.strictEqual(launchCommand('claude2', { resume: SID_A }, 'posix'), `claude2 --resume ${SID_A}`);
+  assert.strictEqual(launchCommand('codex', { prompt: "it's here", addDir: '/h' }, 'posix'), "codex 'it'\\''s here'");
+  assert.strictEqual(launchCommand('claude1', { prompt: 'go on', addDir: '/Users/me/h o' }, 'posix'), "claude1 --add-dir '/Users/me/h o' 'go on'");
+  assert.strictEqual(launchCommand('agy', { prompt: 'echo $HOME `x`', addDir: '/h' }, 'posix'), "agy --add-dir '/h' -i 'echo $HOME `x`'");
+  assert.strictEqual(launchCommand('copilot3', { prompt: '’ stays', addDir: '' }, 'posix'), "copilot3 -i '’ stays'", 'typographic quotes mean nothing to a POSIX shell');
+  assert.strictEqual(posixQuote("a'b"), "'a'\\''b'");
+  assert.throws(() => launchCommand('claude', {}, 'fish'), /unknown shell kind/);
+});
+
+test('isAgentProc spots an agent by process name, by .exe, or by its path in a node command line', () => {
+  const is = (kind, p) => isAgentProc(kind)(p);
+  assert.ok(is('codex', { name: 'codex.exe' }));
+  assert.ok(is('codex', { name: 'Codex.EXE' }));
+  assert.ok(is('codex', { name: 'codex', args: '/opt/homebrew/bin/codex resume abc' }));
+  assert.ok(is('codex', { name: 'node', args: 'node /opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js' }), 'a path component equal to the name, followed by /');
+  assert.ok(is('copilot', { name: 'node', args: 'node /usr/lib/node_modules/@github/copilot/index.js' }));
+  assert.ok(is('agy', { name: 'node', args: 'node /Users/me/.npm/_npx/abc/node_modules/.bin/agy --conversation x' }), 'followed by a space');
+  assert.ok(is('claude', { name: 'node', args: 'node /usr/local/bin/claude' }), 'at the end');
+  assert.ok(!is('codex', { name: 'node', args: 'node /home/me/codex-tools/run.js' }), 'codex-tools is not codex');
+  assert.ok(!is('codex', { name: 'node', args: 'node /home/me/mycodex/run.js' }));
+  assert.ok(!is('codex', { name: 'powershell.exe', args: '' }));
+  assert.ok(!is('codex', { name: 'node' }), 'no args at all');
+  assert.ok(!is('claude', { name: 'claude-tools' }));
+});
+
+test('describeAccounts counts a Claude account signed in through the Keychain reader when there is no .credentials.json', () => {
+  const home = path.join('/Users', 'me');
+  const io = {
+    listDir: () => ['.claude-1', '.claude-2'],
+    exists: (p) => p === path.join(home, '.claude-2', '.credentials.json'),
+    readJson: () => null,
+    claudeCredentials: (dir, plain) => (dir === path.join(home, '.claude-1') && !plain ? { claudeAiOauth: {} } : null),
+  };
+  const rows = describeAccounts(home, io).filter((a) => a.kind === 'claude');
+  assert.deepStrictEqual(rows.map((a) => [a.cmd, a.loggedIn]), [['claude', false], ['claude1', true], ['claude2', true]]);
+  // Without the reader (Windows, Linux) only the file counts.
+  const plain = describeAccounts(home, { listDir: io.listDir, exists: io.exists, readJson: io.readJson }).filter((a) => a.kind === 'claude');
+  assert.deepStrictEqual(plain.map((a) => [a.cmd, a.loggedIn]), [['claude', false], ['claude1', false], ['claude2', true]]);
 });
 
 test('launchCommand speaks agy and Copilot too: their resume flags, -i for a first prompt, --add-dir', () => {

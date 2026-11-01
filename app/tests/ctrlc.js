@@ -1,7 +1,10 @@
-// Focused e2e: paste enters the PTY once, Ctrl+C copies the selection (even
-// after it is cleared by a repaint), and plain Ctrl+C still interrupts.
+// Focused e2e: paste enters the PTY once, the copy shortcut copies the
+// selection (even after it is cleared by a repaint), and plain Ctrl+C still
+// interrupts. On Windows and Linux copy is Ctrl+C and paste Ctrl+V /
+// Ctrl+Shift+V; on macOS copy is Cmd+C and paste Cmd+V (Ctrl+Shift+V too).
 const { _electron } = require('playwright-core');
 const path = require('path');
+const p = require('./platform');
 const APP = path.join(__dirname, '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
@@ -13,26 +16,24 @@ async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await
 (async () => {
   const app = await _electron.launch({
     executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
-    args: [APP], timeout: 60000,
-    env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1' },
+    args: p.launchArgs(APP), timeout: 60000,
+    env: p.launchEnv(),
   });
   const page = await app.firstWindow();
-  await waitFor(() => screenText(page).then((t) => /PS [A-Z]:/.test(t)), 30000);
+  await waitFor(() => screenText(page).then((t) => p.promptRe.test(t)), 30000);
   const clip = (t) => app.evaluate(({ clipboard }, v) => (v === undefined ? clipboard.readText() : clipboard.writeText(v)), t);
 
   // A hidden stock Electron menu used to keep a second Ctrl+V accelerator
   // alive. Together with xterm's paste event that injected clipboard text
-  // twice. Both common shortcuts must now have one and only one PTY path.
-  for (const [shortcut, marker] of [
-    ['Control+v', 'PASTE_ONCE_CTRL_V_9911'],
-    ['Control+Shift+v', 'PASTE_ONCE_CTRL_SHIFT_V_9922'],
-  ]) {
-    await type(page, 'Clear-Host');
+  // twice. Every paste shortcut must have one and only one PTY path.
+  for (const [i, shortcut] of p.pasteKeys.entries()) {
+    const marker = `PASTE_ONCE_${i}_99${i}1`;
+    await type(page, p.clear);
     // Paste only once the clear has landed and the prompt is back, or a slow
     // shell can wipe the pasted line after it's echoed (the first iteration
     // runs right after startup, and flaked on CI that way).
-    await waitFor(() => screenText(page).then((t) => /^PS [A-Z]:[^\n]*>$/.test(t.trim())), 10000);
-    await clip(`Write-Output ${marker}`);
+    await waitFor(() => screenText(page).then((t) => p.promptOnly(t)), 10000);
+    await clip(p.echo(marker));
     await page.keyboard.press(shortcut);
     await page.keyboard.press('Enter');
     await waitFor(() => screenText(page).then((t) => (t.match(new RegExp(marker, 'g')) || []).length >= 2), 8000);
@@ -41,9 +42,9 @@ async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await
     check(`${shortcut} pastes exactly once${count === 2 ? '' : ` (marker seen ${count}x, want 2)`}`, count === 2);
   }
 
-  // ---- Ctrl+C copies a selection ----
+  // ---- the copy shortcut copies a selection ----
   await clip('');
-  await type(page, 'echo COPYME_MARKER_7788');
+  await type(page, p.echo('COPYME_MARKER_7788'));
   await waitFor(() => screenText(page).then((t) => /COPYME_MARKER_7788/.test((t.match(/COPYME_MARKER_7788/g) || []).length > 1 ? t : '')), 8000);
   await sleep(500);
   // Triple-click the output line to select it (find the row with the echoed value).
@@ -61,21 +62,21 @@ async function type(page, t) { await page.keyboard.type(t, { delay: 10 }); await
     await sleep(300);
     // Force the "selection cleared just before keypress" race: repaint the screen.
     await page.evaluate(() => { const el = document.querySelector('.term-pane.active'); if (el) el.dispatchEvent(new Event('mouseleave')); });
-    await page.keyboard.press('Control+c');
+    await page.keyboard.press(p.copyKey);
     await sleep(400);
     const got = await clip();
-    check('Ctrl+C copied the selection', /COPYME_MARKER_7788/.test(got));
+    check(`${p.copyKey} copied the selection`, /COPYME_MARKER_7788/.test(got));
   }
 
   // ---- plain Ctrl+C still interrupts ----
   await clip('SENTINEL_UNCHANGED');
-  await type(page, 'Start-Sleep -Seconds 30');
+  await type(page, p.sleep(30));
   await sleep(1200); // now sleeping; nothing selected, cache cleared by typing
   await page.keyboard.press('Control+c');
   const returned = await waitFor(async () => {
     const t = await screenText(page);
     // prompt returns quickly (well before 30s) if the sleep was interrupted
-    return /PS [A-Z]:\\[^\n]*>\s*$/.test(t.trimEnd() + ' ');
+    return p.promptEndRe.test(t.trimEnd() + ' ');
   }, 6000);
   check('plain Ctrl+C interrupted the sleep (prompt returned < 6s)', !!returned);
   check('plain Ctrl+C did not touch the clipboard', (await clip()) === 'SENTINEL_UNCHANGED');
