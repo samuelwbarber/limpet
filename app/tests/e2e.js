@@ -80,6 +80,23 @@ async function type(page, text) {
     env: p.launchEnv(),
   });
   const page = await app.firstWindow();
+  // Diagnostics for CI: the main process's stderr, and whether node-pty can
+  // spawn a shell here (without it the app falls back to pipes, where a typed
+  // Enter never ends a line).
+  app.process().stderr.on('data', (d) => process.stderr.write(`[main] ${d}`));
+  console.log('node-pty:', await app.evaluate(async (_electron, isWin) => {
+    try {
+      const pty = require('node-pty');
+      const proc = isWin ? pty.spawn('cmd.exe', ['/c', 'echo PTY_OK'], { name: 'xterm', cols: 20, rows: 5, env: process.env })
+        : pty.spawn('/bin/sh', ['-c', 'echo PTY_OK'], { name: 'xterm', cols: 20, rows: 5, env: process.env });
+      return await new Promise((resolve) => {
+        let out = '';
+        proc.onData((d) => { out += d; });
+        proc.onExit((e) => resolve(`exit ${e.exitCode}: ${out.trim()}`));
+        setTimeout(() => resolve(`timeout: ${out.trim()}`), 5000);
+      });
+    } catch (e) { return `error: ${e.message}`; }
+  }, p.isWin));
   const pageErrors = [];
   page.on('pageerror', (e) => pageErrors.push(e.message));
 
