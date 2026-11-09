@@ -22,7 +22,7 @@ how hard the waves hit, which is basically what xssh does. Type
 
 Type the Unix commands your hands already know (`ls -la`, `rm -rf`, `cp -r`,
 `grep -i`, `head`, `tail`, `find`, `du`) and limpet translates the flags to
-the native PowerShell cmdlets. It's still real PowerShell, so pipelines,
+the native PowerShell cmdlets. It's still real PowerShell, so pipelines, 
 objects and every normal cmdlet keep working.
 
 <p align="center"><img src="docs/media/shell.gif" width="840" alt="limpet shell demo: Linux commands inside PowerShell" /></p>
