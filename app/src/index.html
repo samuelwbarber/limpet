@@ -6,7 +6,11 @@
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; frame-src https:" />
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <link rel="stylesheet" href="settings.css" />
+<<<<<<< HEAD
   <link rel="stylesheet" href="transfers.css" />
+=======
+  <link rel="stylesheet" href="terminal-ui.css" />
+>>>>>>> c298a66 (feat: add terminal search and discoverable keyboard-accessible controls)
   <style>
     html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
     body { display: flex; flex-direction: column; }
@@ -155,8 +159,11 @@
 </head>
 <body>
   <div id="tabbar">
-    <div id="tabstrip"></div>
-    <button id="newtab" title="New tab">+</button>
+    <div id="tabstrip" role="tablist" aria-label="Terminal sessions"></div>
+    <button id="newtab" title="New tab" aria-label="New tab">+</button>
+    <button id="find-output" class="toolbar-button" title="Find in output (Ctrl+Shift+F)">Find</button>
+    <button id="accounts-button" class="toolbar-button" aria-haspopup="dialog" aria-expanded="false">Accounts</button>
+    <button id="settings-button" class="toolbar-button">Settings</button>
   </div>
   <div id="main">
     <div id="terms"></div>
@@ -170,10 +177,15 @@
   <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../node_modules/@xterm/addon-image/lib/addon-image.js"></script>
   <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
   <script src="predict.js"></script>
   <script src="settings-ui.js"></script>
   <script src="renderer.js"></script>
+<<<<<<< HEAD
   <script src="transfers-ui.js"></script>
+=======
+  <script src="terminal-ui.js"></script>
+>>>>>>> c298a66 (feat: add terminal search and discoverable keyboard-accessible controls)
   <script src="failover-banner.js"></script>
 </body>
 </html>

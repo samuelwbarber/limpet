@@ -1,0 +1,20 @@
+﻿#tabstrip { overflow-x: auto !important; overflow-y: hidden !important; flex: 1 1 auto; scrollbar-width: thin; }
+.tab { flex: 0 0 auto; max-width: 220px; }
+.toolbar-button { flex: 0 0 auto; font: 12px Consolas, monospace; color: #cdd6f4; background: transparent; border: 1px solid #45475a; border-radius: 4px; padding: 4px 7px; cursor: pointer; }
+button:focus-visible, [role=tab]:focus-visible, [role=button]:focus-visible, input:focus-visible { outline: 2px solid #89b4fa; outline-offset: -2px; }
+.xterm-viewport::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+.xterm-viewport { scrollbar-width: thin !important; scrollbar-color: #6c7086 #181825 !important; }
+.xterm-viewport::-webkit-scrollbar-thumb { background: #6c7086; border-radius: 4px; }
+.account-menu { box-sizing: border-box; min-width: 0 !important; width: min(500px, calc(100vw - 8px)); max-height: calc(100vh - 45px); overflow: auto; }
+.account-menu .head, .account-menu .more { white-space: normal !important; overflow-wrap: anywhere; }
+.account-menu .item { width: 100%; text-align: left; border: 0; color: inherit; background: transparent; font: inherit; }
+.account-menu .bg { flex-wrap: wrap; }
+#terminal-status { flex: 0 0 auto; padding: 3px 8px; color: #a6adc8; background: #181825; font: 11px Consolas, monospace; overflow-wrap: anywhere; }
+#terminal-search { position: absolute; right: 12px; top: 6px; z-index: 10; display: flex; flex-wrap: wrap; gap: 5px; max-width: calc(100% - 24px); box-sizing: border-box; padding: 8px; background: #181825; border: 1px solid #6c7086; border-radius: 6px; color: #cdd6f4; font: 12px Consolas, monospace; }
+#terminal-search[hidden] { display: none; }
+#terminal-search input { min-width: 100px; flex: 1 1 130px; width: 160px; background: #313244; color: #cdd6f4; border: 1px solid #6c7086; padding: 4px; }
+#terminal-search button { font: inherit; background: #313244; color: #cdd6f4; border: 1px solid #6c7086; border-radius: 3px; }
+#terminal-search .result { align-self: center; }
+@media (max-width: 520px) { .account-menu .item { grid-template-columns: auto minmax(0, 1fr); gap: 5px; } .account-menu .usage { grid-column: 1 / -1; justify-self: start; } .toolbar-button { padding: 4px; } }
+
+#terminal-connection { color: #cdd6f4; margin-right: 12px; }

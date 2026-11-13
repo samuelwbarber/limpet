@@ -110,7 +110,7 @@ const SECTIONS = [
       lineHeight: { label: 'Line height', type: 'number', min: 1, max: 2, step: 0.05, default: 1, validate: numIn(1, 2) },
       cursorStyle: { label: 'Cursor style', type: 'enum', options: ['block', 'underline', 'bar'], default: 'block', validate: oneOf(['block', 'underline', 'bar']) },
       cursorBlink: { label: 'Blinking cursor', type: 'boolean', default: true, validate: bool },
-      scrollback: { label: 'Scrollback lines', type: 'number', min: 1000, max: 100000, step: 1000, default: 1000, validate: intIn(1000, 100000) },
+      scrollback: { label: 'Scrollback lines', type: 'number', min: 1000, max: 100000, step: 1000, default: 10000, validate: intIn(1000, 100000) },
     },
   },
   {

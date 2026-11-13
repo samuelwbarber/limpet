@@ -27,7 +27,7 @@ test('defaults are what limpet did before the settings page', () => {
   const d = settings.defaults('win32');
   assert.deepEqual(d.terminal, {
     fontFamily: "'Cascadia Mono', Consolas, monospace", fontSize: 14, lineHeight: 1,
-    cursorStyle: 'block', cursorBlink: true, scrollback: 1000,
+    cursorStyle: 'block', cursorBlink: true, scrollback: 10000,
   });
   assert.deepEqual(d.behaviour, { predictiveEcho: true, copyOnSelect: false });
   assert.equal(d.reels.defaultUrl, 'https://www.instagram.com/reels/');

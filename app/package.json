@@ -16,7 +16,7 @@
     "setup:backdrop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-backdrop.ps1",
     "setup:backdrop:unix": "bash scripts/setup-local-backdrop.sh",
     "test": "node --test tests/*.test.js",
-    "test:e2e": "node tests/e2e.js && node tests/ctrlc.js && node tests/tabs-links.js && node tests/accounts.js && node tests/session-recovery.js"
+    "test:e2e": "node tests/e2e.js && node tests/ctrlc.js && node tests/tabs-links.js && node tests/accounts.js && node tests/session-recovery.js && node tests/terminal-ui.js"
   },
   "license": "MIT",
   "devDependencies": {
@@ -27,6 +27,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-image": "^0.9.0",
+    "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "electron-updater": "^6.8.9",
