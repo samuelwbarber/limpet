@@ -828,9 +828,12 @@ async function dropFiles(sess, paths) {
   const id = crypto.randomUUID();
   const job = { id, paths: [...paths], destination, state: 'running', controller: new AbortController() };
   sess.transfers.set(id, job);
-  const update = (message) => sendToSession(sess, 'transfer:status', {
-    sessionId: sess.id, id, destination, names: paths.map((p) => path.basename(p)), state: job.state, message,
-  });
+  const update = (message) => {
+    if (sessions.get(sess.id) !== sess) return; // no late card after a deliberate close
+    sendToSession(sess, 'transfer:status', {
+      sessionId: sess.id, id, destination, names: paths.map((p) => path.basename(p)), state: job.state, message,
+    });
+  };
   update('Copying over SSH. Byte progress is unavailable.');
   remoteCopy.runScp({ ...plan, paths, key: remoteCopy.defaultKey(), signal: job.controller.signal }, (color, msg) => {
     job.message = msg; say(color, msg);

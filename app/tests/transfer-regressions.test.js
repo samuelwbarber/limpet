@@ -87,6 +87,24 @@ test('confirmation accepted after its session closes cannot start an orphan copy
   } finally { rc.runScp = saved; main.sessions.clear(); }
 });
 
+test('a late transfer result cannot recreate a card after its tab is closed', async () => {
+  const sess = session(77);
+  main.sessions.set(sess.id, sess);
+  const saved = rc.runScp;
+  let finish;
+  rc.runScp = () => new Promise((resolve) => { finish = resolve; });
+  showDialog = async () => ({ response: 0 });
+  try {
+    assert.equal((await main.dropFiles(sess, [source])).ok, true);
+    const events = sess.uiPending.filter((u) => u.channel === 'transfer:status').length;
+    assert.equal(events, 1);
+    main.stopSession(sess);
+    finish(false);
+    await new Promise(setImmediate);
+    assert.equal(sess.uiPending.filter((u) => u.channel === 'transfer:status').length, events);
+  } finally { rc.runScp = saved; main.sessions.clear(); }
+});
+
 test('only running jobs trigger a close warning after the shell exits', async () => {
   let dialogs = 0;
   showDialog = async () => { dialogs++; return { response: 0 }; };
