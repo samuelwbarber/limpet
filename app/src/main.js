@@ -1252,11 +1252,13 @@ function saveWorkspace() {
 
 function stopSession(sess) {
   if (!sess || !sessions.has(sess.id)) return;
+  sess.exited = true;
   for (const job of sess.transfers?.values() || []) job.controller?.abort();
   sessions.delete(sess.id); // deliberate close: keep sessionExited() quiet
   endDownload(sess);
   if (sess.flushTimer) clearTimeout(sess.flushTimer);
   if (sess.proc) sess.proc.kill();
+  sess.proc = null;
   if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
 }
 
@@ -1290,7 +1292,7 @@ function openExternalUrl(rawUrl) {
 }
 
 async function confirmSessionClose(browserWin, owned) {
-  const live = owned.filter((sess) => !sess.exited || sess.transfers?.size);
+  const live = owned.filter((sess) => !sess.exited || [...(sess.transfers?.values() || [])].some((job) => job.state === 'running'));
   if (!live.length) return true;
   const { response } = await dialog.showMessageBox(browserWin, {
     type: 'warning', buttons: ['Keep working', 'Close sessions'], defaultId: 0, cancelId: 0,
@@ -1370,7 +1372,7 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
   browserWin.on('close', (event) => {
     if (closeApproved) return;
     const owned = [...sessions.values()].filter((sess) => sess.ownerId === windowId);
-    if (!owned.some((sess) => !sess.exited || sess.transfers?.size)) { if (owned.length) saveWorkspace(); return; }
+    if (!owned.some((sess) => !sess.exited || [...(sess.transfers?.values() || [])].some((job) => job.state === 'running'))) { if (owned.length) saveWorkspace(); return; }
     event.preventDefault();
     if (closePending) return;
     closePending = true;
@@ -1435,6 +1437,10 @@ function registerIpc() {
     if (!sess) return false;
     sess.ready = true;
     flushSessionUi(sess);
+    for (const job of sess.transfers?.values() || []) sendToSession(sess, 'transfer:status', {
+      sessionId: sess.id, id: job.id, destination: job.destination, names: job.paths.map((p) => path.basename(p)),
+      state: job.state, message: job.message || 'Copying over SSH. Byte progress is unavailable.',
+    });
     if (sess.backdropDataUrl) {
       sendToSession(sess, 'term:backdrop', { id: sess.id, dataUrl: sess.backdropDataUrl });
     }

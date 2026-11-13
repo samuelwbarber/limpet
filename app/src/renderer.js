@@ -173,6 +173,7 @@ function removeTab(id) {
   const order = tabOrder();
   const idx = order.indexOf(id);
   tabs.delete(id);
+  window.dispatchEvent(new CustomEvent('limpet:session-removed', { detail: id }));
   t.closed = true;  // late timer / IPC callbacks bail on this
   clearTimeout(t.backdropTimer);
   clearTimeout(t.peekTimer);

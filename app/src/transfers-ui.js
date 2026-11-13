@@ -5,11 +5,15 @@
   panel.setAttribute('aria-label', 'File transfers');
   document.body.appendChild(panel);
   const cards = new Map();
+  window.addEventListener('limpet:session-removed', (event) => {
+    for (const [id, card] of cards) if (card.dataset.sessionId === String(event.detail)) { card.remove(); cards.delete(id); }
+  });
   window.limpet.onTransfer((job) => {
     let card = cards.get(job.id);
     if (!card) {
       card = document.createElement('article');
       card.className = 'transfer-card';
+      card.dataset.sessionId = String(job.sessionId);
       cards.set(job.id, card);
       panel.appendChild(card);
     }

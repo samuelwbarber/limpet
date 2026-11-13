@@ -118,8 +118,9 @@ function runScp({ paths, target, port, dir, key, signal }, say) {
     let settled = false;
     const cancel = () => {
       if (settled) return;
-      try { if (child) child.kill(); } catch (_) { /* already exited */ }
-      finish(false, 33, `copy to ${where} cancelled; the remote may contain partial files`);
+      if (!child) { finish(false, 33, `copy to ${where} cancelled`); return; }
+      // Wait for close before allowing retry: kill() only requests termination.
+      try { child.kill(); } catch (_) { /* close/error owns completion */ }
     };
     const finish = (ok, color, text) => {
       if (settled) return;
@@ -140,7 +141,8 @@ function runScp({ paths, target, port, dir, key, signal }, say) {
       ? `scp not found (install the ${process.platform === 'win32' ? 'Windows ' : ''}OpenSSH client), or use wput`
       : `scp failed: ${e.message}`));
     child.on('close', (code) => {
-      if (code === 0) finish(true, 32, `done: ${plural(paths.length, 'item')} in ${where} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+      if (signal && signal.aborted) finish(false, 33, `copy to ${where} cancelled; the remote may contain partial files`);
+      else if (code === 0) finish(true, 32, `done: ${plural(paths.length, 'item')} in ${where} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
       else finish(false, 31, `copy to ${where} failed: ${describeScpFailure(code, stderr)}`);
     });
     if (signal) {
