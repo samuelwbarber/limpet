@@ -21,3 +21,28 @@ test('workspace persists only bounded directory metadata and survives corrupt in
     assert.equal(workspace.cleanTabs([{ cwd: dir, title: 'a'.repeat(300) }])[0].title.length, 200);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test('untrusted workspace paths cannot probe network shares or device namespaces', () => {
+  const unsafe = [
+    String.raw`\\server\share\project`, '//server/share/project',
+    String.raw`\/server\share`, String.raw`/\server\share`,
+    String.raw`\\?\UNC\server\share\project`, String.raw`\\?\C:\project`,
+    String.raw`\\.\C:\project`, '//?/UNC/server/share/project', '//./pipe/limpet',
+    String.raw`\??\UNC\server\share`, String.raw`\Device\HarddiskVolume1\project`,
+    'relative/project', 'C:relative', '/project\0suffix', null, 42,
+  ];
+  const saved = fs.statSync;
+  const probed = [];
+  fs.statSync = (value) => { probed.push(value); return { isDirectory: () => true }; };
+  try {
+    for (const value of unsafe) {
+      assert.equal(workspace.directory(value, 'fallback'), 'fallback', `reject ${JSON.stringify(value)}`);
+      assert.deepEqual(workspace.cleanTabs([{ cwd: value }]), [], `omit ${JSON.stringify(value)}`);
+    }
+    assert.deepEqual(probed, [], 'reject before stat can initiate network authentication');
+    const local = path.join(os.tmpdir(), 'limpet-local-project');
+    assert.equal(workspace.directory(local, 'fallback'), local);
+    assert.deepEqual(probed, [local]);
+  } finally { fs.statSync = saved; }
+});
