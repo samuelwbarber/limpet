@@ -284,7 +284,14 @@ _limpet_agy_cred_write "$(login one@example.com)"   # signs in as another accoun
 _limpet_agy_exit agy1
 [ "$(inStore)" = "$plainLogin" ] && [ -f "$g/.agy-1/login.dat" ] && contains "$(cat "$g/.agy-1/account.json")" 'one@example.com' && [ ! -f "$g/.agy/active" ]; check "on exit agy1's login is kept and plain agy's is back" $?
 _limpet_agy_enter agy1 && contains "$(inStore)" 'at-one@example.com'; check 'agy1 comes back signed in next time' $?
-cp "$(command -v sleep)" "$TMP/bin/limpet-fake-agy"; "$TMP/bin/limpet-fake-agy" 30 & agyPid=$!
+# Some distributions ship sleep as a multicall coreutils binary. Renaming it
+# changes argv[0] and makes it exit immediately instead of holding the login.
+# Use a standalone process with the exact name the production pgrep checks.
+cc -x c -o "$TMP/bin/limpet-fake-agy" - <<'LIMPET_FAKE_AGY_C'
+#include <unistd.h>
+int main(void) { sleep(30); return 0; }
+LIMPET_FAKE_AGY_C
+"$TMP/bin/limpet-fake-agy" & agyPid=$!
 sleep 0.3
 export LIMPET_AGY_PROCESS=limpet-fake-agy
 _limpet_agy_enter agy2 2>/dev/null; [ $? = 1 ] && contains "$(inStore)" 'at-one@example.com'; check 'another agy account is refused while one runs' $?
