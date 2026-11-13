@@ -1,0 +1,48 @@
+﻿const { _electron } = require('playwright-core');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const platform = require('./platform');
+(async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-terminal-ui-'));
+  fs.mkdirSync(path.join(fixture, 'home'));
+  const app = await _electron.launch({ executablePath: require('electron'), args: [path.join(__dirname, '..'), `--user-data-dir=${path.join(fixture, 'profile')}`], env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: path.join(fixture, 'home'), LIMPET_AGENT_RUN: path.join(fixture, 'agents'), LIMPET_FAILOVER: 'off' } });
+  try {
+    const page = await app.firstWindow();
+    const errors = []; page.on('pageerror', (e) => { errors.push(e.message); console.error('PAGE ERROR', e.message); });
+    await page.waitForFunction(() => typeof tabs !== 'undefined' && tabs.size === 1);
+    await page.waitForFunction((pattern) => { const term = tabs.get(activeId).term; return new RegExp(pattern).test(Array.from({ length: term.buffer.active.length }, (_, i) => term.buffer.active.getLine(i)?.translateToString()).join('\n')); }, platform.promptRe.source);
+    await page.evaluate(() => new Promise((resolve) => tabs.get(activeId).term.write('\r\nneedle-one\r\nneedle-two\r\n', resolve)));
+    await page.click('#find-output');
+    await page.locator('#terminal-search input').fill('needle');
+    await page.waitForFunction(() => tabs.get(activeId).term.getSelection() === 'needle');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#terminal-search .result').textContent(), 'Match found');
+    await page.locator('#terminal-search input').fill('missing-3948');
+    assert.equal(await page.locator('#terminal-search .result').textContent(), 'No matches');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#terminal-search').isVisible(), false);
+    await page.click('#settings-button');
+    await page.waitForFunction(() => window.LimpetSettings.isOpen());
+    await page.keyboard.press('Escape');
+    await page.click('#newtab');
+    await page.waitForFunction(() => tabs.size === 2);
+    await page.locator('[role=tab][aria-selected=true]').focus();
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForFunction(() => document.activeElement === document.querySelector('[role=tab][aria-selected=true]'));
+    assert.equal(await page.locator('[role=tab]').first().getAttribute('aria-selected'), 'true');
+    await page.click('#accounts-button');
+    await page.waitForSelector('.account-menu .open-settings');
+    await page.keyboard.press('End');
+    assert.equal(await page.evaluate(() => document.activeElement.classList.contains('open-settings')), true);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.activeElement.id === 'accounts-button');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(420, 600));
+    await page.click('#accounts-button');
+    const bounds = await page.locator('.account-menu').boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= await page.evaluate(() => innerWidth));
+    assert.deepEqual(errors, []);
+    console.log('PASS terminal search, toolbar, tab keyboard navigation, account focus and compact layout');
+  } finally { await app.close(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });

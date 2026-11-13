@@ -735,8 +735,10 @@ let accountMenu = null;
 
 function closeAccountMenu() {
   if (!accountMenu) return;
+  const restoreFocus = accountMenu.contains(document.activeElement);
   accountMenu.remove();
   accountMenu = null;
+  if (restoreFocus) document.getElementById('accounts-button').focus();
 }
 document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.contains(e.target)) closeAccountMenu(); });
 // Escape closes the menu and goes no further: the terminal keeps the keyboard
@@ -767,7 +769,7 @@ function resetText(iso) {
 // left), coloured by the tighter of the two, reset times in the tooltip.
 function renderUsage(el, usage) {
   if (!usage || usage.error) {
-    el.textContent = usage && usage.error ? 'usage n/a' : '';
+    el.textContent = usage && usage.error ? (/sign.in expired|not signed in/i.test(usage.error) ? 'Sign in required' : /no way to read|no limits/i.test(usage.error) ? 'Usage not supported' : 'Usage unavailable') : 'Usage unavailable';
     el.title = usage && usage.error ? usage.error : '';
     el.className = 'usage na';
     return;
@@ -787,6 +789,18 @@ async function showAccountMenu(id, tabEl) {
   closeAccountMenu();
   const menu = document.createElement('div');
   menu.className = 'account-menu';
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', 'Agent accounts and appearance');
+  menu.tabIndex = -1;
+  menu.addEventListener('keydown', (e) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const choices = [...menu.querySelectorAll('button, [role=button]')];
+    if (!choices.length) return;
+    e.preventDefault();
+    const i = choices.indexOf(document.activeElement);
+    const n = e.key === 'Home' ? 0 : e.key === 'End' ? choices.length - 1 : (i + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+    choices[n].focus();
+  });
   menu.dataset.sessionId = String(id);
   const r = tabEl.getBoundingClientRect();
   menu.style.left = `${Math.round(r.left)}px`;
@@ -797,6 +811,9 @@ async function showAccountMenu(id, tabEl) {
   menu.appendChild(head);
   document.body.appendChild(menu);
   accountMenu = menu;
+  menu.focus();
+  const placeMenu = () => { menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - menu.offsetWidth - 4))}px`; };
+  placeMenu();
   menu.classList.add('pending');  // picks wait until the current session is known
 
   let listed;
@@ -809,13 +826,14 @@ async function showAccountMenu(id, tabEl) {
   const items = new Map();
   const footer = document.createElement('div');
   footer.className = 'more';
-  footer.textContent = more.length ? `Sign in to more: ${more.join(', ')}` : '';
+  footer.textContent = `Future requests use the selected account and provider.${more.length ? ` Sign in to more: ${more.join(', ')}` : ''}`;
   footer.title = 'Run one of these in a tab and /login; it appears here once signed in';
   const none = document.createElement('div');
   none.className = 'none';
   none.textContent = 'No accounts signed in';
   const addItem = (a) => {
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'item';
     item.dataset.cmd = a.cmd;
     const name = document.createElement('span');
@@ -845,7 +863,9 @@ async function showAccountMenu(id, tabEl) {
       const item = items.get(cmd);
       if (item) renderUsage(item.querySelector('.usage'), usage);
     }
-  }).catch(() => {});
+  }).catch(() => {
+    if (accountMenu === menu) for (const item of items.values()) renderUsage(item.querySelector('.usage'), { error: 'Could not fetch usage; reopen Accounts to retry' });
+  });
 
   // Background: colour swatches, or the generative backdrop.
   const bg = document.createElement('div');
@@ -860,6 +880,7 @@ async function showAccountMenu(id, tabEl) {
     swatch.className = 'swatch';
     swatch.style.backgroundColor = b.color;
     swatch.title = b.name;
+    swatch.setAttribute('aria-label', `${b.name} background`);
     swatch.dataset.color = b.color;
     if (pref.mode === 'color' && pref.color === b.color) swatch.classList.add('selected');
     swatch.addEventListener('click', () => { setBackground({ mode: 'color', color: b.color }); closeAccountMenu(); });
@@ -890,6 +911,7 @@ async function showAccountMenu(id, tabEl) {
     // The account the chat is on is always listed, signed in or not.
     const item = items.get(current.cmd) || addItem(all.find((a) => a.cmd === current.cmd) || { cmd: current.cmd, kind: current.kind, email: '', loggedIn: false });
     item.classList.add('current');
+    item.setAttribute('aria-current', 'true');
   } else {
     head.textContent = 'No agent session in this tab · pick an account to start one';
   }
@@ -901,12 +923,19 @@ async function pickAccount(id, cmd, menu) {
   menu.classList.add('busy');
   menu.querySelector('.head').textContent = `Moving this chat to ${cmd}…`;
   try {
-    await window.limpet.claudeSwitch(id, cmd); // problems are reported in the terminal
-  } finally {
-    if (accountMenu === menu) closeAccountMenu();
-    const t = tabs.get(id);
-    if (t) t.term.focus();
+    const result = await window.limpet.claudeSwitch(id, cmd);
+    if (result && (result.error || result.ok === false)) throw new Error(result.error || result.reason || 'Could not switch account');
+    window.LimpetTerminalUI?.announce(result?.verified ? `${cmd} resumed the saved conversation.` : `Starting ${cmd}${result?.how ? ` - ${result.how}` : ''}. Check the terminal to confirm it is ready.`);
+  } catch (error) {
+    if (accountMenu === menu) {
+      menu.querySelector('.head').textContent = `Could not switch: ${error.message || error}`;
+      menu.classList.remove('busy');
+      return;
+    }
   }
+  if (accountMenu === menu) closeAccountMenu();
+  const t = tabs.get(id);
+  if (t) t.term.focus();
 }
 
 // ---- drag-drop: paste files into the current session ----
