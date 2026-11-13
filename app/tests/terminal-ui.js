@@ -7,7 +7,7 @@ const platform = require('./platform');
 (async () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-terminal-ui-'));
   fs.mkdirSync(path.join(fixture, 'home'));
-  const app = await _electron.launch({ executablePath: require('electron'), args: [path.join(__dirname, '..'), `--user-data-dir=${path.join(fixture, 'profile')}`], env: { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', LIMPET_CLAUDE_HOME: path.join(fixture, 'home'), LIMPET_AGENT_RUN: path.join(fixture, 'agents'), LIMPET_FAILOVER: 'off' } });
+  const app = await _electron.launch({ executablePath: require('electron'), args: [path.join(__dirname, '..'), `--user-data-dir=${path.join(fixture, 'profile')}`], env: platform.launchEnv({ LIMPET_CLAUDE_HOME: path.join(fixture, 'home'), LIMPET_AGENT_RUN: path.join(fixture, 'agents'), LIMPET_FAILOVER: 'off' }) });
   try {
     const page = await app.firstWindow();
     const errors = []; page.on('pageerror', (e) => { errors.push(e.message); console.error('PAGE ERROR', e.message); });
