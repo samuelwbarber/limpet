@@ -28,6 +28,8 @@ const p = require('./platform');
     fs.mkdirSync(restoredDir);
     await page.evaluate((cwd) => newTab(null, 'saved project', cwd), restoredDir);
     await page.waitForFunction(() => tabs.size === 2);
+    // zsh's default prompt need not include its working directory.
+    await page.evaluate(() => window.limpet.sendInput(activeId, 'pwd\r'));
     await page.waitForFunction(() => terminalSnapshot(tabs.get(activeId).term).includes('project with spaces'));
     const saved = JSON.parse(fs.readFileSync(path.join(profile, 'workspace.json'), 'utf8'));
     assert.equal(saved.tabs.length, 2);
@@ -46,6 +48,7 @@ const p = require('./platform');
     app = await _electron.launch({ executablePath: require('electron'), args: p.launchArgs(entry), env: p.launchEnv(), timeout: 60000 });
     const restored = await app.firstWindow();
     await restored.waitForFunction(() => typeof tabs !== 'undefined' && tabs.size === 2);
+    await restored.evaluate(() => window.limpet.sendInput(activeId, 'pwd\r'));
     await restored.waitForFunction(() => terminalSnapshot(tabs.get(activeId).term).includes('project with spaces'));
     assert.equal(await restored.locator('.session-exit').count(), 0);
     console.log('PASS saved tab directories restored into fresh local shells');
