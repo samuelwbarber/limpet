@@ -144,7 +144,7 @@ function harness(mode) {
     note: (_s, text) => calls.push(['note', text]),
     switchTo: async (_s, cmd) => { calls.push(['switch', cmd]); return { ok: true }; },
   };
-  return { calls, f: createFailover(deps) };
+  return { calls, deps, f: createFailover(deps) };
 }
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
@@ -207,4 +207,21 @@ test('automatic destination policy respects provider and account allowlist', () 
   assert.strictEqual(chooseTarget({ ...options, sameProviderOnly: true }), null);
   assert.strictEqual(chooseTarget({ ...options, allowedAccounts: ['codex'] }).cmd, 'codex');
   assert.strictEqual(chooseTarget({ ...options, allowedAccounts: ['missing'] }), null);
+});
+
+test('auto failover applies policy before moving and displays failed or rejected moves', async () => {
+  const restricted = harness('auto');
+  restricted.deps.policy = () => ({ allowedAccounts: ['codex'] });
+  restricted.f.output({}, "You've hit your usage limit.\n");
+  await settle();
+  assert.strictEqual(restricted.calls.some(([name]) => name === 'switch'), false);
+  for (const run of [async () => ({ ok: false, reason: 'missing transcript' }), async () => { throw new Error('scan failed'); }]) {
+    const broken = harness('auto');
+    broken.deps.switchTo = run;
+    broken.f.output({}, "You've hit your usage limit.\n");
+    await settle();
+    const offer = broken.calls.filter(([name]) => name === 'offer').at(-1);
+    assert.strictEqual(offer[1].to, null);
+    assert.match(offer[1].text, /missing transcript|scan failed/);
+  }
 });

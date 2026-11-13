@@ -41,6 +41,8 @@ test('defaults are what limpet did before the settings page', () => {
     prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,',
   });
   assert.equal(d.agents.failoverMode, 'offer');
+  assert.equal(d.agents.failoverSameProvider, true);
+  assert.equal(d.agents.failoverAllowedAccounts, '');
 });
 
 test('a missing file loads the defaults and writes nothing', () => {
@@ -90,6 +92,8 @@ const BAD = {
   },
   agents: {
     failoverMode: ['always', '', null, 'Offer'],
+    failoverSameProvider: ['true', 1, null],
+    failoverAllowedAccounts: ['codex1,,claude2', 'codex1;rm', 'unknown', null, ['claude1'], 'x'.repeat(501)],
   },
 };
 
