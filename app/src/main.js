@@ -19,6 +19,7 @@ const codexImport = require('./codex-import');
 const usage = require('./usage');
 const settings = require('./settings');
 const failover = require('./failover');
+const agentSwitch = require('./agent-switch');
 const remoteCopy = require('./remote-copy');
 const updater = require('./updater');
 const platform = require('./platform');
@@ -1077,8 +1078,7 @@ async function carryAcross(current, target, note) {
   }
   const transcript = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
   if (!transcript) {
-    note(33, `couldn't find the ${current.cmd} transcript; starting ${target.cmd} fresh.`);
-    return { launch: {}, how: 'fresh' };
+    throw new Error(`Could not find the ${current.cmd} transcript. Wait for it to be saved, then retry.`);
   }
   // Native where there's a way in: Codex resumes its own threads and imports
   // Claude transcripts; Claude resumes a transcript we write in its format
@@ -1116,6 +1116,7 @@ async function carryAcross(current, target, note) {
       return { launch: { resume: threadId }, how: 'import' };
     }
     const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    if (!turns.length) throw new Error('The transcript contains no readable conversation turns.');
     const cwd = current.cwd || os.homedir();
     const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
     const dir = path.join(claudeHome(), target.dir, 'projects', handoff.claudeProjectDirName(cwd));
@@ -1129,14 +1130,14 @@ async function carryAcross(current, target, note) {
   // Otherwise: the chat as Markdown plus a one-line prompt to continue from it.
   try {
     const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    if (!turns.length) throw new Error('The transcript contains no readable conversation turns.');
     const dir = handoffDir();
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${current.cmd}-to-${target.cmd}.md`);
     fs.writeFileSync(file, handoff.renderMarkdown(turns, { source, cwd: current.cwd }));
     return { launch: { prompt: handoff.continuePrompt(file, source), addDir: dir }, how: 'handoff' };
   } catch (e) {
-    note(31, `couldn't hand the chat over (${e.message}); starting ${target.cmd} fresh.`);
-    return { launch: {}, how: 'fresh' };
+    throw new Error(`Could not prepare the handoff: ${e.message}`);
   }
 }
 
@@ -1174,44 +1175,35 @@ function demoEmails() {
 
 // Move the tab's chat to `cmd`. With nothing running, just start that agent.
 async function switchAgent(sess, cmd) {
-  if (!sess || !sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
-  const target = accounts.accountFor(cmd);
-  if (!target) return { ok: false, reason: 'unknown account' };
-  if (sess.switching) return { ok: false, reason: 'busy' };
-  sess.switching = true;
   const note = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
-  try {
-    const current = await detectAgentSession(sess);
-    if (current && current.cmd === cmd) return { ok: false, reason: 'already' };
-    if (current && !(await stopAgent(sess, current.pid))) {
-      note(31, `couldn't stop the running ${current.cmd} (pid ${current.pid}); not switching.`);
-      return { ok: false, reason: 'still running' };
-    }
-    // Let the shell redraw its prompt before anything is printed or typed.
-    if (current) await sleep(300);
-    // Tests capture the command instead of launching an agent.
-    const launch = global.__limpetClaudeLaunch || accounts.launchCommand;
-    let options = {};
-    let how = 'fresh';
-    if (!current) {
-      // nothing to carry
-    } else if (!current.sessionId) {
-      note(33, `no session found for the running ${current.cmd}; starting ${cmd} fresh.`);
-    } else if (current.kind === 'claude' && target.kind === 'claude') {
-      options = { resume: current.sessionId };
-      how = 'resume';
-    } else {
-      ({ launch: options, how } = await carryAcross(current, target, note));
-    }
-    const line = launch(cmd, options, platform.shellKind);
-    if (current) await sleep(150); // let the prompt come back before typing
-    // The shell may have exited during the awaits above.
-    if (!sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
-    sess.proc.write(`${line}\r`);
-    return { ok: true, from: current ? current.cmd : null, to: cmd, sessionId: current ? current.sessionId : null, how };
-  } finally {
-    sess.switching = false;
-  }
+  return agentSwitch.switchAgent(sess, cmd, {
+    accountFor: accounts.accountFor,
+    detect: detectAgentSession,
+    signedIn: (name) => accounts.describeAccounts(claudeHome(), accountIo).some((a) => a.cmd === name && a.loggedIn),
+    prepare: async (current, target) => {
+      if (current.kind !== target.kind) note(33, `Preparing a conversation transfer to ${AGENT_NAMES[target.kind] || target.kind}; future requests will use that provider.`);
+      if (current.kind === 'claude' && target.kind === 'claude') {
+        if (!findClaudeTranscript(current.sessionId)) throw new Error('Could not find the saved Claude conversation. Wait for it to be saved, then retry.');
+        return { launch: { resume: current.sessionId }, how: 'resume' };
+      }
+      const sourcePath = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
+      const sourceStat = sourcePath ? fs.statSync(sourcePath) : null;
+      const prepared = await carryAcross(current, target, note);
+      return { ...prepared, sourcePath, sourceStat };
+    },
+    refresh: async (current, target, prepared) => {
+      if (!prepared.sourcePath || !prepared.sourceStat) return prepared;
+      const latest = fs.statSync(prepared.sourcePath);
+      if (latest.size === prepared.sourceStat.size && latest.mtimeMs === prepared.sourceStat.mtimeMs) return prepared;
+      note(36, 'Including the final conversation updates saved while the previous agent stopped.');
+      return carryAcross(current, target, note);
+    },
+    launch: (name, options) => (global.__limpetClaudeLaunch || accounts.launchCommand)(name, options, platform.shellKind),
+    stop: stopAgent,
+    pause: () => sleep(450),
+    verify: (session, target, launch) => global.__limpetClaudeLaunch ? null : agentSwitch.verifyLaunch(session, target, launch, { detect: detectAgentSession, pause: () => sleep(500) }),
+    note: (message) => note(31, message),
+  });
 }
 
 // ---- Failover: the tab's agent hit its usage limit (failover.js) ----
