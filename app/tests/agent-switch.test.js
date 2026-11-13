@@ -154,6 +154,36 @@ test('a source that exits or changes during async preparation is never stopped o
   }
 });
 
+test('a copied rollout may change a weak account guess, but never overrides process, session or launch-note identity', async () => {
+  const { findCodexSession } = require('../src/accounts');
+  const thread = '11111111-2222-4333-8444-555555555555';
+  const other = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+  for (const change of ['copy', 'pid', 'session', 'launch-note', 'unrelated-file']) {
+    let copied = false;
+    const processes = [{ pid: 1, ppid: 0, name: 'shell', startedAt: 1000 }, { pid: 12, ppid: 1, name: 'codex', startedAt: 50000 }];
+    const rollouts = [{ cmd: 'codex', id: thread, path: '/source/rollout.jsonl', mtimeMs: 51000 }];
+    const f = fixture({
+      detect: async () => {
+        const notes = copied && change === 'launch-note' ? [{ pid: 1, cmd: 'codex1', startedAt: 49000 }] : [];
+        return findCodexSession(rollouts, processes, 1, notes);
+      },
+      prepare: async () => {
+        // POSIX copyFile creates a newer destination mtime. Use the real
+        // detector against both records to reproduce its new account guess.
+        rollouts.push({ cmd: 'codex1', id: change === 'session' ? other : thread,
+          path: change === 'unrelated-file' ? '/unrelated/rollout.jsonl' : '/target/rollout.jsonl', mtimeMs: 52000 });
+        if (change === 'pid') processes[1].pid = 99;
+        copied = true;
+        return { launch: { resume: thread }, how: 'copy', copiedTranscript: '/target/rollout.jsonl' };
+      },
+    });
+    const result = await switchAgent(f.sess, 'codex1', f.deps);
+    assert.equal(result.ok, change === 'copy', change);
+    assert.equal(f.calls.some(([name]) => name === 'stop'), change === 'copy', change);
+    assert.equal(f.calls.some(([name]) => name === 'write'), change === 'copy', change);
+  }
+});
+
 test('a freshly imported rollout selected heuristically cannot prove readiness', async () => {
   const f = fixture();
   const target = { cmd: 'codex1' };

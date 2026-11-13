@@ -1119,7 +1119,7 @@ async function carryAcross(current, target, note) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.copyFileSync(transcript, dest);
         note(36, `chat copied to ${target.cmd} as thread ${current.sessionId}.`);
-        return { launch: { resume: current.sessionId }, how: 'copy' };
+        return { launch: { resume: current.sessionId }, how: 'copy', copiedTranscript: dest };
       }
       const importer = global.__limpetCodexImport || codexImport.importClaudeSession;
       const threadId = await importer(transcript, { codexHome });

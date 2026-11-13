@@ -33,7 +33,15 @@ async function switchAgent(sess, cmd, deps) {
       // Importing can take a minute. The user may have exited the source and
       // started another program while preparation awaited filesystem/CLI work.
       const latest = await deps.detect(sess);
-      if (!latest || latest.pid !== current.pid || latest.cmd !== current.cmd || latest.sessionId !== current.sessionId) {
+      // With no lock/launch metadata, copying a Codex rollout into the other
+      // home makes our own newer copy win the detector's timestamp heuristic.
+      // That file does not mean the running process changed accounts. Permit
+      // only this exact preparation artifact; PID and conversation stay strict.
+      const copiedAccountGuess = latest && current.kind === 'codex' && target.kind === 'codex' &&
+        prepared.how === 'copy' && prepared.copiedTranscript && latest.rolloutPath === prepared.copiedTranscript &&
+        latest.cmd === target.cmd && current.accountEvidence === 'history-home' && latest.accountEvidence === 'history-home' &&
+        current.sessionEvidence === 'heuristic' && latest.sessionEvidence === 'heuristic';
+      if (!latest || latest.pid !== current.pid || (!copiedAccountGuess && latest.cmd !== current.cmd) || latest.sessionId !== current.sessionId) {
         throw new Error('The running conversation changed while preparing the handoff. Retry the move.');
       }
       if (!sess.proc || sess.exited) throw new Error('The shell closed while preparing the handoff.');

@@ -247,8 +247,10 @@ function findCodexSession(rollouts, procs, shellPid, launches = [], writers = nu
   const rollout = writers && writers.length
     ? newestChat(heldBy(writers, mine))
     : newestChat(rollouts.filter((r) => (r.mtimeMs || 0) >= since));
-  return chatSession('codex', codexLauncher(proc, procs, shellPid, launches) || (rollout && rollout.cmd) || 'codex', proc, rollout,
+  const launched = codexLauncher(proc, procs, shellPid, launches);
+  const found = chatSession('codex', launched || (rollout && rollout.cmd) || 'codex', proc, rollout,
     writers && writers.length ? 'writer-lock' : 'heuristic');
+  return { ...found, accountEvidence: launched ? 'launch-note' : rollout && rollout.cmd ? 'history-home' : 'default' };
 }
 
 // The Copilot chat under a tab's shell: the one whose folder carries the
