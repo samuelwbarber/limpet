@@ -123,7 +123,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
       const options = args[args.length - 1];
       if (options.title !== 'Move conversation to another provider?') throw new Error(`Unexpected dialog in account test: ${options.title}`);
       global.__providerDisclosures.push(options);
-      return { response: 1 };
+      return { response: options.buttons.indexOf('Move conversation') };
     };
   });
   const page = await electronApp.firstWindow();
@@ -457,7 +457,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   check('an account picked in an idle tab is started there', !!(await seenOnScreen('SWAPPED_claude_FRESH')));
 
   const disclosures = await electronApp.evaluate(() => global.__providerDisclosures);
-  check('cross-provider moves disclose the transfer before continuing', disclosures.length > 0 && disclosures.every((d) => d.defaultId === 0 && d.cancelId === 0 && d.buttons[1] === 'Move conversation'));
+  check('cross-provider moves disclose the transfer before continuing', disclosures.length > 0 && disclosures.every((d) => d.defaultId === d.buttons.indexOf('Cancel') && d.cancelId === d.buttons.indexOf('Cancel') && d.buttons.includes('Move conversation')));
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
   await p.closeApp(electronApp);
