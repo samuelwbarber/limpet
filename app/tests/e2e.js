@@ -163,7 +163,7 @@ async function type(page, text) {
   check('reels closes', !!(await waitFor(async () => !(await reelsShown()), 8000)));
 
   // ---- streamed download (dl;h/dl;d/dl;f) drops the file into Downloads ----
-  const dl = path.join(os.homedir(), 'Downloads', 'limpet-ci.txt');
+  const dl = path.join(p.testHome, 'Downloads', 'limpet-ci.txt');
   fs.rmSync(dl, { force: true });
   // header (name "limpet-ci.txt", kind file), one data chunk ("hello limpet"), finish
   await type(page, p.rawDownload('bGltcGV0LWNpLnR4dA==', 'aGVsbG8gbGltcGV0', true));
@@ -203,7 +203,8 @@ async function type(page, text) {
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
 
-  await app.close();
+  await p.closeApp(app);
+  p.cleanup();
   console.log(failures ? `${failures} e2e check(s) FAILED` : 'all e2e checks passed');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('E2E DRIVER ERROR:', e); process.exit(1); });

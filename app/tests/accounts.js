@@ -447,7 +447,8 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
-  await electronApp.close();
+  await p.closeApp(electronApp);
+  p.cleanup();
   fs.rmSync(home, { recursive: true, force: true });
   console.log(failures ? `\n${failures} failed` : '\nall passed');
   process.exit(failures ? 1 : 0);

@@ -92,7 +92,8 @@ async function type(page, t) { // Focus the terminal first: on macOS a fresh Ele
   check('plain Ctrl+C interrupted the sleep (prompt returned < 6s)', !!returned);
   check('plain Ctrl+C did not touch the clipboard', (await clip()) === 'SENTINEL_UNCHANGED');
 
-  await app.close();
+  await p.closeApp(app);
+  p.cleanup();
   console.log(failures ? `\n${failures} failed` : '\nall passed');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('DRIVER ERROR:', e); process.exit(1); });

@@ -6,6 +6,7 @@
 // no shell-specific text.
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const isWin = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
@@ -14,18 +15,33 @@ const shell = isWin ? 'powershell.exe' : (process.env.LIMPET_SHELL || (isMac ? '
 // POSIX single-quote a string for a command line typed into sh/bash/zsh.
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-// Playwright launch arguments and environment for the app. LIMPET_E2E_USER_DATA
-// keeps a test run off the real profile (another limpet may be open on it).
+// Each driver gets a scratch home/profile by default. Never discover real
+// accounts, mutate real shell history, or restore a user's saved workspace.
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-e2e-'));
+const testHome = path.join(testRoot, 'home');
+const userData = path.join(testRoot, 'userData');
+for (const dir of [testHome, userData, path.join(testHome, 'AppData', 'Roaming'), path.join(testHome, 'AppData', 'Local')]) fs.mkdirSync(dir, { recursive: true });
 function launchArgs(appDir) {
-  const args = [appDir];
-  if (process.env.LIMPET_E2E_USER_DATA) args.push(`--user-data-dir=${process.env.LIMPET_E2E_USER_DATA}`);
-  return args;
+  return [appDir, `--user-data-dir=${userData}`];
 }
 function launchEnv(extra = {}) {
-  const env = { ...process.env, LIMPET_DISABLE_BACKDROPS: '1', ...extra };
+  const env = {
+    ...process.env, HOME: testHome, USERPROFILE: testHome, ZDOTDIR: testHome,
+    APPDATA: path.join(testHome, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(testHome, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: path.join(testHome, '.config'), XDG_DATA_HOME: path.join(testHome, '.local', 'share'),
+    LIMPET_CLAUDE_HOME: testHome, LIMPET_DISABLE_BACKDROPS: '1',
+    CLAUDE_CONFIG_DIR: path.join(testHome, '.claude'), CODEX_HOME: path.join(testHome, '.codex'),
+    ...extra,
+  };
   if (!isWin) env.LIMPET_SHELL = shell;
   return env;
 }
+async function closeApp(app) {
+  // This is teardown only. Actual close/cancel behaviour is covered separately.
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); }).catch(() => {});
+  await app.close();
+}
+function cleanup() { fs.rmSync(testRoot, { recursive: true, force: true }); }
 
 const win = {
   isWin, isMac, shell,
@@ -155,4 +171,4 @@ const unix = {
   },
 };
 
-module.exports = { ...(isWin ? win : unix), launchArgs, launchEnv, q };
+module.exports = { ...(isWin ? win : unix), launchArgs, launchEnv, closeApp, cleanup, testHome, userData, q };

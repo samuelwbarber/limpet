@@ -113,7 +113,8 @@ async function type(page, text) {
 
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
-  await electronApp.close();
+  await p.closeApp(electronApp);
+  p.cleanup();
   console.log(failures ? `\n${failures} failed` : '\nall passed');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('DRIVER ERROR:', e); process.exit(1); });
