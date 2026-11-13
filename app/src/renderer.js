@@ -918,22 +918,68 @@ async function showAccountMenu(id, tabEl) {
   }
 }
 
+// Keep switch outcomes beside their terminal, including when the account picker
+// was dismissed while the backend was still preparing or verifying the launch.
+function showAgentSwitchResult(id, cmd, result) {
+  const tab = tabs.get(id);
+  if (!tab) return;
+  tab.pane.querySelector('.agent-switch-result')?.remove();
+  const card = document.createElement('section');
+  card.className = 'failover-banner agent-switch-result';
+  card.style.cssText = 'max-height:calc(100% - 28px);overflow:auto;';
+  card.setAttribute('aria-label', 'Agent switch result');
+  const message = document.createElement('div');
+  message.className = 'text';
+  message.setAttribute('role', 'status');
+  const method = { resume: 'Native conversation resume', import: 'Imported conversation', handoff: 'Conversation handoff', fresh: 'New conversation' }[result?.how] || 'Agent launch';
+  if (!result || result.ok === false || result.error) {
+    message.textContent = `Could not switch to ${cmd}: ${result?.reason || result?.error || 'No result was received.'}`;
+  } else if (result.verified && result.verification === 'session') {
+    message.textContent = `${method}: ${cmd} resumed the requested saved conversation.`;
+  } else {
+    const observed = result.verification === 'process' ? 'The new agent process was detected; conversation continuity is not verified.' : 'The new conversation could not be verified yet. Check the terminal for login prompts or startup errors before trying again.';
+    message.textContent = `${method} to ${cmd}. ${observed}`;
+  }
+  if (result?.crossProvider) message.textContent += ' Future requests use the destination provider.';
+  card.append(message);
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  if (result?.recovery) {
+    const guidance = document.createElement('p');
+    guidance.textContent = 'To resume the previous conversation, first check whether the new agent is still running. Copy this command and run it at a shell prompt.';
+    const command = document.createElement('textarea');
+    command.readOnly = true;
+    command.value = String(result.recovery);
+    command.setAttribute('aria-label', 'Previous conversation recovery command');
+    command.style.cssText = 'box-sizing:border-box;width:100%;resize:vertical;background:#313244;color:#cdd6f4;border:1px solid #6c7086;';
+    const copy = document.createElement('button');
+    copy.textContent = 'Copy recovery command';
+    copy.onclick = async () => {
+      try { await window.limpet.clipboardCopy(command.value); copy.textContent = 'Copied'; }
+      catch { copy.textContent = 'Copy failed; select the command above'; }
+    };
+    card.append(guidance, command);
+    actions.append(copy);
+  }
+  const dismiss = document.createElement('button');
+  dismiss.textContent = 'Dismiss';
+  dismiss.onclick = () => { card.remove(); tab.term.focus(); };
+  actions.append(dismiss); card.append(actions); tab.pane.append(card);
+  window.LimpetTerminalUI?.announce(message.textContent);
+}
+
 async function pickAccount(id, cmd, menu) {
   if (menu.classList.contains('busy') || menu.classList.contains('pending')) return;
   if (menu.dataset.current === cmd) { closeAccountMenu(); return; }
   menu.classList.add('busy');
-  menu.querySelector('.head').textContent = `Moving this chat to ${cmd}…`;
+  menu.querySelector('.head').textContent = `Preparing ${cmd} and checking the conversation...`;
+  let result;
   try {
-    const result = await window.limpet.claudeSwitch(id, cmd);
-    if (result && (result.error || result.ok === false)) throw new Error(result.error || result.reason || 'Could not switch account');
-    window.LimpetTerminalUI?.announce(result?.verified ? `${cmd} resumed the saved conversation.` : `Starting ${cmd}${result?.how ? ` - ${result.how}` : ''}. Check the terminal to confirm it is ready.`);
+    result = await window.limpet.claudeSwitch(id, cmd);
   } catch (error) {
-    if (accountMenu === menu) {
-      menu.querySelector('.head').textContent = `Could not switch: ${error.message || error}`;
-      menu.classList.remove('busy');
-      return;
-    }
+    result = { ok: false, reason: error.message || String(error) };
   }
+  showAgentSwitchResult(id, cmd, result);
   if (accountMenu === menu) closeAccountMenu();
   const t = tabs.get(id);
   if (t) t.term.focus();
