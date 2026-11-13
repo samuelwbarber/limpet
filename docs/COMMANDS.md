@@ -61,7 +61,7 @@ wput a.txt b.txt -To me@host -Port 2222 -Key C:\path\id_ed25519
 
 Drag-and-drop: in the limpet app, dropping files onto the window during an
 `xssh` session sends them straight to the remote's current directory (folders
-and files over 20 MB via `scp`, which needs key auth), so `wput` is mainly for
+and files of every size via `scp`, which needs key auth), so `wput` is mainly for
 password-only hosts, hosts past an `xssh` hop, or plain terminals. `wput`
 itself can't see the remote *current* directory; pass `-Dest` for a specific
 folder.

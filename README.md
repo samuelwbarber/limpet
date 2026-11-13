@@ -115,6 +115,19 @@ settings page: font, size, line height, cursor, scrollback, predictive echo,
 copy on select, the reels page, the backdrop pace and the keyboard shortcuts.
 Changes apply live to every tab. Details in [`app/README.md`](app/README.md#settings).
 
+## Finding your way around
+
+The toolbar exposes **Accounts**, **Find**, **Settings** and **?** help. Search
+terminal output with **Ctrl+Shift+F** (or **Cmd+F** on macOS), move between
+matches, or jump to the bottom. Tabs scroll when there are too many to fit;
+keyboard users can navigate tabs and account choices with arrow keys.
+
+Closing live sessions asks first. When a shell exits, its output and exit code
+stay visible with **Restart shell**, **Copy output** and **Close** controls.
+On the next launch, Limpet offers to restore saved tab labels and local
+working directories. This starts fresh shells: it does not restore running
+programs, SSH connections or terminal output.
+
 ## Backgrounds
 
 Right-click a tab and pick a background: the standard limpet colour (the
@@ -203,7 +216,7 @@ from) junctioned to `~/.copilot`'s.
 
 ### Switch account, or agent, mid-chat
 
-In the limpet app, right-click a tab to see every account that is signed in,
+In the limpet app, choose **Accounts** (or right-click a tab) to see every account that is signed in,
 of every agent, Claude and Codex ones with how much of their 5-hour and weekly
 limit is left (`5h 88% · wk 70%`, hover for the reset times; green, amber and
 red as it runs out; agy and Copilot show `usage n/a`). The account the tab's
@@ -235,7 +248,7 @@ still has room. With nothing running in the tab, picking an account just
 starts it there. Moving to Codex sends the conversation to OpenAI once Codex
 replies, so pick with that in mind. Usage is read with each account's own
 stored login, from the same endpoints `/usage` (Claude) and `/status` (Codex)
-use, and nothing is written back; an expired login shows `usage n/a` until you
+use, and nothing is written back; an expired login shows **Sign in required** until you
 run that account again.
 
 limpet also notices on its own. When the agent in a tab prints its limit
@@ -249,7 +262,10 @@ agent with the most left on the window that ran out, then another agent's,
 and only then one whose usage limit can't be read (agy, Copilot: `usage
 unknown`). The banner never takes the keyboard from the terminal. In the
 settings page (Ctrl+,), **When an account runs out** switches between this
-offer, moving the chat automatically, or doing nothing.
+offer, moving the chat automatically, or doing nothing. Automatic moves stay with the
+same provider by default; settings can restrict them to named accounts. A move
+to another provider always explains where the conversation goes and asks first.
+An unverified launch stays visibly unverified; it is not reported as a resumed chat.
 
 ## Install
 
@@ -313,9 +329,10 @@ open app               # or: cd app && npm start
   `-Raw`/`--raw`), `peek`, `reels`, `wput`, `download`/`upload` (the same
   helpers `xssh` sends to remote hosts), the `limpet` banner, and every
   `claudeN`/`codexN`/`agyN`/`copilotN` account command.
-- **Password once, then the Keychain.** Instead of `Enable-LimpetHello`, run
+- **Password once, then local enrollment.** Instead of `Enable-LimpetHello`, run
   `limpet-enroll user@host`: limpet makes a dedicated `~/.ssh/limpet_ed25519`
-  key with a random passphrase kept in your login Keychain, installs it on
+  key with a random passphrase kept in your login Keychain on macOS (a
+  mode-0600 local file on Linux), installs it on
   the host (you type that host's password this one time) and from then on
   `xssh user@host` connects, and reconnects, without asking. `limpet-forget`
   and `limpet-status` go with it. Hosts that only take a password still get

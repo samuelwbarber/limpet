@@ -109,7 +109,7 @@ with no Edit menu, so each shortcut has exactly one path into the terminal.
 
 ## Settings
 
-`Ctrl+,` (or **Settings…** at the foot of a tab's right-click menu) opens the
+`Ctrl+,` (or **Settings** in the toolbar) opens the
 settings page over the terminal. Changes apply as you make them, in every
 window: the font, size, line height, cursor and scrollback of every open tab
 change live, and a new tab opens with them. A value limpet can't use (a font
@@ -125,7 +125,7 @@ the keyboard back to the terminal.
 | | Line height | 1 (1–2) |
 | | Cursor style | block (block, underline, bar) |
 | | Blinking cursor | on |
-| | Scrollback lines | 1000 (1000–100000) |
+| | Scrollback lines | 10000 (1000 to 100000) |
 | Behaviour | Predictive echo | on |
 | | Copy on select | off |
 | Reels | Default page | `https://www.instagram.com/reels/` |
@@ -220,3 +220,22 @@ corruption. It's adaptive (invisible on a fast link, because the echo beats the
 reveal) and self-gating (a no-echo prompt like a password is never shown, and
 Enter forgets the echo context so a following `sudo` prompt stays dark). Only
 plain typing is predicted; Enter/Tab/arrows/escapes/pastes clear predictions.
+
+## Session recovery and agent moves
+
+A stopped shell keeps its output, exit status and restart controls. Closing a
+live tab or window asks first. On startup, saved tab labels and local directories
+can be restored into fresh shells; commands, remote connections and output are
+not replayed. Workspace metadata is kept in `userData/workspace.json`.
+
+Agent moves prepare the destination before stopping the source. Missing sessions
+fail visibly rather than silently creating a new conversation. Native resume is
+marked ready only after the expected account and session are detected. Imported
+or Markdown handoffs explain the method; a detected process alone cannot prove
+that context was loaded. Failures retain a recovery command for copying, never
+execute it automatically, and moving across providers asks before preparation.
+Automatic failover defaults to the same provider and supports a comma-separated
+account allowlist in Settings.
+
+**Find** searches scrollback (Ctrl+Shift+F / Cmd+F); **?** opens getting-started
+help and read-only checks for SSH and optional agent CLIs on the app's PATH.
