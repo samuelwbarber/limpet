@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   module:
     name: PowerShell module (Windows)
@@ -117,6 +121,7 @@ jobs:
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download)
+        timeout-minutes: 15
         run: npm run test:e2e
 
   app-mac:
@@ -145,6 +150,7 @@ jobs:
       - name: Protocol unit tests
         run: npm test
       - name: End-to-end (launch app, peek, resize, reels, download, accounts)
+        timeout-minutes: 15
         env:
           LIMPET_SHELL: /bin/zsh
         run: npm run test:e2e
