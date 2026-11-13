@@ -1402,6 +1402,7 @@ function registerIpc() {
   ipcMain.handle('clip:write', (_e, text) => clipboard.writeText(String(text || '')));
   ipcMain.handle('clip:read', () => clipboard.readText());
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
+  ipcMain.handle('setup:info', () => require('./setup-info').setupInfo());
 
   ipcMain.handle('workspace:restore', async (event) => {
     const saved = startupWorkspace;

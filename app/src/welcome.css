@@ -1,0 +1,12 @@
+#limpet-help { -webkit-app-region: no-drag; flex-shrink: 0; padding: 0 10px; color: #ddd; background: transparent; border: 0; cursor: pointer; }
+#limpet-help:focus-visible, #limpet-welcome button:focus-visible, #limpet-start button:focus-visible { outline: 2px solid #9ccaff; outline-offset: 2px; }
+#limpet-start { position: fixed; right: 18px; bottom: 38px; z-index: 30; width: min(320px, calc(100vw - 48px)); padding: 16px; background: #202938; color: #eee; border: 1px solid #607084; border-radius: 10px; box-shadow: 0 8px 30px #0008; font: 14px/1.5 system-ui; }
+#limpet-start p { margin: 6px 0 12px; }
+#limpet-start button, #limpet-welcome button { padding: 6px 10px; background: #33465d; color: #fff; border: 1px solid #7d90a6; border-radius: 5px; cursor: pointer; }
+#limpet-start button + button { margin-left: 8px; }
+#limpet-welcome { width: min(620px, calc(100vw - 48px)); max-height: calc(100vh - 48px); box-sizing: border-box; overflow: auto; color: #eee; background: #1c2430; border: 1px solid #77869a; border-radius: 12px; padding: 24px; font: 14px/1.6 system-ui; }
+#limpet-welcome::backdrop { background: #0009; }
+#limpet-welcome h2 { margin-top: 0; }
+#limpet-welcome code { color: #b5d9ff; }
+#limpet-welcome .welcome-tools { padding-left: 22px; }
+#limpet-welcome .welcome-foot { display: flex; justify-content: space-between; gap: 12px; }

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('limpet', {
   // 'win32' | 'darwin' | 'linux': the renderer picks key handling and the
   // modifier symbols by it (it has no Node access of its own).
   platform: process.platform,
+  setupInfo: () => ipcRenderer.invoke('setup:info'),
   // An application-menu item was picked (macOS has a menu bar): 'new-tab'.
   onMenuAction: (cb) => ipcRenderer.on('menu:action', (_e, action) => cb(action)),
   createSession: (options) => ipcRenderer.invoke('term:create', options),
