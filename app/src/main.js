@@ -1261,6 +1261,8 @@ const limitFailover = failover.createFailover({
 });
 
 let startupWorkspace = [];
+let quitApproved = false;
+let quitPending = false;
 function workspaceFile() { return path.join(app.getPath('userData'), 'workspace.json'); }
 function saveWorkspace() {
   try {
@@ -1388,7 +1390,7 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
   let closeApproved = false;
   let closePending = false;
   browserWin.on('close', (event) => {
-    if (closeApproved) return;
+    if (closeApproved || quitApproved) return;
     const owned = [...sessions.values()].filter((sess) => sess.ownerId === windowId);
     if (!owned.some((sess) => !sess.exited || [...(sess.transfers?.values() || [])].some((job) => job.state === 'running'))) { if (owned.length) saveWorkspace(); return; }
     event.preventDefault();
@@ -1579,7 +1581,23 @@ registerIpc();
 app.whenReady().then(() => { startupWorkspace = workspace.read(workspaceFile()); installAppMenu(); createWindow(); updater.start(); });
 // macOS keeps the app alive with no window (Cmd+Q quits); a dock click opens one.
 onActivate(() => createWindow());
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (quitApproved || !sessions.size) return;
+  event.preventDefault();
+  if (quitPending) return;
+  quitPending = true;
+  const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  confirmSessionClose(win, [...sessions.values()]).then((approved) => {
+    quitPending = false;
+    if (!approved) return;
+    saveWorkspace();
+    // The original quit was cancelled while awaiting approval. Explicitly
+    // resume it, especially on macOS where closing every window is not Quit.
+    quitApproved = true;
+    app.quit();
+  }).catch(() => { quitPending = false; });
+});
+app.on('will-quit', () => {
   if (activeBackdropProcess) { try { activeBackdropProcess.kill(); } catch (_) {} }
   cancelBackdropSetup();
 });

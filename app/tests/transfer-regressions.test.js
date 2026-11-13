@@ -12,10 +12,12 @@ const originalHome = os.homedir;
 os.homedir = () => home;
 const handlers = new Map();
 const contents = new Map();
+const appEvents = new Map();
+let quitCalls = 0;
 let showDialog = async () => ({ response: 0 });
 const electron = {
-  app: { whenReady: () => new Promise(() => {}), getPath: () => home, on() {}, quit() {} },
-  BrowserWindow: { fromWebContents: () => null },
+  app: { whenReady: () => new Promise(() => {}), getPath: () => home, on: (name, fn) => appEvents.set(name, fn), quit: () => { quitCalls++; } },
+  BrowserWindow: { fromWebContents: () => null, getFocusedWindow: () => null, getAllWindows: () => [] },
   ipcMain: { handle: (name, fn) => handlers.set(name, fn), on() {} },
   clipboard: {}, screen: {}, shell: {},
   webContents: { fromId: (id) => contents.get(id) },
@@ -43,6 +45,27 @@ const source = path.join(home, 'upload.txt');
 fs.writeFileSync(source, 'test content');
 const session = (id = 1) => ({ id, ownerId: 10, ready: false, uiPending: [], proc: { kill() {} }, remote: { target: 'fixture.invalid', port: '' }, remoteCwd: { cwd: '/fixture', depth: 0 } });
 test.after(() => { os.homedir = originalHome; fs.rmSync(home, { recursive: true, force: true }); });
+
+test('application quit resumes after approval and cancellation preserves sessions', async () => {
+  const sess = session(99);
+  main.sessions.set(sess.id, sess);
+  const beforeQuit = appEvents.get('before-quit');
+  let prevented = 0;
+  showDialog = async () => ({ response: 0 });
+  beforeQuit({ preventDefault: () => { prevented++; } });
+  await new Promise(setImmediate);
+  assert.equal(quitCalls, 0);
+  assert.ok(main.sessions.has(99));
+  showDialog = async () => ({ response: 1 });
+  beforeQuit({ preventDefault: () => { prevented++; } });
+  await new Promise(setImmediate);
+  assert.equal(prevented, 2);
+  assert.equal(quitCalls, 1);
+  // Re-entered quit must not ask again or cancel itself.
+  beforeQuit({ preventDefault: () => { prevented++; } });
+  assert.equal(prevented, 2);
+  main.sessions.clear();
+});
 
 test('confirmation accepted after its session closes cannot start an orphan copy', async () => {
   let resolveDialog;
