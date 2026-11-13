@@ -158,9 +158,10 @@ const SECTION = Object.fromEntries(SECTIONS.map((s) => [s.id, s]));
 
 // Where a platform's convention differs from the field's default above: the
 // macOS shortcuts are the command-key ones Terminal.app users expect (Cmd+T,
-// Cmd+W, Cmd+Shift+] / [, Cmd+,). Everything else is the same everywhere.
+// Cmd+W, Cmd+Shift+] / [, Cmd+,), with the system's Menlo terminal font.
 const PLATFORM_DEFAULTS = {
   darwin: {
+    terminal: { fontFamily: 'Menlo, Monaco, monospace' },
     keybindings: { newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,', findOutput: 'Cmd+F' },
   },
 };
