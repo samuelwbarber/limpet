@@ -12,7 +12,7 @@ const platform = require('./platform');
     const page = await app.firstWindow();
     const errors = []; page.on('pageerror', (e) => { errors.push(e.message); console.error('PAGE ERROR', e.message); });
     await page.waitForFunction(() => typeof tabs !== 'undefined' && tabs.size === 1);
-    await page.waitForFunction((pattern) => { const term = tabs.get(activeId).term; return new RegExp(pattern).test(Array.from({ length: term.buffer.active.length }, (_, i) => term.buffer.active.getLine(i)?.translateToString()).join('\n')); }, platform.promptRe.source);
+    await page.waitForFunction((pattern) => { const term = tabs.get(activeId).term; return new RegExp(pattern.source, pattern.flags).test(Array.from({ length: term.buffer.active.length }, (_, i) => term.buffer.active.getLine(i)?.translateToString()).join('\n')); }, { source: platform.promptRe.source, flags: platform.promptRe.flags });
     await page.evaluate(() => new Promise((resolve) => tabs.get(activeId).term.write('\r\nneedle-one\r\nneedle-two\r\n', resolve)));
     await page.click('#find-output');
     await page.locator('#terminal-search input').fill('needle');
