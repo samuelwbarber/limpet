@@ -113,7 +113,7 @@ test('simultaneous switches cannot interrupt each other', async () => {
 
 test('readiness requires the destination account and exact resumed session', async () => {
   const f = fixture();
-  const found = [null, { cmd: 'claude1', sessionId: 'imported' }, { cmd: 'codex1', sessionId: 'stale' }, { cmd: 'codex1', sessionId: 'imported' }];
+  const found = [null, { cmd: 'claude1', sessionId: 'imported' }, { cmd: 'codex1', sessionId: 'stale' }, { cmd: 'codex1', sessionId: 'imported', sessionEvidence: 'writer-lock' }];
   const verify = await verifyLaunch(f.sess, { cmd: 'codex1' }, { resume: 'imported' }, {
     detect: async () => found.shift(), pause: async () => {}, attempts: 4,
   });
@@ -127,9 +127,21 @@ test('verification reports timeout, wrong conversations, and handoff process det
   const target = { cmd: 'codex1' };
   const base = { pause: async () => {}, attempts: 2 };
   assert.deepEqual(await verifyLaunch(f.sess, target, { resume: 'imported' }, { ...base, detect: async () => null }), { verified: false, level: 'timeout' });
-  const wrong = await verifyLaunch(f.sess, target, { resume: 'imported' }, { ...base, detect: async () => ({ cmd: 'codex1', sessionId: 'other' }) });
+  const wrong = await verifyLaunch(f.sess, target, { resume: 'imported' }, { ...base, detect: async () => ({ cmd: 'codex1', sessionId: 'other', sessionEvidence: 'writer-lock' }) });
   assert.match(wrong.error, /different conversation/);
   assert.deepEqual(await verifyLaunch(f.sess, target, { prompt: 'continue' }, { ...base, detect: async () => ({ cmd: 'codex1' }) }), { verified: false, level: 'process' });
   f.sess.exited = true;
   assert.match((await verifyLaunch(f.sess, target, {}, { ...base, detect: async () => null })).error, /shell exited/);
+});
+
+test('a freshly imported rollout selected heuristically cannot prove readiness', async () => {
+  const f = fixture();
+  const target = { cmd: 'codex1' };
+  for (const sessionEvidence of ['heuristic', 'none', undefined]) {
+    const result = await verifyLaunch(f.sess, target, { resume: 'imported' }, {
+      attempts: 2, pause: async () => {},
+      detect: async () => ({ cmd: 'codex1', sessionId: 'imported', sessionEvidence }),
+    });
+    assert.deepEqual(result, { verified: false, level: 'timeout' });
+  }
 });

@@ -64,15 +64,17 @@ async function switchAgent(sess, cmd, deps) {
 // Only an exact saved-session match proves a native resume. A handoff prompt
 // has no session identity to compare: report process detection separately.
 async function verifyLaunch(sess, target, launch, { detect, pause, attempts = 16 }) {
+  const authoritative = new Set(['process-metadata', 'writer-lock', 'in-use', 'file-holder']);
   for (let i = 0; i < attempts; i++) {
     await pause();
     if (!sess.proc || sess.exited) return { error: 'The shell exited while starting the new agent.' };
     const found = await detect(sess);
     if (!found || found.cmd !== target.cmd) continue;
     if (launch.resume) {
-      if (found.sessionId === launch.resume) return { verified: true, level: 'session' };
+      const certain = authoritative.has(found.sessionEvidence);
+      if (certain && found.sessionId === launch.resume) return { verified: true, level: 'session' };
       // Startup markers can temporarily point to an earlier conversation.
-      if (i === attempts - 1 && found.sessionId) return { error: `${target.cmd} started a different conversation. The requested resume could not be verified.` };
+      if (certain && i === attempts - 1 && found.sessionId) return { error: `${target.cmd} started a different conversation. The requested resume could not be verified.` };
     } else return { verified: false, level: 'process' };
   }
   return { verified: false, level: 'timeout' };

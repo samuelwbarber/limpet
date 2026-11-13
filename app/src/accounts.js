@@ -166,11 +166,17 @@ function findClaudeSession(sessionFiles, procs, shellPid) {
   for (const { cmd, info } of sessionFiles) {
     if (!info || !Number.isInteger(info.pid) || !UUID_RE.test(String(info.sessionId || ''))) continue;
     if (!under.has(info.pid) || !alive.has(info.pid)) continue;
+    const proc = procs.find((p) => p.pid === info.pid);
+    // A PID alone can be reused. Only fresh metadata belonging to a live
+    // Claude process is authoritative enough to verify a resumed session.
+    const fresh = proc && isAgentProc('claude')(proc) && proc.startedAt > 0 &&
+      Number(info.updatedAt) >= proc.startedAt;
     const candidate = {
       kind: 'claude', cmd, pid: info.pid, sessionId: info.sessionId, cwd: info.cwd || '',
       status: typeof info.status === 'string' ? info.status : '',
       sessionKind: typeof info.kind === 'string' ? info.kind : '',
       updatedAt: Number(info.updatedAt) || 0,
+      sessionEvidence: fresh ? 'process-metadata' : 'heuristic',
     };
     if (!best || rank({ kind: candidate.sessionKind, updatedAt: candidate.updatedAt }) >
                  rank({ kind: best.sessionKind, updatedAt: best.updatedAt })) best = candidate;
@@ -227,9 +233,10 @@ const heldBy = (chats, procs) => {
 // another chat's process. A thread's cmd is the codex account whose home
 // alone holds it, or '' when homes share it. The account is the launch noted
 // for it (codexLauncher), else the thread's home, else plain `codex`.
-const chatSession = (kind, cmd, proc, chat) => ({
+const chatSession = (kind, cmd, proc, chat, evidence = 'heuristic') => ({
   kind, cmd, pid: proc.pid, status: '',
   sessionId: chat ? chat.id : null, cwd: chat ? chat.cwd || '' : '', rolloutPath: chat ? chat.path : null,
+  sessionEvidence: chat ? evidence : 'none',
 });
 
 function findCodexSession(rollouts, procs, shellPid, launches = [], writers = null) {
@@ -240,7 +247,8 @@ function findCodexSession(rollouts, procs, shellPid, launches = [], writers = nu
   const rollout = writers && writers.length
     ? newestChat(heldBy(writers, mine))
     : newestChat(rollouts.filter((r) => (r.mtimeMs || 0) >= since));
-  return chatSession('codex', codexLauncher(proc, procs, shellPid, launches) || (rollout && rollout.cmd) || 'codex', proc, rollout);
+  return chatSession('codex', codexLauncher(proc, procs, shellPid, launches) || (rollout && rollout.cmd) || 'codex', proc, rollout,
+    writers && writers.length ? 'writer-lock' : 'heuristic');
 }
 
 // The Copilot chat under a tab's shell: the one whose folder carries the
@@ -250,7 +258,7 @@ function findCopilotSession(chats, procs, shellPid, launches = []) {
   const mine = agentProcs('copilot', procs, shellPid);
   if (!mine.length) return null;
   const chat = newestChat(heldBy(chats, mine));
-  return chatSession('copilot', agentLauncher('copilot', mine[0], procs, shellPid, launches) || (chat && chat.cmd) || 'copilot', mine[0], chat);
+  return chatSession('copilot', agentLauncher('copilot', mine[0], procs, shellPid, launches) || (chat && chat.cmd) || 'copilot', mine[0], chat, 'in-use');
 }
 
 // The Antigravity conversation under a tab's shell: the one whose database
@@ -263,7 +271,8 @@ function findAgySession(conversations, procs, shellPid, launches = [], active = 
   if (!mine.length) return null;
   const known = conversations.every((c) => Array.isArray(c.pids));
   const chat = newestChat(known ? heldBy(conversations, mine) : conversations);
-  return chatSession('agy', agentLauncher('agy', mine[0], procs, shellPid, launches) || active || 'agy', mine[0], chat);
+  return chatSession('agy', agentLauncher('agy', mine[0], procs, shellPid, launches) || active || 'agy', mine[0], chat,
+    known ? 'file-holder' : 'heuristic');
 }
 
 // Whatever agent is running under the tab's shell, Claude first (one agent

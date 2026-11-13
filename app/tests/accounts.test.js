@@ -173,6 +173,19 @@ test('findSession reports whichever agent runs under the shell, Claude first', (
   assert.strictEqual(findSession(input, procs, 999), null);
 });
 
+test('session detection distinguishes authoritative ownership from timestamp guesses', () => {
+  assert.strictEqual(findCodexSession(rollouts, procs, 400).sessionEvidence, 'heuristic');
+  const owned = [{ ...rollouts[1], pids: [420] }];
+  assert.strictEqual(findCodexSession(rollouts, procs, 400, [], owned).sessionEvidence, 'writer-lock');
+  const fresh = [{ cmd: 'claude1', info: { ...files[0].info, updatedAt: 5000 } }];
+  assert.strictEqual(findClaudeSession(fresh, procs, 200).sessionEvidence, 'process-metadata');
+  assert.strictEqual(findClaudeSession(files, procs, 200).sessionEvidence, 'heuristic');
+  const agyProcs = [{ pid: 1, ppid: 0, name: 'shell' }, { pid: 2, ppid: 1, name: 'agy' }];
+  const chat = { id: SID_A, path: '/chat', mtimeMs: 9000, pids: null };
+  assert.strictEqual(findAgySession([chat], agyProcs, 1).sessionEvidence, 'heuristic');
+  assert.strictEqual(findAgySession([{ ...chat, pids: [2] }], agyProcs, 1).sessionEvidence, 'file-holder');
+});
+
 test('launchCommand builds resume, handoff-prompt and fresh-start lines per agent, for any account number', () => {
   assert.strictEqual(launchCommand('claude2', { resume: SID_A }), `claude2 --resume ${SID_A}`);
   assert.strictEqual(launchCommand('claude14', { resume: SID_A }), `claude14 --resume ${SID_A}`);
