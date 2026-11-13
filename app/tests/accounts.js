@@ -159,13 +159,37 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   }
   const openMenu = async () => { await page.locator('.tab.active').click({ button: 'right' }); return page.locator('.account-menu'); };
   const menuSettled = (menu) => waitFor(() => menu.locator('.head').textContent().then((t) => /Chat is on|No agent session/.test(t)), 15000);
-  const swapTo = async (cmd) => {
-    const menu = await openMenu();
-    await menuSettled(menu);
-    await menu.locator(`.item[data-cmd="${cmd}"]`).click();
-    return waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 30000);
+  // A refused move intentionally leaves the source agent alive. Do not type
+  // later scenarios into that process: preserve the first failure and stop.
+  const abortScenario = async (reason) => {
+    check(reason, false);
+    const outcome = await page.locator('.term-pane.active .agent-switch-result .text').allTextContents();
+    if (outcome.length) console.log(`  handoff result: ${JSON.stringify(outcome)}`);
+    await trace(page);
+    await p.closeApp(electronApp);
+    throw new Error(`Account scenario stopped: ${reason}`);
   };
-  const seenOnScreen = (needle) => waitFor(async () => (await screenText(page)).includes(needle), 15000);
+  const swapTo = async (cmd) => {
+    const sourcePid = pid;
+    const menu = await openMenu();
+    if (!(await menuSettled(menu))) await abortScenario(`move to ${cmd}: account detection did not settle`);
+    await menu.locator(`.item[data-cmd="${cmd}"]`).click();
+    if (!(await waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 30000))) {
+      await abortScenario(`move to ${cmd}: account picker did not finish`);
+    }
+    const outcome = (await page.locator('.term-pane.active .agent-switch-result .text').allTextContents()).join(' ');
+    if (/^Could not switch/.test(outcome)) await abortScenario(`move to ${cmd}: ${outcome}`);
+    if (!sourcePid || !(await waitFor(() => pidGone(sourcePid), 10000))) {
+      await abortScenario(`move to ${cmd}: expected source process ${sourcePid} was not stopped`);
+    }
+    return true;
+  };
+  const seenOnScreen = async (needle) => {
+    if (!(await waitFor(async () => (await screenText(page)).includes(needle), 15000))) {
+      await abortScenario(`expected launch output was missing: ${needle}`);
+    }
+    return true;
+  };
   const itemText = (menu, cmd, sel) => menu.locator(`.item[data-cmd="${cmd}"] ${sel}`).textContent();
 
   // ---- no agent in the tab yet: only signed-in accounts, with usage ----
