@@ -135,6 +135,7 @@ the keyboard back to the terminal.
 | Keyboard shortcuts | New tab / Close tab | `Ctrl+Shift+T` / `Ctrl+Shift+W` |
 | | Next / Previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | | Open settings | `Ctrl+,` |
+| | Find in output | `Ctrl+Shift+F` (`Cmd+F` on macOS), rebindable |
 | Agents | When an account runs out | offer (offer, auto, off) |
 
 To rebind a shortcut, focus its field and press the new combination
