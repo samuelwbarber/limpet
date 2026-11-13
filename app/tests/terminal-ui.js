@@ -56,11 +56,16 @@ const platform = require('./platform');
       await page.keyboard.press('Control+Shift+F');
       assert.equal(await page.locator('#terminal-search').isVisible(), false);
       assert.equal(await page.evaluate(() => document.getElementById('limpet-welcome').contains(document.activeElement)), true);
-      await page.keyboard.press('Escape');
+      await page.locator('#welcome-close').press('Escape');
+      await page.locator('#limpet-welcome').waitFor({ state: 'hidden' });
     }
     await clickAction('#settings-button');
     await page.waitForFunction(() => window.LimpetSettings.isOpen());
-    await page.keyboard.press('Escape');
+    // Native menu IPC does not guarantee that the renderer has keyboard focus.
+    // Target a field so Escape exercises the dialog handler, then verify the
+    // overlay is gone before interacting with the terminal beneath it.
+    await page.locator('.settings-overlay input').first().press('Escape');
+    await page.locator('.settings-overlay').waitFor({ state: 'detached' });
     await page.click('#newtab');
     await page.waitForFunction(() => tabs.size === 2);
     await page.locator('[role=tab][aria-selected=true]').focus();
