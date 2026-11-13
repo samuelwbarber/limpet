@@ -253,13 +253,30 @@ offer, moving the chat automatically, or doing nothing.
 
 ## Install
 
+**Windows:** [Download the installer from the latest release](https://github.com/samuelwbarber/limpet/releases/latest). Choose the `limpet-Setup-<version>.exe` asset, run it, then open **limpet** from the Start Menu. The app includes its shell integration; Git and Node.js are not needed to use the installer.
+
+The published v0.1.1 release currently contains a Windows installer only. macOS and Linux are supported by the source tree and build configuration, but do not yet have downloadable assets in that release. Use the [source instructions below](#macos-and-linux) on those platforms. Features on the main branch may be newer than the published installer.
+
+### Your first session
+
+1. Open **?** in the tab bar for getting-started help and read-only setup checks. These report SSH, SCP and optional coding-agent tools on the app's PATH; they do not install anything or read your logins.
+2. Try a local command, then connect with `xssh user@host` using your own SSH login. You need an SSH client locally and access to the host. Run `tmux -V` on the remote host to check session protection: reconnecting without remote tmux starts a new shell.
+3. Inside xssh, try `peek image.png` or `download report.txt` using a file on that host. Use **Settings** to adjust text size and shortcuts.
+4. To use coding agents, install the desired agent CLI separately and sign in once for each account. Other terminal features work without any agent installed.
+
+Installed builds check GitHub Releases for updates; source checkouts do not auto-update. See [update behaviour and platform restrictions](app/README.md#auto-update). Updating the app is separate from preserving running local processes.
+
+### Windows source setup
+
+For development or integration in other terminals:
+
 ```powershell
 git clone https://github.com/samuelwbarber/limpet
 cd limpet
 .\install.ps1          # wires the module into your PowerShell profile
 
 cd app                 # the limpet terminal app (peek/download/drop live here)
-npm install
+npm run setup
 npm start              # or launch "limpet" from the Start Menu after install.ps1
 ```
 
@@ -277,12 +294,11 @@ npm start              # or launch "limpet" from the Start Menu after install.ps
 
 ## macOS and Linux
 
-Everything above works on a Mac (Apple silicon or Intel) and on Linux, done
-the native way: the app runs your login shell (zsh, or bash) with limpet's
+The source tree supports Mac (Apple silicon or Intel) and Linux with platform-specific limitations: the app runs your login shell (zsh, or bash) with limpet's
 integration loaded, so `xssh`, `peek`, `reels`, `wput`, drag and drop, the
 agent accounts and the account menu all behave as on Windows. The Linux
 command shims aren't needed (the shell is Unix already), Windows Hello becomes
-the login Keychain, and junctions become symlinks.
+the login Keychain on macOS, and junctions become symlinks. On Linux, SSH enrollment keeps the key passphrase in a local mode-0600 file; it is not sealed by a system keychain.
 
 ```sh
 git clone https://github.com/samuelwbarber/limpet
@@ -291,15 +307,7 @@ cd limpet
 open app               # or: cd app && npm start
 ```
 
-- **The app.** Download `limpet-<version>-arm64.dmg` (Apple silicon) or
-  `limpet-<version>-x64.dmg` (Intel) from
-  [Releases](https://github.com/samuelwbarber/limpet/releases), drag limpet
-  to Applications. The build is unsigned unless the release was made with a
-  Developer ID, so the first launch needs a right-click → **Open** (or
-  `xattr -d com.apple.quarantine /Applications/limpet.app`). The shell
-  integration ships inside the app, so it works before `install.sh` has run;
-  `install.sh` is what makes `xssh`, `peek` and `claude1` available in
-  Terminal, iTerm and the rest.
+- **The app.** The current published v0.1.1 release has no macOS or Linux installers. Build with `npm run dist:mac` or `npm run dist:linux` in `app/`, or use `npm start` after source setup. Future macOS assets use `limpet-<version>-arm64.dmg` (Apple silicon) or `limpet-<version>-x64.dmg` (Intel); Linux uses AppImage. See [packaging instructions](app/README.md#building-an-installer) for signing and platform requirements. The bundled shell integration works inside the app; `install.sh` also makes it available in other terminals.
 - **The shell integration** (`shell/limpet.sh`) is one file that zsh and bash
   both source. It adds `xssh` (same flags, `-NoResume`/`--no-resume`,
   `-Raw`/`--raw`), `peek`, `reels`, `wput`, `download`/`upload` (the same
