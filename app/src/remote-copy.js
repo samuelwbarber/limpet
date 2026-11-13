@@ -137,9 +137,15 @@ function runScp({ paths, target, port, dir, key, signal }, say) {
       return;
     }
     child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4096); });
-    child.on('error', (e) => finish(false, 31, e.code === 'ENOENT'
-      ? `scp not found (install the ${process.platform === 'win32' ? 'Windows ' : ''}OpenSSH client), or use wput`
-      : `scp failed: ${e.message}`));
+    child.on('error', (e) => {
+      const message = e.code === 'ENOENT'
+        ? `scp not found (install the ${process.platform === 'win32' ? 'Windows ' : ''}OpenSSH client), or use wput`
+        : `scp failed: ${e.message}`;
+      // A spawned process may emit error when a kill request is refused. It
+      // can still be writing: keep retry disabled until its close event.
+      if (child.pid) { stderr = message; say(31, message); }
+      else finish(false, 31, message);
+    });
     child.on('close', (code) => {
       if (signal && signal.aborted) finish(false, 33, `copy to ${where} cancelled; the remote may contain partial files`);
       else if (code === 0) finish(true, 32, `done: ${plural(paths.length, 'item')} in ${where} (${((Date.now() - started) / 1000).toFixed(1)}s)`);

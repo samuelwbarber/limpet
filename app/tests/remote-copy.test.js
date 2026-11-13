@@ -123,6 +123,25 @@ test('runScp: reports progress and success without a real scp', async () => {
   } finally { rc.io.spawn = saved; }
 });
 
+test('a refused cancellation cannot enable retry while the child is alive', async () => {
+  const saved = rc.io.spawn;
+  const controller = new AbortController();
+  const child = new EventEmitter();
+  child.pid = 123;
+  child.stderr = new EventEmitter();
+  child.kill = () => child.emit('error', Object.assign(new Error('permission denied'), { code: 'EPERM' }));
+  try {
+    rc.io.spawn = () => child;
+    let settled = false;
+    const pending = rc.runScp({ paths: ['/pc/a'], target: 'box', dir: '/srv', signal: controller.signal }, () => {}).then((v) => { settled = true; return v; });
+    controller.abort();
+    await new Promise(setImmediate);
+    assert.strictEqual(settled, false);
+    child.emit('close', 0);
+    assert.strictEqual(await pending, false);
+  } finally { rc.io.spawn = saved; }
+});
+
 test('runScp: a missing scp and an auth failure are reported, not thrown', async () => {
   const saved = rc.io.spawn;
   try {
