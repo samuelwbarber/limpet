@@ -23,6 +23,7 @@ const agentSwitch = require('./agent-switch');
 const remoteCopy = require('./remote-copy');
 const updater = require('./updater');
 const platform = require('./platform');
+const workspace = require('./workspace');
 const { installAppMenu, onActivate } = require('./menu');
 const {
   MIN_SCENE_CHANGE_CONFIDENCE,
@@ -482,6 +483,11 @@ function handleLimpetOsc(sess, seq) {
     // xssh (the PowerShell function) connecting / done: where scp can reach.
     // Silently ignored without the token: nothing here is worth a warning.
     if (tokenOk(parts[3])) { sess.remote = remoteCopy.parseXssh(parts.slice(1)); sess.remoteCwd = null; }
+  } else if (parts[0] === 'local-cwd') {
+    if (tokenOk(parts[2]) && !sess.remote) {
+      sess.localCwd = workspace.directory(b64dec(parts[1]).toString('utf8'), sess.localCwd || os.homedir());
+      saveWorkspace();
+    }
   } else if (parts[0] === 'cwd') {
     // Every remote prompt reports its directory; sent once per prompt, so an
     // untokened one is dropped quietly rather than warned about each time.
@@ -644,25 +650,23 @@ function endDownload(sess) {
   try { if (dl.proc) { dl.proc.on('close', cleanup); dl.proc.kill(); } } catch (_) { /* ignore */ }
 }
 
-// The shell ended on its own (`exit`, crash) — drop the session and tell the
-// renderer so the tab closes. Deliberate closes delete from `sessions` first,
-// so this is a no-op for them.
-function sessionExited(sess) {
-  if (!sessions.has(sess.id)) return;
+// Preserve stopped sessions until explicitly closed: errors and output remain readable.
+function sessionExited(sess, result = {}) {
+  if (!sessions.has(sess.id) || sess.exited) return;
   endDownload(sess);
+  for (const job of sess.transfers?.values() || []) job.controller?.abort();
   sess.proc = null;
   sess.exited = true;
-  if (sess.ready) {
-    sendToSession(sess, 'term:exit', { id: sess.id });
-    sessions.delete(sess.id);
-    if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
-  }
+  sess.exitInfo = { id: sess.id, exitCode: result.exitCode ?? null, signal: result.signal ?? null };
+  if (sess.ready) sendToSession(sess, 'term:exit', sess.exitInfo);
 }
 
 function startShell(sess) {
   // PowerShell with the Limpet module on Windows; the user's login shell with
   // limpet.sh loaded on macOS/Linux.
-  const { file, args, env, cwd } = platform.shellSpawn({ shellDir: SHELL_DIR, token: oscToken() });
+  const { file, args, env, cwd: defaultCwd } = platform.shellSpawn({ shellDir: SHELL_DIR, token: oscToken() });
+  const cwd = workspace.directory(sess.localCwd, defaultCwd);
+  sess.localCwd = cwd;
 
   if (ptyLib) {
     try {
@@ -670,7 +674,7 @@ function startShell(sess) {
         name: 'xterm-256color', cols: sess.cols, rows: sess.rows, cwd, env,
       });
       p.onData((d) => forwardOutput(sess, d));
-      p.onExit(() => sessionExited(sess));
+      p.onExit((result) => sessionExited(sess, result));
       return {
         pid: p.pid,
         write: (d) => { try { p.write(d); } catch (_) { /* ignore */ } },
@@ -687,7 +691,12 @@ function startShell(sess) {
   const cp = spawn(file, args, { windowsHide: true, env, cwd });
   cp.stdout.on('data', (d) => forwardOutput(sess, d.toString()));
   cp.stderr.on('data', (d) => forwardOutput(sess, d.toString()));
-  cp.on('exit', () => sessionExited(sess));
+  cp.on('close', (exitCode, signal) => sessionExited(sess, { exitCode, signal }));
+  cp.on('error', (error) => {
+    sendData(sess, `\r\n[limpet] Shell could not start: ${error.message}\r\n`);
+    sessionExited(sess, { exitCode: 1 });
+  });
+  cp.stdin.on('error', () => {}); // a shell can close its input before its exit event
   return {
     pid: cp.pid,
     write: (d) => { try { cp.stdin.write(d); } catch (_) { /* ignore */ } },
@@ -1233,8 +1242,17 @@ const limitFailover = failover.createFailover({
   switchTo: switchAgent,
 });
 
+let startupWorkspace = [];
+function workspaceFile() { return path.join(app.getPath('userData'), 'workspace.json'); }
+function saveWorkspace() {
+  try {
+    workspace.write(workspaceFile(), [...sessions.values()].map((sess) => ({ cwd: sess.localCwd || os.homedir(), title: sess.title || 'limpet' })));
+  } catch (error) { console.error('[limpet] workspace could not be saved:', error.message); }
+}
+
 function stopSession(sess) {
   if (!sess || !sessions.has(sess.id)) return;
+  for (const job of sess.transfers?.values() || []) job.controller?.abort();
   sessions.delete(sess.id); // deliberate close: keep sessionExited() quiet
   endDownload(sess);
   if (sess.flushTimer) clearTimeout(sess.flushTimer);
@@ -1269,6 +1287,17 @@ function openExternalUrl(rawUrl) {
   } catch (_) {
     return false;
   }
+}
+
+async function confirmSessionClose(browserWin, owned) {
+  const live = owned.filter((sess) => !sess.exited || sess.transfers?.size);
+  if (!live.length) return true;
+  const { response } = await dialog.showMessageBox(browserWin, {
+    type: 'warning', buttons: ['Keep working', 'Close sessions'], defaultId: 0, cancelId: 0,
+    title: 'Close running sessions?', message: `Close ${live.length} running session${live.length === 1 ? '' : 's'}?`,
+    detail: 'Local shells, agents and transfers will stop. Unsaved work may be lost. Remote work survives only if protected by a remote session manager such as tmux.',
+  });
+  return response === 1;
 }
 
 function createWindow({ sessionId = null, sourceWindow = null, point = null, title = 'limpet' } = {}) {
@@ -1336,6 +1365,20 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
     if (params.src && !isWebUrl(params.src)) e.preventDefault();
   });
 
+  let closeApproved = false;
+  let closePending = false;
+  browserWin.on('close', (event) => {
+    if (closeApproved) return;
+    const owned = [...sessions.values()].filter((sess) => sess.ownerId === windowId);
+    if (!owned.some((sess) => !sess.exited || sess.transfers?.size)) { if (owned.length) saveWorkspace(); return; }
+    event.preventDefault();
+    if (closePending) return;
+    closePending = true;
+    confirmSessionClose(browserWin, owned).then((approved) => {
+      closePending = false;
+      if (approved && !browserWin.isDestroyed()) { saveWorkspace(); closeApproved = true; browserWin.close(); }
+    }).catch(() => { closePending = false; });
+  });
   browserWin.on('closed', () => {
     windows.delete(windowId);
     // Closing one window closes only its tabs. Sessions already handed to a
@@ -1358,9 +1401,25 @@ function registerIpc() {
   ipcMain.handle('clip:read', () => clipboard.readText());
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
 
-  ipcMain.handle('term:create', (event) => {
+  ipcMain.handle('workspace:restore', async (event) => {
+    const saved = startupWorkspace;
+    startupWorkspace = [];
+    if (!saved.length) return [];
+    const { response } = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender), {
+      type: 'question', buttons: ['Restore tabs', 'Start fresh'], defaultId: 0, cancelId: 1,
+      message: `Restore ${saved.length} previous tab${saved.length === 1 ? '' : 's'}?`,
+      detail: 'Opens fresh local shells in saved directories. Running programs, SSH connections and terminal output are not restored. Missing directories open in your home folder.',
+    });
+    return response === 0 ? saved : [];
+  });
+  ipcMain.on('term:title', (event, { id, title }) => {
+    const sess = ownedSession(event, id);
+    if (sess && typeof title === 'string') sess.title = title.slice(0, 200);
+  });
+  ipcMain.handle('term:create', (event, options = {}) => {
     const sess = {
       id: nextSessionId++, proc: null, ownerId: event.sender.id, ready: false,
+      localCwd: workspace.directory(options && options.cwd, os.homedir()), title: options && options.title || 'limpet',
       uiPending: [], cols: 80, rows: 24, outPending: '', flushTimer: null, exited: false,
       backdropOutputChars: 0, backdropNextAt: 0 /* 0: the first-picture setting */, backdropLastAt: 0,
       backdropQueued: false, backdropPath: null, backdropDataUrl: null,
@@ -1368,6 +1427,7 @@ function registerIpc() {
     };
     sessions.set(sess.id, sess);
     sess.proc = startShell(sess);
+    saveWorkspace();
     return sess.id;
   });
   ipcMain.handle('term:ready', (event, id) => {
@@ -1379,9 +1439,7 @@ function registerIpc() {
       sendToSession(sess, 'term:backdrop', { id: sess.id, dataUrl: sess.backdropDataUrl });
     }
     if (sess.exited) {
-      sendToSession(sess, 'term:exit', { id: sess.id });
-      sessions.delete(sess.id);
-      if (sess.backdropPath) fs.unlink(sess.backdropPath, () => {});
+      sendToSession(sess, 'term:exit', sess.exitInfo);
     }
     return true;
   });
@@ -1394,7 +1452,24 @@ function registerIpc() {
     const point = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
     return !!createWindow({ sessionId: id, sourceWindow, point, title: options && options.title });
   });
-  ipcMain.on('term:close', (event, id) => stopSession(ownedSession(event, id)));
+  ipcMain.handle('term:close', async (event, id) => {
+    const sess = ownedSession(event, id);
+    if (!sess) return true;
+    if (!await confirmSessionClose(BrowserWindow.fromWebContents(event.sender), [sess])) return false;
+    stopSession(sess);
+    saveWorkspace();
+    return true;
+  });
+  ipcMain.handle('term:restart', (event, id) => {
+    const sess = ownedSession(event, id);
+    if (!sess || !sess.exited) return false;
+    sess.exited = false;
+    sess.exitInfo = null;
+    sess.remote = null;
+    sess.remoteCwd = null;
+    sess.proc = startShell(sess);
+    return true;
+  });
   ipcMain.on('term:input', (event, { id, data }) => {
     const sess = ownedSession(event, id);
     if (sess && sess.proc) sess.proc.write(data);
@@ -1476,7 +1551,7 @@ function registerIpc() {
 }
 
 registerIpc();
-app.whenReady().then(() => { installAppMenu(); createWindow(); updater.start(); });
+app.whenReady().then(() => { startupWorkspace = workspace.read(workspaceFile()); installAppMenu(); createWindow(); updater.start(); });
 // macOS keeps the app alive with no window (Cmd+Q quits); a dock click opens one.
 onActivate(() => createWindow());
 app.on('before-quit', () => {

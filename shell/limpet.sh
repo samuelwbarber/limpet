@@ -1190,6 +1190,9 @@ _limpet_agy_repair 2>/dev/null || :
 # ---------------------------------------------------------------------------
 _limpet_title() {
   local leaf=${PWD##*/}
+  if [ -n "${LIMPET_TOKEN:-}" ]; then
+    printf '\033]5379;local-cwd;%s;%s\007' "$(printf '%s' "$PWD" | base64 | tr -d '\r\n')" "$LIMPET_TOKEN"
+  fi
   printf '\033]2;%s\007' "${leaf:-$PWD}"
 }
 if [ -n "${ZSH_VERSION:-}" ]; then

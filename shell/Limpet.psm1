@@ -1741,6 +1741,10 @@ foreach ($name in $script:NixAliases.Keys) {
 # real prompt; the prompt text itself matches PowerShell's default.
 function global:prompt {
     $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    if ($env:LIMPET_TOKEN -and $loc.Provider.Name -eq 'FileSystem') {
+        $cwd64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($loc.Path))
+        [Console]::Write("$([char]27)]5379;local-cwd;$cwd64;$env:LIMPET_TOKEN$([char]7)")
+    }
     $leaf = Split-Path -Leaf $loc.Path
     if (-not $leaf) { $leaf = $loc.Path }
     $Host.UI.RawUI.WindowTitle = $leaf

@@ -37,11 +37,11 @@ function loadMain() {
   m.paths = Module._nodeModulePaths(path.dirname(file));
   const quiet = console.error; console.error = () => {};
   try {
-    m._compile(`${fs.readFileSync(file, 'utf8')}\nmodule.exports = { forwardOutput, oscToken, dropFiles };`, file);
+    m._compile(`${fs.readFileSync(file, 'utf8')}\nmodule.exports = { forwardOutput, oscToken, dropFiles, sessions, sessionExited, stopSession, confirmSessionClose };`, file);
   } finally { Module._load = load; console.error = quiet; }
   return { ...m.exports, restoreHome: () => { os.homedir = savedHome; } };
 }
-const { forwardOutput, oscToken, dropFiles } = loadMain();
+const { forwardOutput, oscToken, dropFiles, sessions, sessionExited, stopSession, confirmSessionClose } = loadMain();
 const remoteCopy = require('../src/remote-copy');
 const tok = oscToken();
 const dl = path.join(home, 'Downloads');
@@ -241,4 +241,40 @@ test('small drops never type into a live agent; cancellation starts no copy', as
   assert.strictEqual(typed.length, before);
   assert.match(dialogCalls.at(-1).message, /me@box:\/workspace/);
   assert.match(dialogCalls.at(-1).detail, /replaced/);
+});
+
+
+test('local directory reports survive fragmented protocol markers and require authentication', () => {
+  const s = mk();
+  forwardOutput(s, `${E}]5379;local-c`);
+  forwardOutput(s, `wd;${b64(home)};bad${B}`);
+  assert.equal(s.localCwd, undefined);
+  forwardOutput(s, `${E}]5379;local-c`);
+  forwardOutput(s, `wd;${b64(home)};${tok}${B}`);
+  assert.equal(s.localCwd, home);
+  assert.equal(screen(s), '');
+});
+
+test('exits preserve session and exit reason until deliberate close, aborting transfers', () => {
+  const s = mk();
+  let aborted = 0;
+  s.transfers = new Map([[1, { controller: { abort() { aborted++; } } }]]);
+  sessions.set(s.id, s);
+  sessionExited(s, { exitCode: 7 });
+  assert.ok(sessions.has(s.id));
+  assert.equal(s.proc, null);
+  assert.deepEqual(s.exitInfo, { id: s.id, exitCode: 7, signal: null });
+  assert.equal(aborted, 1);
+  sessionExited(s, { exitCode: 0 });
+  assert.equal(s.exitInfo.exitCode, 7);
+  stopSession(s);
+  assert.ok(!sessions.has(s.id));
+});
+
+test('closing stopped sessions needs no dialog; live shells require confirmation', async () => {
+  const count = dialogCalls.length;
+  assert.equal(await confirmSessionClose(null, [{ exited: true }]), true);
+  assert.equal(dialogCalls.length, count);
+  assert.equal(await confirmSessionClose(null, [{ exited: false }]), true);
+  assert.equal(dialogCalls.length, count + 1);
 });

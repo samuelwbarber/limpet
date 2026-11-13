@@ -11,8 +11,8 @@ let activeId = null;
 
 const tabOrder = () => Array.from(tabs.keys());
 
-async function newTab(existingId = null, initialTitle = 'limpet') {
-  const id = existingId ?? await window.limpet.createSession();
+async function newTab(existingId = null, initialTitle = 'limpet', cwd = undefined) {
+  const id = existingId ?? await window.limpet.createSession({ cwd, title: initialTitle });
 
   const pane = document.createElement('div');
   pane.className = 'term-pane';
@@ -109,7 +109,7 @@ async function newTab(existingId = null, initialTitle = 'limpet') {
   term.onRender(() => { const p = predictor(); if (p) p.reconcile(); });
   // Scrolling invalidates the row-based overlay positions; just drop them.
   term.onScroll(() => { const p = predictor(); if (p) p.flush(); });
-  term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; } });
+  term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; window.limpet.sessionTitle(id, t); } });
   term.attachCustomKeyEventHandler((e) => handleKeys(e, id, term));
   // Right-click: copy if there's a selection, else paste.
   pane.addEventListener('contextmenu', (e) => {
@@ -159,10 +159,12 @@ function activate(id) {
 }
 
 // Close from the UI: kill the PTY, then tear down the tab.
-function closeTab(id) {
-  if (!tabs.has(id)) return;
-  window.limpet.closeSession(id);
-  removeTab(id);
+async function closeTab(id) {
+  const tab = tabs.get(id);
+  if (!tab || tab.closePending) return;
+  tab.closePending = true;
+  try { if (await window.limpet.closeSession(id)) removeTab(id); }
+  finally { tab.closePending = false; }
 }
 
 function removeTab(id) {
@@ -186,8 +188,42 @@ window.limpet.onData(({ id, data }) => {
   const t = tabs.get(id);
   if (t) { writeData(t, data); scheduleBackdropCandidate(id, t); }
 });
-// The shell exited on its own (`exit`, crash): the tab goes with it.
-window.limpet.onExit(({ id }) => removeTab(id));
+// Keep the terminal buffer after exit so the final error cannot disappear.
+window.limpet.onExit(({ id, exitCode, signal }) => {
+  const tab = tabs.get(id);
+  if (!tab || tab.exited) return;
+  tab.exited = true;
+  tab.term.options.disableStdin = true;
+  if (tab.predict) tab.predict.flush();
+  const notice = element('div', 'session-exit');
+  notice.setAttribute('role', 'status');
+  notice.style.cssText = 'position:absolute;bottom:0;left:0;right:0;z-index:10;padding:10px;background:#313244;color:white;display:flex;gap:12px;align-items:center;flex-wrap:wrap';
+  const detail = signal ? `signal ${signal}` : exitCode == null ? 'unknown status' : `code ${exitCode}`;
+  notice.append(element('span', '', `Shell stopped (${detail}). Output is kept above.`));
+  const restart = element('button', '', 'Restart shell');
+  const copy = element('button', '', 'Copy output');
+  const close = element('button', '', 'Close');
+  restart.addEventListener('click', async () => {
+    restart.disabled = true;
+    try {
+      // Set the state before IPC: an immediate spawn failure may arrive first.
+      tab.exited = false;
+      if (await window.limpet.restartSession(id)) {
+        notice.remove();
+        tab.pane.style.paddingBottom = '';
+        syncSize();
+        if (!tab.exited) tab.term.options.disableStdin = false;
+        tab.term.focus();
+      } else tab.exited = true;
+    } finally { restart.disabled = false; }
+  });
+  copy.addEventListener('click', () => window.limpet.clipboardCopy(`Shell stopped (${detail})\n${terminalSnapshot(tab.term)}`));
+  close.addEventListener('click', () => closeTab(id));
+  notice.append(restart, copy, close);
+  tab.pane.append(notice);
+  tab.pane.style.paddingBottom = `${notice.offsetHeight + 6}px`;
+  syncSize();
+});
 
 // ---- local conversation backdrops ----
 // Once output settles, send only the current xterm text snapshot to the main
@@ -903,7 +939,10 @@ const detachedId = Number(launchParams.get('session'));
 if (Number.isInteger(detachedId) && detachedId > 0) {
   newTab(detachedId, launchParams.get('title') || 'limpet');
 } else {
-  newTab();
-  if (backgroundPref().mode === 'generative') offerSetupAtStartup();
+  window.limpet.restoreWorkspace().then(async (saved) => {
+    if (saved.length) { for (const entry of saved) await newTab(null, entry.title, entry.cwd); }
+    else await newTab();
+    if (backgroundPref().mode === 'generative') offerSetupAtStartup();
+  }).catch((error) => { console.error('[limpet] workspace restore failed:', error); if (!tabs.size) newTab(); });
 }
 setTimeout(syncSize, 120);
