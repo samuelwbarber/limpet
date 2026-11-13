@@ -23,6 +23,17 @@ const platform = require('./platform');
     assert.equal(await page.locator('#terminal-search .result').textContent(), 'No matches');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#terminal-search').isVisible(), false);
+    await page.evaluate(() => { const dialog = document.createElement('dialog'); dialog.id = 'test-modal'; dialog.textContent = 'Modal'; document.body.append(dialog); dialog.showModal(); });
+    await page.keyboard.press('Control+Shift+F');
+    assert.equal(await page.locator('#terminal-search').isVisible(), false);
+    await page.evaluate(() => { document.getElementById('test-modal').close(); document.getElementById('test-modal').remove(); });
+    if (await page.locator('#limpet-help').count()) {
+      await page.click('#limpet-help');
+      await page.keyboard.press('Control+Shift+F');
+      assert.equal(await page.locator('#terminal-search').isVisible(), false);
+      assert.equal(await page.evaluate(() => document.getElementById('limpet-welcome').contains(document.activeElement)), true);
+      await page.keyboard.press('Escape');
+    }
     await page.click('#settings-button');
     await page.waitForFunction(() => window.LimpetSettings.isOpen());
     await page.keyboard.press('Escape');
@@ -61,7 +72,15 @@ const platform = require('./platform');
     assert.equal(await page.locator('.agent-switch-result').count(), 1);
     await page.locator('.agent-switch-result button').click();
     assert.equal(await page.locator('.agent-switch-result').count(), 0);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1024, 720));
+    await page.evaluate(() => new Promise((resolve) => tabs.get(activeId).term.write('\r\nLimpet terminal UX smoke test\r\nSearch output - switch accounts - open settings - recover sessions\r\n', resolve)));
+    const screenshot = process.env.LIMPET_TEST_SCREENSHOT || path.join(fixture, 'terminal-ui.png');
+    await page.screenshot({ path: screenshot });
+    console.log(`Screenshot: ${screenshot}`);
     assert.deepEqual(errors, []);
     console.log('PASS terminal search, toolbar, tab keyboard navigation, account focus and compact layout');
-  } finally { await app.close(); }
+  } finally {
+    if (platform.closeApp) await platform.closeApp(app); else await app.close();
+    platform.cleanup?.();
+  }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

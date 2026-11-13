@@ -16,9 +16,10 @@
       const state = await window.limpet.getSessionStatus(id);
       if (id !== activeId || !state) return;
       const remote = state.remote;
-      connection.textContent = state.exited ? 'Session exited' : remote ? `SSH destination: ${typeof remote === 'string' ? remote : remote.host || remote.hostname || 'remote'}${state.remoteCwd ? ` - ${state.remoteCwd}` : ''}` : 'Local shell';
+      const label = state.exited ? 'Session exited' : remote ? `SSH destination: ${typeof remote === 'string' ? remote : remote.host || remote.hostname || 'remote'}${state.remoteCwd ? ` - ${state.remoteCwd}` : ''}` : 'Local shell';
+      if (connection.textContent !== label) connection.textContent = label;
       connection.title = remote ? 'Reported SSH destination; this is not a connection heartbeat or a guarantee of session protection.' : 'Shell running on this computer';
-    } catch { if (id === activeId) connection.textContent = 'Session status unavailable'; }
+    } catch { if (id === activeId && connection.textContent !== 'Session status unavailable') connection.textContent = 'Session status unavailable'; }
     finally { statusBusy = false; }
   }
   setInterval(updateStatus, 3000);
@@ -80,7 +81,7 @@
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); search(true); } });
   document.getElementById('find-output').onclick = openSearch;
   document.addEventListener('keydown', (e) => {
-    if (window.LimpetSettings.isOpen()) return;
+    if (window.LimpetSettings.isOpen() || document.querySelector('dialog[open]')) return;
     if ((e.ctrlKey && e.shiftKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); e.stopPropagation(); openSearch(); }
     else if (e.key === 'Escape' && !bar.hidden) { e.preventDefault(); e.stopPropagation(); dismiss(); }
     else if (e.key === 'Escape' && document.querySelector('.account-menu')) requestAnimationFrame(() => accounts.focus());
