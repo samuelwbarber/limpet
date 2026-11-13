@@ -252,7 +252,7 @@ function createFailover(deps) {
       if (m === 'auto' && target) {
         deps.note(sess, `${limitText(limit)} Moving this chat to ${target.cmd} (${target.label}).`);
         const r = await deps.switchTo(sess, target.cmd);
-        if (r && r.ok) switched(sess);
+        if (r && r.ok) completed(sess, r);
         else deps.offer(sess, { text: `Automatic move failed: ${(r && r.reason) || 'unknown error'}. You can retry from the account menu.`, to: null });
         return;
       }
@@ -308,7 +308,19 @@ function createFailover(deps) {
     deps.offer(sess, { clear: true });
   }
 
-  return { output, sessionSeen, usageSeen, switched };
+  function completed(sess, result) {
+    if (result.verified) { switched(sess); return; }
+    const s = of(sess);
+    s.current = null;
+    s.watcher.mute();
+    const text = result.verification === 'process'
+      ? `${result.to || 'The destination agent'} started, but the conversation handoff is not verified. Check the conversation before continuing.`
+      : `${result.to || 'The destination agent'} was launched, but its saved conversation could not yet be verified. Check the terminal for sign-in or resume errors.`;
+    deps.note(sess, text);
+    deps.offer(sess, { text, to: null });
+  }
+
+  return { output, sessionSeen, usageSeen, switched, completed };
 }
 
 module.exports = {

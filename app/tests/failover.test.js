@@ -142,7 +142,7 @@ function harness(mode) {
     usage: async (fresh) => { calls.push(['usage', fresh]); return [{ cmd: 'claude1', usage: u(0, 50) }, { cmd: 'claude2', usage: u(88, 70) }]; },
     offer: (_s, p) => calls.push(['offer', p]),
     note: (_s, text) => calls.push(['note', text]),
-    switchTo: async (_s, cmd) => { calls.push(['switch', cmd]); return { ok: true }; },
+    switchTo: async (_s, cmd) => { calls.push(['switch', cmd]); return { ok: true, verified: true }; },
   };
   return { calls, deps, f: createFailover(deps) };
 }
@@ -223,5 +223,19 @@ test('auto failover applies policy before moving and displays failed or rejected
     const offer = broken.calls.filter(([name]) => name === 'offer').at(-1);
     assert.strictEqual(offer[1].to, null);
     assert.match(offer[1].text, /missing transcript|scan failed/);
+  }
+});
+
+test('automatic failover leaves a visible notice when a launch is not verified', async () => {
+  for (const verification of ['timeout', 'process']) {
+    const f = harness('auto');
+    f.deps.switchTo = async () => ({ ok: true, verified: false, verification, to: 'claude2' });
+    f.f.output({}, "You've hit your usage limit.\n");
+    await settle();
+    const offers = f.calls.filter(([name]) => name === 'offer');
+    assert.equal(offers.length, 1);
+    assert.equal(offers[0][1].clear, undefined);
+    assert.equal(offers[0][1].to, null);
+    assert.match(offers[0][1].text, /not.*verified/);
   }
 });

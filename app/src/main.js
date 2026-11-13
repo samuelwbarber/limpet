@@ -1189,6 +1189,24 @@ async function switchAgent(sess, cmd) {
     accountFor: accounts.accountFor,
     detect: detectAgentSession,
     signedIn: (name) => accounts.describeAccounts(claudeHome(), accountIo).some((a) => a.cmd === name && a.loggedIn),
+    confirmCrossProvider: async (current, target) => {
+      const provider = { claude: 'Anthropic', codex: 'OpenAI', copilot: 'GitHub Copilot', agy: 'Antigravity' }[target.kind] || target.kind;
+      const method = target.kind === 'codex' && current.kind === 'claude'
+        ? 'Import the saved conversation into Codex. If native import is unavailable, provide a Markdown handoff.'
+        : target.kind === 'claude'
+          ? 'Convert the saved conversation to a Claude transcript. If conversion is unavailable, provide a Markdown handoff.'
+          : 'Provide the saved conversation as a Markdown handoff for the destination agent to read.';
+      const wc = sessionWebContents(sess);
+      const win = wc && BrowserWindow.fromWebContents(wc);
+      if (!win) return false;
+      const result = await dialog.showMessageBox(win, {
+        type: 'question', title: 'Move conversation to another provider?',
+        message: `Move ${current.cmd} to ${target.cmd} (${provider})?`,
+        detail: `${method}\n\nConversation contents may be sent to ${provider}; future requests will use that provider. The current agent keeps running until the handoff is prepared.`,
+        buttons: ['Move conversation', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+      });
+      return result.response === 0;
+    },
     prepare: async (current, target) => {
       if (current.kind !== target.kind) note(33, `Preparing a conversation transfer to ${AGENT_NAMES[target.kind] || target.kind}; future requests will use that provider.`);
       if (current.kind === 'claude' && target.kind === 'claude') {
@@ -1531,7 +1549,7 @@ function registerIpc() {
   ipcMain.handle('claude:switch', async (event, { id, cmd } = {}) => {
     const sess = ownedSession(event, id);
     const result = await switchAgent(sess, String(cmd || ''));
-    if (result.ok) limitFailover.switched(sess);
+    if (result.ok) limitFailover.completed(sess, result);
     return result;
   });
   ipcMain.handle('term:backdrop-candidate', (event, { id, snapshot, title } = {}) => {

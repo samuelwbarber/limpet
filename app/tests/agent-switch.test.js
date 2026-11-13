@@ -50,6 +50,37 @@ test('a failed stop never launches a second agent', async () => {
   assert.equal(f.calls.some(([call]) => call === 'write'), false);
 });
 
+test('cross-provider confirmation happens before preparation and cancel preserves the running agent', async () => {
+  const f = fixture();
+  f.deps.confirmCrossProvider = async (current, target) => {
+    assert.equal(current.cmd, 'claude1');
+    assert.equal(target.cmd, 'codex1');
+    assert.deepEqual(f.calls, []);
+    return false;
+  };
+  const result = await switchAgent(f.sess, 'codex1', f.deps);
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.sess.switching, false);
+});
+
+test('cross-provider consent is invalidated when the running session changes during confirmation', async () => {
+  let scans = 0;
+  const f = fixture({
+    confirmCrossProvider: async () => true,
+    detect: async () => ({ cmd: 'claude1', kind: 'claude', pid: 12, sessionId: ++scans === 1 ? 'saved' : 'different' }),
+  });
+  const result = await switchAgent(f.sess, 'codex1', f.deps);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /changed while confirming/);
+  assert.equal(f.calls.some(([name]) => ['prepare', 'stop', 'write'].includes(name)), false);
+});
+
+test('same-provider transfers do not request cross-provider consent', async () => {
+  const f = fixture({ accountFor: (cmd) => ({ cmd, kind: 'claude' }), confirmCrossProvider: async () => { throw new Error('unexpected dialog'); } });
+  assert.equal((await switchAgent(f.sess, 'claude2', f.deps)).ok, true);
+});
+
 test('a write failure supplies the saved source resume command', async () => {
   const f = fixture();
   f.sess.proc.write = () => { throw new Error('closed PTY'); };

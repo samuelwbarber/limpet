@@ -13,6 +13,16 @@ async function switchAgent(sess, cmd, deps) {
     if (current && current.cmd === cmd) return { ok: false, reason: 'already' };
     if (current && !current.sessionId) throw new Error(`No session found for ${current.cmd}. Wait for the conversation to be saved, then retry.`);
     if (current && !deps.signedIn(cmd)) throw new Error(`${cmd} is not signed in. Sign in from another tab, then retry.`);
+    if (current && current.kind !== target.kind && deps.confirmCrossProvider) {
+      if (!(await deps.confirmCrossProvider(current, target))) return { ok: false, reason: 'Conversation transfer cancelled.', cancelled: true };
+      // The user may leave the native dialog open while the original agent
+      // exits or changes conversations. Never apply consent to a new session.
+      const confirmed = await deps.detect(sess);
+      if (!confirmed || confirmed.pid !== current.pid || confirmed.cmd !== current.cmd || confirmed.sessionId !== current.sessionId) {
+        throw new Error('The running conversation changed while confirming. Retry the move.');
+      }
+      current = confirmed;
+    }
     let prepared = current ? await deps.prepare(current, target) : { launch: {}, how: 'fresh' };
     if (current && (!prepared || prepared.how === 'fresh' || (!prepared.launch.resume && !prepared.launch.prompt))) {
       throw new Error('The conversation could not be prepared for the destination.');
