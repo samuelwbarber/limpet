@@ -111,9 +111,9 @@ test('chooseTarget skips used-up and signed-out accounts, then falls back to oth
   usage = { ...usage, codex: u(0, 60) };
   const t = chooseTarget({ current: cur, accounts: ACCOUNTS, usage, window: 'fiveHour' });
   assert.deepStrictEqual({ cmd: t.cmd, label: t.label }, { cmd: 'agy', label: 'usage unknown' });
-  // A same-agent account whose usage can't be read goes before agy and Copilot.
+  // Expired sign-ins are not viable failover targets.
   usage = { ...usage, claude2: { error: 'sign-in expired; run claude2 to refresh' } };
-  assert.strictEqual(chooseTarget({ current: cur, accounts: ACCOUNTS, usage, window: 'fiveHour' }).cmd, 'claude2');
+  assert.strictEqual(chooseTarget({ current: cur, accounts: ACCOUNTS, usage, window: 'fiveHour' }).cmd, 'agy');
   assert.strictEqual(chooseTarget({ current: cur, accounts: [acct('claude', 'claude')], usage, window: 'fiveHour' }), null);
   // Codex's own accounts first for a Codex chat.
   const c = chooseTarget({ current: { cmd: 'codex', kind: 'codex' }, accounts: [...ACCOUNTS, acct('codex1', 'codex')], usage: { codex: u(0, 5), codex1: u(10, 10), claude1: u(90, 90) }, window: 'fiveHour' });
@@ -198,4 +198,13 @@ test('auto mode moves the chat with a note; off does nothing', async () => {
   off.f.sessionSeen({}, { cmd: 'claude1', kind: 'claude' });
   await settle();
   assert.deepStrictEqual(off.calls, []);
+});
+
+
+test('automatic destination policy respects provider and account allowlist', () => {
+  const options = { current: { cmd: 'claude', kind: 'claude' }, accounts: ACCOUNTS,
+    usage: { claude1: u(0, 10), claude2: u(0, 10), codex: u(90, 90) } };
+  assert.strictEqual(chooseTarget({ ...options, sameProviderOnly: true }), null);
+  assert.strictEqual(chooseTarget({ ...options, allowedAccounts: ['codex'] }).cmd, 'codex');
+  assert.strictEqual(chooseTarget({ ...options, allowedAccounts: ['missing'] }), null);
 });

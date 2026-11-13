@@ -1221,6 +1221,10 @@ module.exports.failoverMode = failoverMode;
 
 const limitFailover = failover.createFailover({
   mode: failoverMode,
+  policy: () => {
+    const settings = appSettings().get().agents;
+    return { sameProviderOnly: settings.failoverSameProvider, allowedAccounts: settings.failoverAllowedAccounts.split(',').map((s) => s.trim()).filter(Boolean) };
+  },
   detect: detectAgentSession,
   accounts: () => accounts.describeAccounts(claudeHome(), accountIo),
   usage: readAllUsage,

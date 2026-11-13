@@ -109,7 +109,7 @@ function createLimitWatcher({ tail = TAIL_CHARS, now = Date.now } = {}) {
       if (!hit || pending) return null;
       buf = '';
       const key = keyOf(hit.line);
-      if (now() < mutedUntil || seen.has(key)) { seen.add(key); return null; }
+      if (now() < mutedUntil || seen.has(key)) { remember(seen, key); return null; }
       remember(seen, key);
       return { ...hit, key };
     },
@@ -145,7 +145,7 @@ const hasNumbers = (u) => !!(u && !u.error && (u.fiveHour || u.weekly));
 // when it's not known which); then other agents' with room; then accounts
 // whose usage can't be read (the same agent first; agy and Copilot, which
 // never report any, last). Accounts at 0% on any window are skipped.
-function chooseTarget({ current, accounts, usage = {}, window = null }) {
+function chooseTarget({ current, accounts, usage = {}, window = null, sameProviderOnly = false, allowedAccounts = [] }) {
   const kind = current && current.kind;
   const score = (u) => {
     const lefts = [u.fiveHour, u.weekly].filter(Boolean).map((w) => w.left);
@@ -156,7 +156,10 @@ function chooseTarget({ current, accounts, usage = {}, window = null }) {
   const unknown = [];
   for (const a of accounts) {
     if (!a.loggedIn || (current && a.cmd === current.cmd)) continue;
+    if (sameProviderOnly && a.kind !== kind) continue;
+    if (allowedAccounts.length && !allowedAccounts.includes(a.cmd)) continue;
     const u = usage[a.cmd];
+    if (u && /sign-in expired|not signed in/i.test(u.error || '')) continue;
     if (hasNumbers(u)) {
       if (exhaustedWindow(u)) continue;
       known.push({ a, u, s: score(u) });
@@ -241,17 +244,21 @@ function createFailover(deps) {
       const mine = usage[cur.cmd];
       const win = window || exhaustedWindow(mine);
       const at = resetsAt || (win && mine && mine[win] && mine[win].resetsAt) || null;
-      const target = chooseTarget({ current: cur, accounts: deps.accounts(), usage, window: win });
-      const limit = { from: cur.cmd, window: win, resetsAt: at, resets, now: new Date(now()) };
       const m = mode();
+      const policy = m === 'auto' && deps.policy ? deps.policy() : {};
+      const target = chooseTarget({ current: cur, accounts: deps.accounts(), usage, window: win, ...policy });
+      const limit = { from: cur.cmd, window: win, resetsAt: at, resets, now: new Date(now()) };
       if (m === 'off') return;
       if (m === 'auto' && target) {
         deps.note(sess, `${limitText(limit)} Moving this chat to ${target.cmd} (${target.label}).`);
         const r = await deps.switchTo(sess, target.cmd);
         if (r && r.ok) switched(sess);
+        else deps.offer(sess, { text: `Automatic move failed: ${(r && r.reason) || 'unknown error'}. You can retry from the account menu.`, to: null });
         return;
       }
       deps.offer(sess, { text: offerText({ ...limit, target }), to: target ? target.cmd : null });
+    } catch (error) {
+      deps.offer(sess, { text: `Could not prepare an account move: ${error.message}. Retry from the account menu.`, to: null });
     } finally {
       s.busy = false;
     }

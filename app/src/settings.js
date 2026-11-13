@@ -148,6 +148,8 @@ const SECTIONS = [
     id: 'agents', label: 'Agents',
     fields: {
       failoverMode: { label: 'When an account runs out', type: 'enum', options: ['offer', 'auto', 'off'], default: 'offer', validate: oneOf(['offer', 'auto', 'off']), help: 'offer: ask to move the chat to another account; auto: move it; off: do nothing' },
+      failoverSameProvider: { label: 'Automatic moves stay with the same provider', type: 'boolean', default: true, validate: bool, help: 'Turn off only if automatic conversation transfers to other providers are wanted.' },
+      failoverAllowedAccounts: { label: 'Allowed automatic destinations', type: 'string', default: '', validate: (v) => typeof v === 'string' && v.length <= 500 && (!v.trim() || v.split(',').every((s) => /^(claude|codex|agy|copilot)\d*$/.test(s.trim()))) ? '' : 'use comma-separated account commands, such as claude1, codex2', help: 'Comma-separated account commands; empty allows all signed-in accounts within the provider policy.' },
     },
   },
 ];
