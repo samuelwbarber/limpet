@@ -11,7 +11,9 @@ async function switchAgent(sess, cmd, deps) {
   try {
     current = await deps.detect(sess);
     if (current && current.cmd === cmd) return { ok: false, reason: 'already' };
-    if (current && !current.sessionId) throw new Error(`No session found for ${current.cmd}. Wait for the conversation to be saved, then retry.`);
+    if (current && !current.sessionId) throw new Error(current.kind === 'opencode'
+      ? 'OpenCode session unknown. Exit and resume the desired chat with opencode --session ses_… before moving it.'
+      : `No session found for ${current.cmd}. Wait for the conversation to be saved, then retry.`);
     if (current && !deps.signedIn(cmd)) throw new Error(`${cmd} is not signed in. Sign in from another tab, then retry.`);
     if (current && current.kind !== target.kind && deps.confirmCrossProvider) {
       if (!(await deps.confirmCrossProvider(current, target))) return { ok: false, reason: 'Conversation transfer cancelled.', cancelled: true };

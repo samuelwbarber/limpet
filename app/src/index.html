@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="settings.css" />
   <link rel="stylesheet" href="transfers.css" />
   <link rel="stylesheet" href="terminal-ui.css" />
+  <link rel="stylesheet" href="macos.css" />
   <style>
     html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
     body { display: flex; flex-direction: column; }
@@ -15,6 +16,24 @@
       flex: 0 0 34px; display: flex; align-items: center; gap: 2px;
       background: #181825; padding: 0 4px; user-select: none;
     }
+    /* macOS full screen hides the title bar and its close/minimise/zoom buttons;
+       these stand in for them until the window leaves full screen (renderer.js) */
+    #window-controls { display: none; flex: 0 0 auto; align-items: center; gap: 8px; margin: 0 10px 0 6px; }
+    body.fullscreen #window-controls { display: flex; }
+    #window-controls button {
+      width: 12px; height: 12px; padding: 0; border: 0; border-radius: 50%; cursor: default;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: inset 0 0 0 0.5px rgba(0,0,0,0.2);
+    }
+    #window-controls button[data-action="close"] { background: #ff5f57; }
+    #window-controls button[data-action="minimize"] { background: #febc2e; }
+    #window-controls button[data-action="exit-fullscreen"] { background: #28c840; }
+    #window-controls button:active { filter: brightness(0.8); }
+    #window-controls svg { width: 12px; height: 12px; opacity: 0; }
+    #window-controls:hover svg, #window-controls button:focus-visible svg { opacity: 1; }
+    #window-controls button:focus-visible { outline: 2px solid #cdd6f4; outline-offset: 3px; }
+    #window-controls path { fill: none; stroke: rgba(0,0,0,0.6); stroke-width: 1.2; stroke-linecap: round; }
+    #window-controls path.solid { fill: rgba(0,0,0,0.6); stroke: none; }
     #tabstrip { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; height: 100%; }
     .tab {
       display: flex; align-items: center; gap: 6px; height: 26px;
@@ -157,6 +176,17 @@
 </head>
 <body>
   <div id="tabbar">
+    <div id="window-controls" role="group" aria-label="Window">
+      <button data-action="close" title="Close window" aria-label="Close window">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.6 3.6l4.8 4.8M8.4 3.6l-4.8 4.8"/></svg>
+      </button>
+      <button data-action="minimize" title="Minimise" aria-label="Minimise window">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.8 6h6.4"/></svg>
+      </button>
+      <button data-action="exit-fullscreen" title="Exit full screen" aria-label="Exit full screen">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path class="solid" d="M5.6 2.6v3h-3zM6.4 9.4v-3h3z"/></svg>
+      </button>
+    </div>
     <div id="tabstrip" role="tablist" aria-label="Terminal sessions"></div>
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
     <button id="find-output" class="toolbar-button" title="Find in output (Ctrl+Shift+F)">Find</button>

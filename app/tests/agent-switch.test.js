@@ -195,3 +195,13 @@ test('a freshly imported rollout selected heuristically cannot prove readiness',
     assert.deepEqual(result, { verified: false, level: 'timeout' });
   }
 });
+
+
+test('OpenCode launch notes cannot prove that its TUI still has the requested conversation open', async () => {
+  const f = fixture();
+  const result = await verifyLaunch(f.sess, { cmd: 'opencode' }, { resume: 'ses_requested' }, {
+    attempts: 2, pause: async () => {},
+    detect: async () => ({ cmd: 'opencode', sessionId: 'ses_requested', sessionEvidence: 'launch-note' }),
+  });
+  assert.deepEqual(result, { verified: false, level: 'timeout' });
+});

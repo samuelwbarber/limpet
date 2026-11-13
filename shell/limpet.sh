@@ -501,7 +501,7 @@ limpet() {
 # per agent. See Limpet.psm1 for the full description; the mechanics here
 # are symlinks and hard links instead of junctions.
 # ---------------------------------------------------------------------------
-_LIMPET_KINDS='claude codex agy copilot'
+_LIMPET_KINDS='claude codex agy copilot opencode'
 
 _limpet_env_name() {
   case "$1" in claude) printf CLAUDE_CONFIG_DIR ;; codex) printf CODEX_HOME ;; copilot) printf COPILOT_HOME ;; esac
@@ -515,6 +515,7 @@ _limpet_is_number() { case "$1" in ''|*[!0-9]*|0*) return 1 ;; esac; return 0; }
 _limpet_account_numbers() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   local kind=$1 home=$2 d n
+  [ "$kind" = opencode ] && return 0
   for d in "$home"/."$kind"-*; do
     [ -d "$d" ] || continue
     n=${d##*/."$kind"-}
@@ -543,6 +544,7 @@ _limpet_resolve() {
     case "$cmd" in
       "$kind") _LR_CMD=$cmd; _LR_KIND=$kind; _LR_N=0; _LR_DIR="$home/.$kind"; return 0 ;;
       "$kind"*)
+        [ "$kind" = opencode ] && return 1
         n=${cmd#"$kind"}
         if _limpet_is_number "$n"; then _LR_CMD=$cmd; _LR_KIND=$kind; _LR_N=$n; _LR_DIR="$home/.$kind-$n"; return 0; fi ;;
     esac
@@ -909,9 +911,14 @@ _limpet_agy_kc_service() {
 _limpet_agy_cred_read() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   if _limpet_agy_uses_file; then
-    local f; f=$(_limpet_agy_token_file); [ -f "$f" ] && cat "$f"
+    local f; f=$(_limpet_agy_token_file); [ ! -e "$f" ] || cat "$f"
   else
-    security find-generic-password -s "$(_limpet_agy_kc_service)" -a "$(_limpet_agy_kc_account)" -w 2>/dev/null
+    local rc=0
+    security find-generic-password -s "$(_limpet_agy_kc_service)" -a "$(_limpet_agy_kc_account)" -w 2>/dev/null || rc=$?
+    # Item-not-found (errSecItemNotFound) means the account is signed out. A locked
+    # keychain or denied access must stop a switch, not look like no login.
+    [ "$rc" = 44 ] && return 0
+    return "$rc"
   fi
 }
 _limpet_agy_cred_write() {
@@ -926,7 +933,12 @@ _limpet_agy_cred_write() {
 _limpet_agy_cred_delete() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   if _limpet_agy_uses_file; then rm -f "$(_limpet_agy_token_file)"
-  else security delete-generic-password -s "$(_limpet_agy_kc_service)" -a "$(_limpet_agy_kc_account)" >/dev/null 2>&1 || :; fi
+  else
+    local rc=0
+    security delete-generic-password -s "$(_limpet_agy_kc_service)" -a "$(_limpet_agy_kc_account)" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 44 ] && return 0
+    return "$rc"
+  fi
 }
 
 # The kept copy of an account's login: read / write / exists / delete.
@@ -974,7 +986,7 @@ _limpet_jwt_email() {
 _limpet_agy_save_login() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   local cmd=$1 cred dir idt email
-  cred=$(_limpet_agy_cred_read)
+  cred=$(_limpet_agy_cred_read) || { _limpet_warn "couldn't read the current agy login safely."; return 1; }
   [ -n "$cred" ] || return 0
   _limpet_resolve "$cmd" || return 1
   dir=$_LR_DIR
@@ -990,8 +1002,9 @@ _limpet_agy_restore_login() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
   local cmd=$1 blob
   _limpet_resolve "$cmd" || return 1
-  if ! _limpet_agy_kept_exists "$_LR_DIR"; then _limpet_agy_cred_delete; return 0; fi
-  blob=$(_limpet_agy_kept_read "$_LR_DIR" "$cmd")
+  if ! _limpet_agy_kept_exists "$_LR_DIR"; then _limpet_agy_cred_delete; return $?; fi
+  blob=$(_limpet_agy_kept_read "$_LR_DIR" "$cmd") || return 1
+  [ -n "$blob" ] || return 1
   _limpet_agy_cred_write "$blob"
 }
 
@@ -1055,7 +1068,7 @@ _limpet_note_launch() {
     _limpet_is_number "$pid" && ! kill -0 "$pid" 2>/dev/null && rm -f "$old"
   done
   _LIMPET_NOTE="$dir/$$.json"
-  printf '{"cmd":"%s","pid":%s,"startedAt":%s}' "$1" "$$" "$(_limpet_now_ms)" > "$_LIMPET_NOTE" 2>/dev/null || _LIMPET_NOTE=''
+  printf '{"cmd":"%s","pid":%s,"startedAt":%s,"sessionId":"%s"}' "$1" "$$" "$(_limpet_now_ms)" "${2:-}" > "$_LIMPET_NOTE" 2>/dev/null || _LIMPET_NOTE=''
 }
 
 # Run an agent CLI as one limpet account: claude3 -> CLAUDE_CONFIG_DIR=~/.claude-3,
@@ -1064,14 +1077,14 @@ _limpet_note_launch() {
 # arguments prints the resolved plan instead of launching.
 limpet_invoke_agent() {
   [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
-  local cmd=$1 kind dir envName exe plan=0 a args what rc
+  local cmd=$1 kind dir envName exe plan=0 a args what rc sessionId= wantSession=0
   shift
   if ! _limpet_resolve "$cmd"; then
     _limpet_warn "'$cmd' is not an agent account (claude, claude1, ..., codex, codex1, ..., agy, agy1, ..., copilot, copilot1, ...)."
     return 1
   fi
   kind=$_LR_KIND; dir=$_LR_DIR; envName=$(_limpet_env_name "$kind")
-  mkdir -p "$dir"
+  [ "$kind" = opencode ] || mkdir -p "$dir"
   case "$kind" in
     claude) limpet_sync_claude_history >/dev/null 2>&1 || : ;;
     codex) limpet_sync_codex_history >/dev/null 2>&1 || : ;;
@@ -1089,14 +1102,23 @@ limpet_invoke_agent() {
   if [ -z "$exe" ]; then
     case "$kind" in
       claude) what='claude CLI (Claude Code)' ;; codex) what='codex CLI (npm i -g @openai/codex)' ;;
-      agy) what='agy CLI (Antigravity)' ;; copilot) what='copilot CLI (npm i -g @github/copilot)' ;;
+      opencode) what='OpenCode CLI (https://opencode.ai/docs)' ;; agy) what='agy CLI (Antigravity)' ;; copilot) what='copilot CLI (npm i -g @github/copilot)' ;;
     esac
     _limpet_warn "the $what is not on PATH. Install it, then rerun $cmd."
     return 1
   fi
   if [ "$kind" = agy ]; then _limpet_agy_enter "$cmd" || return 1; fi
   _LIMPET_NOTE=''
-  [ "$kind" != claude ] && _limpet_note_launch "$cmd"
+  if [ "$kind" = opencode ]; then
+    for a in "${args[@]}"; do
+      if [ "$wantSession" = 1 ]; then sessionId=$a; break; fi
+      case "$a" in --session|-s) wantSession=1 ;; --session=*) sessionId=${a#--session=}; break ;; esac
+    done
+    for a in "${args[@]}"; do case "$a" in --fork|--continue|-c) sessionId= ;; esac; done
+    # Only safe identifiers go into the JSON note. Plain launches remain unknown.
+    case "$sessionId" in ses_*) case "$sessionId" in *[!a-zA-Z0-9_-]*) sessionId= ;; esac ;; *) sessionId= ;; esac
+  fi
+  [ "$kind" != claude ] && _limpet_note_launch "$cmd" "$sessionId"
   case "$kind" in
     claude) CLAUDE_CONFIG_DIR="$dir" "$exe" "${args[@]}" ;;
     codex) CODEX_HOME="$dir" "$exe" "${args[@]}" ;;
@@ -1112,6 +1134,7 @@ limpet_invoke_agent() {
 # Plain agy goes through the wrapper too: it has to find its own login, which
 # an agyN may have swapped out, and must not start while another account runs.
 agy() { limpet_invoke_agent agy "$@"; }
+opencode() { limpet_invoke_agent opencode "$@"; }
 
 # Numbered commands whose directory exists become real functions (tab
 # completion); the rest are caught by the command-not-found hook.

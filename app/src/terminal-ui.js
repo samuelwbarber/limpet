@@ -2,6 +2,10 @@
 (() => {
   const strip = document.getElementById('tabstrip');
   const accounts = document.getElementById('accounts-button');
+  const isMac = window.limpet.platform === 'darwin';
+  const accountAnchor = isMac ? document.getElementById('newtab') : accounts;
+  let localIdle = true;
+  let statusId = null;
   const status = document.createElement('div');
   status.id = 'terminal-status'; status.setAttribute('role', 'status');
   const connection = document.createElement('span'); connection.id = 'terminal-connection';
@@ -9,9 +13,11 @@
   status.append(connection, notice); document.body.append(status);
   const notices = new Map();
   function refreshNotice() {
+    if (statusId !== activeId) { statusId = activeId; localIdle = true; connection.textContent = ''; }
     for (const id of notices.keys()) if (!tabs.has(id)) notices.delete(id);
     const message = notices.get(activeId) || '';
     if (notice.textContent !== message) notice.textContent = message;
+    status.hidden = isMac && localIdle && !message;
   }
   window.LimpetTerminalUI = { openSearch, announce: (message, id = activeId) => { notices.set(id, message); refreshNotice(); } };
   let statusBusy = false;
@@ -22,15 +28,16 @@
       const state = await window.limpet.getSessionStatus(id);
       if (id !== activeId || !state) return;
       const remote = state.remote;
+      localIdle = !state.exited && !remote;
       const label = state.exited ? 'Session exited' : remote ? `SSH destination: ${remote.target || 'unknown'}${state.remoteCwd?.cwd ? ` - ${state.remoteCwd.cwd}` : ''}${state.remoteCwd?.depth ? ` (${state.remoteCwd.depth} further hop(s))` : ''}` : 'Local shell';
       if (connection.textContent !== label) connection.textContent = label;
       connection.title = remote ? 'Reported SSH destination; this is not a connection heartbeat or a guarantee of session protection.' : 'Shell running on this computer';
-    } catch { if (id === activeId && connection.textContent !== 'Session status unavailable') connection.textContent = 'Session status unavailable'; }
-    finally { statusBusy = false; }
+    } catch { if (id === activeId) { localIdle = false; connection.textContent = 'Session status unavailable'; } }
+    finally { statusBusy = false; refreshNotice(); if (id !== activeId) updateStatus(); }
   }
   setInterval(updateStatus, 3000);
   document.getElementById('settings-button').onclick = () => window.LimpetSettings.open();
-  accounts.onclick = () => { if (tabs.has(activeId)) showAccountMenu(activeId, accounts); };
+  accounts.onclick = () => { if (tabs.has(activeId)) showAccountMenu(activeId, accountAnchor); };
 
   // Keep semantic state in sync even when sessions are detached or restored.
   const syncTabs = () => {
@@ -91,7 +98,7 @@
     if (window.LimpetSettings.isOpen() || document.querySelector('dialog[open]')) return;
     if (window.LimpetSettings.actionFor(e) === 'findOutput') { e.preventDefault(); e.stopPropagation(); openSearch(); }
     else if (e.key === 'Escape' && !bar.hidden) { e.preventDefault(); e.stopPropagation(); dismiss(); }
-    else if (e.key === 'Escape' && document.querySelector('.account-menu')) requestAnimationFrame(() => accounts.focus());
+    else if (e.key === 'Escape' && document.querySelector('.account-menu')) requestAnimationFrame(() => accountAnchor.focus());
   }, true);
   new MutationObserver(() => accounts.setAttribute('aria-expanded', String(!!document.querySelector('.account-menu')))).observe(document.body, { childList: true });
   syncTabs();

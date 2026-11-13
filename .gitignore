@@ -12,6 +12,7 @@ desktop.ini
 # Electron app
 app/node_modules/
 app/dist/
+app/dist-*/
 app/out/
 app/_run.*
 app/local-ai/
@@ -25,3 +26,6 @@ tools/demo/package-lock.json
 
 # zsh writes this beside the rc files it loads (a distro-level compinit); never ship it
 shell/rc/zsh/.zcompdump*
+
+# Local shell history must never be committed or bundled
+shell/rc/zsh/.zsh_history*

@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const path = require('path');
 const {
   accountFor, listAccounts, describeAccounts, signInHints, descendants, findClaudeSession, findCodexSession, findSession,
-  findCopilotSession, findAgySession, launchCommand, psQuote, posixQuote, jwtEmail, isAgentProc,
+  findCopilotSession, findAgySession, findOpenCodeSession, launchCommand, psQuote, posixQuote, jwtEmail, isAgentProc,
 } = require('../src/accounts');
 
 const procs = [
@@ -44,12 +44,26 @@ test('accountFor maps any claudeN / codexN name to its kind and config dir', () 
   for (const bad of ['claude0', 'claude01', 'claudex', 'Claude1', 'codex-1', 'rm', '', null]) assert.strictEqual(accountFor(bad), null, String(bad));
 });
 
+test('OpenCode launch note identifies the tab session and resume command', () => {
+  const tree = [
+    { pid: 1, ppid: 0, name: 'powershell.exe', startedAt: 100 },
+    { pid: 2, ppid: 1, name: 'pwsh.exe', startedAt: 200 },
+    { pid: 3, ppid: 2, name: 'opencode.exe', startedAt: 300 },
+    { pid: 4, ppid: 0, name: 'opencode.exe', startedAt: 400 },
+  ];
+  const id = 'ses_abc123';
+  assert.strictEqual(findOpenCodeSession(tree, 1, [{ pid: 1, cmd: 'opencode', sessionId: id, cwd: 'C:\\work', startedAt: 250 }]).sessionId, id);
+  assert.strictEqual(findOpenCodeSession(tree, 1, []).sessionId, null);
+  assert.strictEqual(launchCommand('opencode', { resume: id }), `opencode --session ${id}`);
+  assert.match(launchCommand('opencode', { prompt: 'read C:\\handoff.md' }), /^opencode --prompt /);
+});
+
 test('listAccounts discovers numbered config dirs, plain ones always first', () => {
   const io = { listDir: (p) => (p === 'C:\\h' ? ['.claude', '.claude-10', '.claude-2', '.codex-1', '.codex-01', '.claude-x', 'Documents', '.claude.json'] : []) };
-  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1', 'agy', 'copilot']);
-  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex', 'agy', 'copilot']);
+  assert.deepStrictEqual(listAccounts('C:\\h', io).map((a) => a.cmd), ['claude', 'claude2', 'claude10', 'codex', 'codex1', 'agy', 'copilot', 'opencode']);
+  assert.deepStrictEqual(listAccounts('C:\\h', { listDir: () => [] }).map((a) => a.cmd), ['claude', 'codex', 'agy', 'copilot', 'opencode']);
   const more = { listDir: () => ['.agy-2', '.copilot-1', '.copilot-12', '.agy-02', '.gemini'] };
-  assert.deepStrictEqual(listAccounts('C:\\h', more).map((a) => a.cmd), ['claude', 'codex', 'agy', 'agy2', 'copilot', 'copilot1', 'copilot12']);
+  assert.deepStrictEqual(listAccounts('C:\\h', more).map((a) => a.cmd), ['claude', 'codex', 'agy', 'agy2', 'copilot', 'copilot1', 'copilot12', 'opencode']);
   assert.deepStrictEqual(accountFor('agy3'), { cmd: 'agy3', kind: 'agy', number: 3, dir: '.agy-3' });
   assert.deepStrictEqual(accountFor('copilot'), { cmd: 'copilot', kind: 'copilot', number: 0, dir: '.copilot' });
 });
@@ -301,7 +315,7 @@ test('describeAccounts reports login state and email per discovered config dir, 
     },
   };
   const list = describeAccounts(home, io);
-  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3', 'agy', 'copilot']);
+  assert.deepStrictEqual(list.map((a) => a.cmd), ['claude', 'claude1', 'claude2', 'codex', 'codex3', 'agy', 'copilot', 'opencode']);
   const one = list.find((a) => a.cmd === 'claude1');
   assert.deepStrictEqual({ loggedIn: one.loggedIn, email: one.email, configDir: one.configDir },
     { loggedIn: true, email: 'one@example.com', configDir: path.join(home, '.claude-1') });
@@ -331,4 +345,16 @@ test('signInHints names the accounts not yet signed in plus one new number per k
   ];
   assert.deepStrictEqual(signInHints(described), ['claude2', 'claude6', 'codex', 'codex1']);
   assert.deepStrictEqual(signInHints([{ cmd: 'claude', kind: 'claude', number: 0, loggedIn: true }, { cmd: 'codex', kind: 'codex', number: 0, loggedIn: true }]), ['claude1', 'codex1']);
+});
+
+
+test('OpenCode remains a single optional entry and never offers numbered logins', () => {
+  assert.equal(accountFor('opencode1'), null);
+  const io = { listDir: () => ['.opencode-1'], exists: () => false, readJson: () => null, commandExists: () => true };
+  const rows = describeAccounts('/tmp/example', io);
+  assert.equal(rows.filter((a) => a.kind === 'opencode').length, 1);
+  assert.equal(rows.find((a) => a.kind === 'opencode').loggedIn, true);
+  assert.equal(signInHints(rows).some((cmd) => cmd.startsWith('opencode')), false);
+  assert.equal(launchCommand('opencode', { prompt: "read 'handoff'" }, 'posix'), "opencode --prompt " + posixQuote("read 'handoff'"));
+  assert.throws(() => launchCommand('opencode', { resume: 'ses_bad;command' }));
 });

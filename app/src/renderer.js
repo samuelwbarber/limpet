@@ -408,6 +408,8 @@ function syncSize() {
   window.limpet.resize(activeId, t.term.cols, t.term.rows);
 }
 window.addEventListener('resize', syncSize);
+// Status messages and toolbar changes resize the terminal without resizing its window.
+new ResizeObserver(syncSize).observe(document.getElementById('terms'));
 
 // ---- reels: dock a webpage (default: Instagram reels, see settings) on the right ----
 const reelsView = document.getElementById('reels-view');
@@ -483,10 +485,25 @@ function consumeKey(e) {
 // interrupt, selection or not, so a Mac user never loses a SIGINT to a stray
 // selection; Ctrl+Shift+C/V keep working for Windows muscle memory.
 const IS_MAC = window.limpet.platform === 'darwin';
+document.body.classList.toggle('macos', IS_MAC);
+
+// macOS window tiling (Window > Move & Resize) is Fn+Ctrl+arrow, with Shift
+// and Option for the Arrange variants. Fn turns the arrows into Home, End,
+// PageUp and PageDown, so those chords arrive here as Ctrl+Home and friends.
+// Chromium hands them to the page before the menu (it only short-circuits Fn
+// shortcuts on ordinary keys, such as Fn+Ctrl+F for Fill), so xterm would send
+// an escape sequence to the shell and the menu item would never fire. Leaving
+// the key unhandled, and unconsumed, lets Electron pass it on to the app menu.
+// A key event does not say whether Fn was held, so a real Ctrl+Home on an
+// external keyboard is handed over as well and no longer reaches the shell.
+const MAC_TILING_KEYS = new Set(['Home', 'End', 'PageUp', 'PageDown']);
+const isMacTilingChord = (e) => IS_MAC && e.ctrlKey && !e.metaKey && MAC_TILING_KEYS.has(e.key);
+
 function handleKeys(e, id, term) {
   if (e.type !== 'keydown') return true;
   const k = e.key.toLowerCase();
   if (window.LimpetSettings.runAction(e, id)) return consumeKey(e);
+  if (isMacTilingChord(e)) return false;
   if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     if (k === 'c') { copySelection(term); return consumeKey(e); }
     if (k === 'v') { pasteClipboard(id); return consumeKey(e); }
@@ -501,7 +518,30 @@ function handleKeys(e, id, term) {
 
 // The application menu (macOS) picked something.
 if (typeof window.limpet.onMenuAction === 'function') {
-  window.limpet.onMenuAction((action) => { if (action === 'new-tab') newTab(); });
+  window.limpet.onMenuAction((action) => {
+    if (action === 'new-tab') newTab();
+    else if (action === 'settings') window.LimpetSettings.open();
+    else if (action === 'find') window.LimpetTerminalUI?.openSearch();
+    else if (action === 'accounts') document.getElementById('accounts-button').click();
+    else if (action === 'help') document.getElementById('limpet-help')?.click();
+  });
+}
+
+// macOS hides the title bar while a window is full screen and the close,
+// minimise and zoom buttons go with it (they only slide back in while the
+// pointer rests at the top of the screen). The tab bar shows its own for as
+// long as full screen lasts. mousedown is cancelled so a click on one leaves
+// keyboard focus in the terminal.
+const windowControls = document.getElementById('window-controls');
+if (IS_MAC && windowControls && typeof window.limpet.onFullScreen === 'function') {
+  const setFullScreen = (on) => document.body.classList.toggle('fullscreen', !!on);
+  window.limpet.onFullScreen(setFullScreen);
+  window.limpet.isFullScreen().then(setFullScreen).catch(() => {});
+  windowControls.addEventListener('mousedown', (e) => e.preventDefault());
+  windowControls.addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-action]');
+    if (button) window.limpet.windowControl(button.dataset.action);
+  });
 }
 
 function cycleTabs(dir) {
@@ -739,7 +779,7 @@ function closeAccountMenu() {
   const restoreFocus = accountMenu.contains(document.activeElement);
   accountMenu.remove();
   accountMenu = null;
-  if (restoreFocus) document.getElementById('accounts-button').focus();
+  if (restoreFocus) document.getElementById(IS_MAC ? 'newtab' : 'accounts-button').focus();
 }
 document.addEventListener('mousedown', (e) => { if (accountMenu && !accountMenu.contains(e.target)) closeAccountMenu(); });
 // Escape closes the menu and goes no further: the terminal keeps the keyboard

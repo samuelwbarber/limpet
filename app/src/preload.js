@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('limpet', {
   setupInfo: () => ipcRenderer.invoke('setup:info'),
   // An application-menu item was picked (macOS has a menu bar): 'new-tab'.
   onMenuAction: (cb) => ipcRenderer.on('menu:action', (_e, action) => cb(action)),
+  // Full screen hides the macOS title bar and its window buttons, so the tab
+  // bar shows its own: 'close' | 'minimize' | 'exit-fullscreen'.
+  isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
+  onFullScreen: (cb) => ipcRenderer.on('window:fullscreen', (_e, on) => cb(on)),
+  windowControl: (action) => ipcRenderer.send('window:control', action),
   createSession: (options) => ipcRenderer.invoke('term:create', options),
   restoreWorkspace: () => ipcRenderer.invoke('workspace:restore'),
   sessionTitle: (id, title) => ipcRenderer.send('term:title', { id, title }),

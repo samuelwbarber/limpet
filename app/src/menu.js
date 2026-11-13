@@ -7,6 +7,13 @@
 // close role. "New Tab" carries no accelerator for the same reason (the
 // renderer's rebindable shortcut handles the keys); picking it sends the
 // renderer a 'menu:action'.
+//
+// The Window menu carries role 'window' so Electron registers it as the app's
+// real Window menu (NSApp.windowsMenu). macOS only attaches its window tiling
+// (Fill, Centre, Move & Resize and their Fn+Ctrl+arrow shortcuts) and the open
+// window list to that menu; a submenu that is merely labelled "Window" gets
+// neither. The role is 'window' rather than 'windowMenu' because the stock
+// menu would bring a Cmd+W close-window item with it.
 const { app, BrowserWindow, Menu, shell } = require('electron');
 
 const REPO_URL = 'https://github.com/samuelwbarber/limpet';
@@ -19,10 +26,21 @@ function sendToFocused(action) {
 function installAppMenu() {
   if (process.platform !== 'darwin') { Menu.setApplicationMenu(null); return; }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { role: 'appMenu' },
-    { label: 'Shell', submenu: [{ label: 'New Tab', click: () => sendToFocused('new-tab') }] },
-    { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }] },
-    { role: 'help', submenu: [{ label: 'limpet on GitHub', click: () => shell.openExternal(REPO_URL) }] },
+    { role: 'appMenu', submenu: [
+      { role: 'about' }, { type: 'separator' },
+      { label: 'Settings…', click: () => sendToFocused('settings') },
+      { type: 'separator' }, { role: 'services' }, { type: 'separator' },
+      { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+      { type: 'separator' }, { role: 'quit' },
+    ] },
+    { label: 'Shell', submenu: [
+      { label: 'New Tab', click: () => sendToFocused('new-tab') },
+      { type: 'separator' },
+      { label: 'Find in Output…', click: () => sendToFocused('find') },
+      { label: 'Accounts…', click: () => sendToFocused('accounts') },
+    ] },
+    { role: 'window', label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }] },
+    { role: 'help', submenu: [{ label: 'Getting Started…', click: () => sendToFocused('help') }, { label: 'limpet on GitHub', click: () => shell.openExternal(REPO_URL) }] },
   ]));
 }
 

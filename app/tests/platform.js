@@ -21,6 +21,20 @@ const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-e2e-'));
 const testHome = path.join(testRoot, 'home');
 const userData = path.join(testRoot, 'userData');
 for (const dir of [testHome, userData, path.join(testHome, 'AppData', 'Roaming'), path.join(testHome, 'AppData', 'Local')]) fs.mkdirSync(dir, { recursive: true });
+let signedStandInShell;
+function standInShell() {
+  if (!isMac) return '/bin/sh';
+  if (!signedStandInShell) {
+    // Recent macOS versions kill renamed copies of Apple's signed /bin/sh.
+    // Sign a scratch copy once; account fixtures can safely copy and rename it
+    // without altering the system shell or requiring a signing certificate.
+    const file = path.join(testRoot, 'sh');
+    fs.copyFileSync('/bin/sh', file);
+    require('child_process').execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', file], { stdio: 'pipe' });
+    signedStandInShell = file;
+  }
+  return signedStandInShell;
+}
 function launchArgs(appDir) {
   return [appDir, `--user-data-dir=${userData}`];
 }
@@ -139,7 +153,7 @@ const unix = {
   pasteKeys: isMac ? ['Meta+v', 'Control+Shift+v'] : ['Control+v', 'Control+Shift+v'],
   symlinkType: 'dir',
   standIn: {
-    exe: '/bin/sh',
+    get exe() { return standInShell(); },
     name: (kind) => kind,
     // The lock and mark dir travel as $1 and $2 (quoted once, by the outer
     // shell) rather than being spliced into the -c script.

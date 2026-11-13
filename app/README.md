@@ -9,15 +9,18 @@ separate connection UI.
 ## Setup
 
 ```powershell
-npm run setup          # npm install with package scripts skipped, then Electron's download
+npm run setup          # install dependencies, download Electron, build the Linux PTY
 npm start
 ```
 
 Needs Node 22.12 or newer. The local shell gets a real pty (line editing,
 Ctrl+R, arrows, full-screen TUIs) from Microsoft's `node-pty`, a Node-API
 module that ships prebuilt binaries for Windows (x64, arm64; ConPTY), macOS
-(arm64, x64) and Linux, so it works with any Electron version and nothing is
-compiled on install. If it fails to load the app still runs, but the local
+(arm64, x64). Linux builds it locally during dependency installation and needs
+Python, make and a C++ compiler (on Ubuntu/Debian: `sudo apt install python3 make g++`).
+`npm run setup` rebuilds only `node-pty` on Linux after installing dependencies;
+Windows and macOS use the shipped binaries. Node-API allows the module to work across
+Electron versions. If it fails to load the app still runs, but the local
 shell falls back to a basic pipe with no line editing.
 
 Electron downloads its own binary the first time it runs (Electron 42 dropped
@@ -67,7 +70,8 @@ these are set, otherwise unsigned (Gatekeeper then needs a right-click →
 
 The hardened-runtime entitlements the app needs (JIT and the native pty
 module) are in `build/entitlements.mac.plist`; the icon is made from
-`build/icon.png`. `npm run dist:linux` builds an AppImage the same way.
+`build/icon.png`. `npm run dist:linux` builds an AppImage for the current Linux machine’s architecture.
+Build on each target architecture so its native terminal module matches the app.
 
 ## Auto-update
 
@@ -82,9 +86,10 @@ Being offline, or there being no such release yet, is only logged. The feed is
 
 To release: bump `version` in `package.json` (and `package-lock.json`), commit,
 then push a matching tag, e.g. `git tag v0.1.2 && git push origin v0.1.2`. The
-Release workflow (`.github/workflows/release.yml`) builds the Windows installer
-and the macOS disk images and publishes them, with `latest.yml`,
-`latest-mac.yml` and the `.blockmap`s, as one GitHub Release: signed if the
+Release workflow (`.github/workflows/release.yml`) builds the Windows installer,
+macOS disk images, and Linux AppImages (x64 and arm64), and publishes them
+with their update metadata (`latest.yml`, `latest-mac.yml`, and Linux YAML files)
+and the `.blockmap`s, as one GitHub Release: signed if the
 `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` (Windows) and `CSC_LINK`/`CSC_KEY_PASSWORD`
 (macOS, plus `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID` for
 notarization) repo secrets are set. On macOS the updater only applies an update
@@ -104,12 +109,16 @@ links.
 On macOS the defaults are the Mac ones: `⌘T` new tab, `⌘W` close tab, `⌘⇧]` /
 `⌘⇧[` next and previous tab, `⌘,` settings, `⌘C` copies the selection (and
 never interrupts), `⌘V` pastes; `Ctrl+C` stays the interrupt and
-`Ctrl+Shift+V` still pastes. The app keeps a minimal menu bar (limpet, Window)
-with no Edit menu, so each shortcut has exactly one path into the terminal.
+`Ctrl+Shift+V` still pastes. The app keeps tabs and **+** above the terminal; secondary actions live in the
+menu bar: **Shell → Find in Output… / Accounts…**, **limpet → Settings…**, and
+**Help → Getting Started…**. Right-click a tab for accounts and settings too.
+There is no Edit menu, so each shortcut has exactly one path into the terminal.
+The bottom status bar appears only for SSH destinations, exited sessions or
+notices; an idle local shell uses the full terminal area.
 
 ## Settings
 
-`Ctrl+,` (or **Settings** in the toolbar) opens the
+`Ctrl+,` (`⌘,` on macOS, or **limpet → Settings…**; **Settings** in the toolbar on other platforms) opens the
 settings page over the terminal. Changes apply as you make them, in every
 window: the font, size, line height, cursor and scrollback of every open tab
 change live, and a new tab opens with them. A value limpet can't use (a font

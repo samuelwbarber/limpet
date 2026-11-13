@@ -111,7 +111,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     executablePath: require(path.join(APP, 'node_modules', 'electron')), // fetched on first use
     args: p.launchArgs(APP), timeout: 60000,
     env: p.launchEnv({
-      LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,
+      LIMPET_OPENCODE_AVAILABLE: '0', LIMPET_CLAUDE_HOME: home, LIMPET_USAGE_FIXTURE: fixture, LIMPET_AGENT_RUN: runDir,
       LIMPET_LOCAL_AI_DIR: localAi, LIMPET_BACKDROP_SETUP: fakeSetup,
     }),
   });

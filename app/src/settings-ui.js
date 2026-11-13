@@ -144,6 +144,9 @@
   // ---- the page ----
   let panel = null;      // the overlay while open
   let returnFocus = null;
+  const pendingCommits = new Map();
+  let saving = 0;
+  let saveMessage = '';
   const fields = new Map(); // 'section.key' -> { field, input, error }
 
   function el(tag, className, text) {
@@ -153,12 +156,27 @@
     return e;
   }
 
+  function updateSaveStatus() {
+    if (!panel) return;
+    const status = panel.querySelector('.settings-status');
+    const invalid = Array.from(fields.values()).some((f) => f.error.textContent);
+    status.classList.toggle('has-error', !!saveMessage || invalid);
+    status.textContent = saveMessage || (invalid ? 'Check the highlighted settings' : saving ? 'Saving…' : pendingCommits.size ? 'Waiting to save…' : 'Changes save automatically');
+  }
+
   async function save(sectionId, partial) {
+    const owner = panel;
+    saving += 1;
+    saveMessage = '';
+    updateSaveStatus();
     let result;
     try { result = await window.limpet.setSettings({ [sectionId]: partial }); } catch (e) { result = { ok: false, errors: { '': e.message } }; }
+    saving -= 1;
+    if (panel !== owner) { updateSaveStatus(); return result; }
     for (const key of Object.keys(partial)) showError(`${sectionId}.${key}`, (result.errors || {})[`${sectionId}.${key}`] || '');
     const general = (result.errors || {})[''];
-    if (panel) panel.querySelector('.settings-status').textContent = general || '';
+    saveMessage = general || '';
+    updateSaveStatus();
     return result;
   }
 
@@ -168,9 +186,11 @@
     f.error.textContent = message;
     f.input.setAttribute('aria-invalid', message ? 'true' : 'false');
     f.row.classList.toggle('invalid', !!message);
+    updateSaveStatus();
   }
 
   function setInput(f, value) {
+    if (!f) return;
     const { field, input } = f;
     if (field.type === 'boolean') input.checked = !!value;
     else if (field.type === 'keybinding') input.value = display(value) || '';
@@ -195,9 +215,16 @@
     const label = el('label', '', field.label);
     label.htmlFor = domId;
     let input;
-    const commit = (value) => save(section.id, { [field.key]: value });
     let timer = null;
-    const debounced = (fn) => { clearTimeout(timer); timer = setTimeout(fn, 350); };
+    const cancelPending = () => { clearTimeout(timer); pendingCommits.delete(id); };
+    const commit = (value) => { cancelPending(); return save(section.id, { [field.key]: value }); };
+    const debounced = (fn) => {
+      cancelPending();
+      const flush = () => { cancelPending(); fn(); updateSaveStatus(); };
+      pendingCommits.set(id, { flush, cancel: cancelPending });
+      timer = setTimeout(flush, 350);
+      updateSaveStatus();
+    };
 
     if (field.type === 'boolean') {
       input = el('input');
@@ -222,7 +249,7 @@
         commit(Number(input.value));
       };
       input.addEventListener('input', () => debounced(send));
-      input.addEventListener('change', () => { clearTimeout(timer); send(); });
+      input.addEventListener('change', () => { cancelPending(); send(); });
     } else if (field.type === 'keybinding') {
       input = el('input', 'keybinding');
       input.type = 'text';
@@ -276,6 +303,7 @@
 
   function buildSection(section) {
     const box = el('section', 'settings-section');
+    box.id = `settings-section-${section.id}`;
     box.setAttribute('aria-labelledby', `settings-h-${section.id}`);
     const head = el('div', 'settings-section-head');
     const h = el('h2', '', section.label);
@@ -284,9 +312,14 @@
     reset.type = 'button';
     reset.setAttribute('aria-label', `Reset ${section.label} to defaults`);
     reset.addEventListener('click', async () => {
+      const owner = panel;
       const defaults = {};
-      for (const f of section.fields) defaults[f.key] = f.default;
+      for (const f of section.fields) {
+        pendingCommits.get(`${section.id}.${f.key}`)?.cancel();
+        defaults[f.key] = f.default;
+      }
       await save(section.id, defaults);
+      if (panel !== owner) return;
       for (const f of section.fields) setInput(fields.get(`${section.id}.${f.key}`), get(section.id, f.key));
     });
     head.append(h, reset);
@@ -302,6 +335,7 @@
     if (typeof closeAccountMenu === 'function') closeAccountMenu();
     returnFocus = typeof activeId !== 'undefined' ? activeId : null;
     fields.clear();
+    saveMessage = '';
     const overlay = el('div', 'settings-overlay');
     const dialog = el('div', 'settings-panel');
     dialog.setAttribute('role', 'dialog');
@@ -310,7 +344,7 @@
     const head = el('div', 'settings-head');
     const title = el('h1', '', 'Settings');
     title.id = 'settings-title';
-    const where = el('span', 'settings-status');
+    const where = el('span', 'settings-status', 'Changes save automatically');
     where.setAttribute('role', 'status');
     const close = el('button', 'settings-close', '×');
     close.type = 'button';
@@ -319,8 +353,21 @@
     close.addEventListener('click', () => closePanel());
     head.append(title, where, close);
     const body = el('div', 'settings-body');
-    for (const section of state.schema || []) body.append(buildSection(section));
-    dialog.append(head, body);
+    const navigation = el('nav', 'settings-nav');
+    navigation.setAttribute('aria-label', 'Settings sections');
+    for (const section of state.schema || []) {
+      const box = buildSection(section);
+      body.append(box);
+      const jump = el('button', '', section.label);
+      jump.type = 'button';
+      jump.setAttribute('aria-controls', box.id);
+      jump.addEventListener('click', () => {
+        box.querySelector('input, select')?.focus({ preventScroll: true });
+        body.scrollTop = box.offsetTop - 8;
+      });
+      navigation.append(jump);
+    }
+    dialog.append(head, navigation, body);
     overlay.append(dialog);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closePanel(); });
     overlay.addEventListener('keydown', (e) => {
@@ -337,12 +384,14 @@
     });
     document.body.appendChild(overlay);
     panel = overlay;
+    updateSaveStatus();
     const firstField = body.querySelector('input, select');
     (firstField || close).focus();
   }
 
   function closePanel() {
     if (!panel) return;
+    for (const pending of Array.from(pendingCommits.values())) pending.flush();
     panel.remove();
     panel = null;
     fields.clear();

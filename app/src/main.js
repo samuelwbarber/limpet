@@ -995,6 +995,7 @@ const accountIo = {
   exists: (p) => { try { return fs.existsSync(p); } catch (_) { return false; } },
   readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
   listDir: (p) => { try { return fs.readdirSync(p); } catch (_) { return []; } },
+  commandExists: (name) => process.env.LIMPET_OPENCODE_AVAILABLE !== '0' && require('./setup-info').setupInfo().tools.some((tool) => tool.name === name && tool.present),
   // Claude Code's login where there is no .credentials.json: the macOS Keychain.
   claudeCredentials: (configDir, plain) => platform.readClaudeCredentials(configDir, { plain }),
 };
@@ -1075,7 +1076,8 @@ async function stopAgent(sess, pid) {
 
 const handoffDir = () => path.join(app.getPath('userData'), 'handoff');
 
-const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', copilot: 'Copilot' };
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', copilot: 'Copilot', opencode: 'OpenCode' };
+const { exportOpenCodeSession } = require('./opencode');
 
 // Carry the stopped agent's chat over to another account (of another agent,
 // or of Codex, Copilot or agy). Returns the launch options for
@@ -1089,7 +1091,7 @@ async function carryAcross(current, target, note) {
     return { launch: { resume: current.sessionId }, how: 'resume' };
   }
   const transcript = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
-  if (!transcript) {
+  if (!transcript && current.kind !== 'opencode') {
     throw new Error(`Could not find the ${current.cmd} transcript. Wait for it to be saved, then retry.`);
   }
   // Native where there's a way in: Codex resumes its own threads and imports
@@ -1127,7 +1129,7 @@ async function carryAcross(current, target, note) {
       note(36, `chat imported into Codex as thread ${threadId}.`);
       return { launch: { resume: threadId }, how: 'import' };
     }
-    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    const turns = handoff.parseTranscript(current.kind, (current.kind === 'opencode' ? current.transcriptText : fs.readFileSync(transcript, 'utf8')));
     if (!turns.length) throw new Error('The transcript contains no readable conversation turns.');
     const cwd = current.cwd || os.homedir();
     const built = handoff.buildClaudeTranscript(turns, { cwd, title: handoff.titleFromTurns(turns), version: '2.1.0' });
@@ -1141,7 +1143,7 @@ async function carryAcross(current, target, note) {
   }
   // Otherwise: the chat as Markdown plus a one-line prompt to continue from it.
   try {
-    const turns = handoff.parseTranscript(current.kind, fs.readFileSync(transcript, 'utf8'));
+    const turns = handoff.parseTranscript(current.kind, (current.kind === 'opencode' ? current.transcriptText : fs.readFileSync(transcript, 'utf8')));
     if (!turns.length) throw new Error('The transcript contains no readable conversation turns.');
     const dir = handoffDir();
     fs.mkdirSync(dir, { recursive: true });
@@ -1193,20 +1195,23 @@ async function switchAgent(sess, cmd) {
     detect: detectAgentSession,
     signedIn: (name) => accounts.describeAccounts(claudeHome(), accountIo).some((a) => a.cmd === name && a.loggedIn),
     confirmCrossProvider: async (current, target) => {
-      const provider = { claude: 'Anthropic', codex: 'OpenAI', copilot: 'GitHub Copilot', agy: 'Antigravity' }[target.kind] || target.kind;
+      const provider = { claude: 'Anthropic', codex: 'OpenAI', copilot: 'GitHub Copilot', agy: 'Antigravity', opencode: 'the provider configured in OpenCode' }[target.kind] || target.kind;
       const method = target.kind === 'codex' && current.kind === 'claude'
         ? 'Import the saved conversation into Codex. If native import is unavailable, provide a Markdown handoff.'
         : target.kind === 'claude'
           ? 'Convert the saved conversation to a Claude transcript. If conversion is unavailable, provide a Markdown handoff.'
           : 'Provide the saved conversation as a Markdown handoff for the destination agent to read.';
+      const sourceCheck = current.kind === 'opencode'
+        ? `OpenCode session to export: ${current.sessionId}\nThis is the session requested when OpenCode launched. Limpet cannot detect chat changes inside its TUI. Confirm that this is the conversation you want; otherwise cancel, exit OpenCode and resume the desired session explicitly.\n\n`
+        : '';
       const wc = sessionWebContents(sess);
       const win = wc && BrowserWindow.fromWebContents(wc);
       if (!win) return false;
       const result = await dialog.showMessageBox(win, {
         type: 'question', title: 'Move conversation to another provider?',
         message: `Move ${current.cmd} to ${target.cmd} (${provider})?`,
-        detail: `${method}\n\nConversation contents may be sent to ${provider}; future requests will use that provider. The current agent keeps running until the handoff is prepared.`,
-        buttons: ['Move conversation', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+        detail: `${sourceCheck}${method}\n\nConversation contents may be sent to ${provider}; future requests will use that provider. The current agent keeps running until the handoff is prepared.`,
+        buttons: [current.kind === 'opencode' ? 'Move this session' : 'Move conversation', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
       });
       return result.response === 0;
     },
@@ -1216,12 +1221,21 @@ async function switchAgent(sess, cmd) {
         if (!findClaudeTranscript(current.sessionId)) throw new Error('Could not find the saved Claude conversation. Wait for it to be saved, then retry.');
         return { launch: { resume: current.sessionId }, how: 'resume' };
       }
+      if (current.kind === 'opencode') {
+        current.transcriptText = await exportOpenCodeSession(current.sessionId);
+        const info = JSON.parse(current.transcriptText).info;
+        if (info && typeof info.directory === 'string') current.cwd = info.directory;
+      }
       const sourcePath = current.kind === 'claude' ? findClaudeTranscript(current.sessionId) : current.rolloutPath;
       const sourceStat = sourcePath ? fs.statSync(sourcePath) : null;
       const prepared = await carryAcross(current, target, note);
       return { ...prepared, sourcePath, sourceStat };
     },
     refresh: async (current, target, prepared) => {
+      if (current.kind === 'opencode') {
+        current.transcriptText = await exportOpenCodeSession(current.sessionId);
+        return carryAcross(current, target, note);
+      }
       if (!prepared.sourcePath || !prepared.sourceStat) return prepared;
       const latest = fs.statSync(prepared.sourcePath);
       if (latest.size === prepared.sourceStat.size && latest.mtimeMs === prepared.sourceStat.mtimeMs) return prepared;
@@ -1390,6 +1404,13 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
     if (params.src && !isWebUrl(params.src)) e.preventDefault();
   });
 
+  // macOS hides the title bar while a window is full screen, and the close,
+  // minimise and zoom buttons go with it. The renderer draws its own in the
+  // tab bar for as long as full screen lasts, so tell it when that changes.
+  const sendFullScreen = (on) => { if (!browserWin.isDestroyed()) browserWin.webContents.send('window:fullscreen', on); };
+  browserWin.on('enter-full-screen', () => sendFullScreen(true));
+  browserWin.on('leave-full-screen', () => sendFullScreen(false));
+
   let closeApproved = false;
   let closePending = false;
   browserWin.on('close', (event) => {
@@ -1426,6 +1447,27 @@ function registerIpc() {
   ipcMain.handle('clip:read', () => clipboard.readText());
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
   ipcMain.handle('setup:info', () => require('./setup-info').setupInfo());
+
+  // The tab bar's own window buttons, shown while the window is full screen.
+  ipcMain.handle('window:is-fullscreen', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return !!win && !win.isDestroyed() && win.isFullScreen();
+  });
+  ipcMain.on('window:control', (event, action) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    if (action === 'close') win.close();
+    else if (action === 'exit-fullscreen') win.setFullScreen(false);
+    else if (action === 'minimize') {
+      // macOS cannot minimise a full-screen window: leave full screen first.
+      // A minimise from inside the leave event is dropped (the transition is
+      // not quite over), so it waits for the next turn of the loop.
+      if (win.isFullScreen()) {
+        win.once('leave-full-screen', () => setImmediate(() => { if (!win.isDestroyed()) win.minimize(); }));
+        win.setFullScreen(false);
+      } else win.minimize();
+    }
+  });
 
   ipcMain.handle('workspace:restore', async (event) => {
     const saved = startupWorkspace;

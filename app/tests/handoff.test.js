@@ -2,9 +2,36 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseTranscript, renderMarkdown, continuePrompt,
+  parseClaudeTranscript, parseCodexRollout, parseAgyTranscript, parseCopilotEvents, parseOpenCodeExport, parseTranscript, renderMarkdown, continuePrompt,
   buildClaudeTranscript, claudeProjectDirName, titleFromTurns, cleanUserText,
 } = require('../src/handoff');
+
+test('OpenCode export preserves user, assistant and tool context for handoff', () => {
+  const exported = JSON.stringify({ messages: [
+    { info: { role: 'user' }, parts: [{ type: 'text', text: 'Make the widget blue' }] },
+    { info: { role: 'assistant' }, parts: [
+      { type: 'reasoning', text: 'private reasoning' },
+      { type: 'tool', tool: 'edit', state: { input: { path: 'widget.css' }, output: 'updated' } },
+      { type: 'text', text: 'The widget is blue.' },
+    ] },
+  ] });
+  const turns = parseOpenCodeExport(exported);
+  assert.deepStrictEqual(turns, [
+    { role: 'user', text: 'Make the widget blue', tools: [] },
+    { role: 'assistant', text: 'The widget is blue.', tools: [{ name: 'edit', input: 'widget.css', output: 'updated' }] },
+  ]);
+  assert.deepStrictEqual(parseTranscript('opencode', exported), turns);
+  const v2 = JSON.stringify({ messages: [
+    { type: 'user', text: 'Make the widget blue' },
+    { type: 'assistant', content: [
+      { type: 'reasoning', text: 'private reasoning' },
+      { type: 'tool', tool: 'edit', state: { input: { path: 'widget.css' }, output: 'updated' } },
+      { type: 'text', text: 'The widget is blue.' },
+    ] },
+    { type: 'idle', outcome: 'succeeded' },
+  ] });
+  assert.deepStrictEqual(parseOpenCodeExport(v2), turns);
+});
 
 test('parseAgyTranscript reads Antigravity steps: the request inside <USER_REQUEST>, replies, tool calls and their outputs', () => {
   const text = jsonl([

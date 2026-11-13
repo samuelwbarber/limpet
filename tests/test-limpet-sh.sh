@@ -25,7 +25,7 @@ export HOME="$TMP/home" LIMPET_AGENT_HOME="$TMP/home" LIMPET_AGENT_RUN="$TMP/run
 export LIMPET_AGY_TOKEN_FILE="$TMP/agy-token" LIMPET_AGY_PROCESS=limpet-no-such-agy LIMPET_HELLO_FILE="$TMP/hello.pass"
 export XDG_CONFIG_HOME="$TMP/xdg"
 mkdir -p "$HOME" "$TMPDIR" "$TMP/bin"
-unset LIMPET_TOKEN LIMPET_NO_PWCACHE ZDOTDIR
+unset LIMPET_TOKEN LIMPET_NO_PWCACHE LIMPET_SHELL_DIR ZDOTDIR
 # A PATH without any real agent CLI on it (WSL appends the Windows PATH).
 PATH="$TMP/bin:/usr/local/bin:/usr/bin:/bin"
 BEL=$(printf '\007'); ESC=$(printf '\033')
@@ -310,10 +310,47 @@ out=$(agy1 --conversation abc)
 contains "$out" 'AGY_RAN --conversation abc' && [ "$(inStore)" = "$plainLogin" ] && [ ! -f "$g/.agy/active" ]; check 'agy1 launches agy with arguments intact and puts plain agy back after' $?
 rm -f "$TMP/bin/agy"
 
+# A denied/locked credential store must not be mistaken for a signed-out login.
+(
+  _limpet_agy_cred_read() { return 36; }
+  _limpet_agy_enter agy2 2>/dev/null
+  [ $? = 1 ] && [ "$(inStore)" = "$plainLogin" ] && [ ! -f "$g/.agy/active" ]
+); check 'failed current-login read refuses the switch without changing credentials' $?
+(
+  _limpet_agy_kept_read() { return 36; }
+  _limpet_agy_restore_login agy1
+  [ $? = 1 ] && [ "$(inStore)" = "$plainLogin" ]
+); check 'failed saved-login read cannot overwrite the active login' $?
+(
+  _limpet_agy_kept_read() { return 0; }
+  _limpet_agy_restore_login agy1
+  [ $? = 1 ] && [ "$(inStore)" = "$plainLogin" ]
+); check 'empty saved login cannot overwrite the active login' $?
+(
+  _limpet_agy_cred_delete() { return 36; }
+  _limpet_agy_enter agy2 2>/dev/null
+  [ $? = 1 ] && [ "$(inStore)" = "$plainLogin" ] && [ ! -f "$g/.agy/active" ]
+); check 'failed login deletion refuses launch under the previous account' $?
+# Exercise the macOS security exit-code contract without accessing any keychain.
+(
+  _limpet_agy_uses_file() { return 1; }
+  export LIMPET_AGY_KEYCHAIN_SERVICE=limpet-test-never-accessed
+  security() { return 44; }
+  _limpet_agy_cred_read && _limpet_agy_cred_delete
+); check 'missing Keychain item is treated as signed out' $?
+(
+  _limpet_agy_uses_file() { return 1; }
+  export LIMPET_AGY_KEYCHAIN_SERVICE=limpet-test-never-accessed
+  security() { return 36; }
+  _limpet_agy_cred_read; readRc=$?
+  _limpet_agy_cred_delete; deleteRc=$?
+  [ "$readRc" = 36 ] && [ "$deleteRc" = 36 ]
+); check 'Keychain access failures propagate from read and delete' $?
+
 # ---- any number of accounts: discovery, numbered commands, the hook, env routing ----
 ah="$TMP/agents"; mkdir -p "$ah/.claude-2" "$ah/.claude-10" "$ah/.codex-1" "$ah/.agy-3" "$ah/.copilot-2" "$ah/.claude-x" "$ah/.claude-01" "$ah/Documents"
 export LIMPET_AGENT_HOME="$ah" LIMPET_AGENT_RUN="$ah/run"
-[ "$(limpet_agent_accounts | cut -d' ' -f1 | tr '\n' ,)" = 'claude,claude2,claude10,codex,codex1,agy,agy3,copilot,copilot2,' ]; check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' $?
+[ "$(limpet_agent_accounts | cut -d' ' -f1 | tr '\n' ,)" = 'claude,claude2,claude10,codex,codex1,agy,agy3,copilot,copilot2,opencode,' ]; check 'accounts are discovered from the home dir: plain first, numbers ascending, junk ignored' $?
 [ "$(limpet_agent_accounts | awk '$1 == "codex1" { print $4 }')" = "$ah/.codex-1" ] && [ "$(limpet_agent_accounts | awk '$1 == "copilot2" { print $4 }')" = "$ah/.copilot-2" ]; check 'each account maps to its own config dir' $?
 . "$REPO/shell/limpet.sh"   # re-source: the numbered dirs become commands
 n=0; for c in claude2 claude10 codex1 agy3 copilot2; do type "$c" >/dev/null 2>&1 && n=$((n + 1)); done; [ $n = 5 ]; check 'numbered accounts whose dir exists are real commands' $?
@@ -347,6 +384,18 @@ contains "$out" "NOTE=$$.json" && contains "$out" '"cmd":"codex1"' && contains "
 [ ! -f "$ah/run/$$.json" ] && [ "${CODEX_HOME:-}" = "$savedCodexHome" ]; check 'the note goes and CODEX_HOME is put back when it exits' $?
 printf '{"cmd":"codex9","pid":999999,"startedAt":1}' > "$ah/run/999999.json"
 codex1 resume xyz >/dev/null; [ ! -f "$ah/run/999999.json" ]; check 'a note left by a dead shell is cleared on the next launch' $?
+cp "$TMP/bin/codex" "$TMP/bin/opencode"
+out=$(opencode --session ses_existing)
+contains "$out" 'ARGS=--session ses_existing' && contains "$out" '"sessionId":"ses_existing"'; check 'OpenCode explicit resume is recorded without changing arguments' $?
+for flag in --fork --continue -c; do
+  out=$(opencode --session ses_existing "$flag")
+  contains "$out" '"sessionId":""'; check "OpenCode $flag never records the original session as the selected chat" $?
+done
+out=$(opencode)
+contains "$out" '"sessionId":""' && ! contains "$out" 'ARGS=--session'; check 'OpenCode plain launch never invents a session id' $?
+[ ! -f "$ah/run/$$.json" ]; check 'OpenCode removes its launch note after exit' $?
+limpet_invoke_agent opencode1 --limpet-plan >/dev/null 2>&1; [ $? = 1 ]; check 'numbered OpenCode accounts are refused' $?
+rm -f "$TMP/bin/opencode"
 rm -f "$TMP/bin/codex"
 limpet_invoke_agent claude01 --limpet-plan 2>/dev/null; [ $? = 1 ]; check 'a leading zero is not an account' $?
 nosuchlimpetcommand >/dev/null 2>&1; [ $? = 127 ]; check 'other unknown commands still fail normally (127)' $?

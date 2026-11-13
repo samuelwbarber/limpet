@@ -117,7 +117,10 @@ Changes apply live to every tab. Details in [`app/README.md`](app/README.md#sett
 
 ## Finding your way around
 
-The toolbar exposes **Accounts**, **Find**, **Settings** and **?** help. Search
+On Windows and Linux, the toolbar exposes **Accounts**, **Find**, **Settings** and **?** help.
+On macOS, the terminal keeps only tabs and **+** visible: use **Shell → Accounts…**
+or **Find in Output…**, **limpet → Settings…**, and **Help → Getting Started…**
+in the menu bar. Right-clicking a tab also opens accounts and settings. Search
 terminal output with **Ctrl+Shift+F** (or **Cmd+F** on macOS), move between
 matches, or jump to the bottom. Tabs scroll when there are too many to fit;
 keyboard users can navigate tabs and account choices with arrow keys.
@@ -214,6 +217,17 @@ Copilot accounts share plain `copilot`'s the same way: each `~/.copilot-N` gets
 its `session-state/` (one folder per chat, which Copilot's resume list is built
 from) junctioned to `~/.copilot`'s.
 
+OpenCode is also available as a single `opencode` entry when its CLI is on
+PATH. Numbered OpenCode accounts are not supported; it uses its own provider
+configuration, and usage is shown as unavailable. Limpet supports the OpenCode
+1.x `export <sessionID>` command.
+
+To move an existing OpenCode conversation to another agent, launch it with
+`opencode --session ses_…` in a Limpet tab. Plain launches, `--continue`, and
+changing conversations inside the TUI cannot reliably identify the active chat;
+exit and explicitly resume the desired session before moving it. A launch note
+records the requested session, not proof that the TUI still has that chat open.
+
 ### Switch account, or agent, mid-chat
 
 In the limpet app, choose **Accounts** (or right-click a tab) to see every account that is signed in,
@@ -240,6 +254,11 @@ shell:
   conversion that fails: the chat is rendered to a Markdown handoff file and
   the new agent starts with a one-line "continue from here" prompt pointing at
   it.
+
+OpenCode follows that handoff path when receiving a chat. When moving away
+from OpenCode, Limpet uses `opencode export` to carry its conversation
+into Claude or a Markdown handoff for Codex, Copilot or Antigravity. If export
+fails, the running OpenCode session is left open so the conversation is safe.
 
 <p align="center"><img src="docs/media/switch.gif" width="840" alt="switch demo: the tab menu lists the signed-in accounts with usage left, and a Claude Code chat is moved to Codex, conversation intact" /></p>
 
@@ -271,7 +290,7 @@ An unverified launch stays visibly unverified; it is not reported as a resumed c
 
 **Windows:** [Download the installer from the latest release](https://github.com/samuelwbarber/limpet/releases/latest). Choose the `limpet-Setup-<version>.exe` asset, run it, then open **limpet** from the Start Menu. The app includes its shell integration; Git and Node.js are not needed to use the installer.
 
-The published v0.1.1 release currently contains a Windows installer only. macOS and Linux are supported by the source tree and build configuration, but do not yet have downloadable assets in that release. Use the [source instructions below](#macos-and-linux) on those platforms. Features on the main branch may be newer than the published installer.
+Release builds target Windows, macOS and Linux. Check the assets on the latest release for your platform; older releases such as v0.1.1 contain only Windows installers. If an asset is unavailable, use the [source instructions below](#macos-and-linux). Features on the main branch may be newer than the published installer.
 
 ### Your first session
 
@@ -316,6 +335,10 @@ agent accounts and the account menu all behave as on Windows. The Linux
 command shims aren't needed (the shell is Unix already), Windows Hello becomes
 the login Keychain on macOS, and junctions become symlinks. On Linux, SSH enrollment keeps the key passphrase in a local mode-0600 file; it is not sealed by a system keychain.
 
+For source setup, install Node.js 22.12 or newer. Linux also needs Python,
+make and a C++ compiler to build the terminal module (`sudo apt install python3 make g++`
+on Ubuntu/Debian).
+
 ```sh
 git clone https://github.com/samuelwbarber/limpet
 cd limpet
@@ -323,7 +346,7 @@ cd limpet
 open app               # or: cd app && npm start
 ```
 
-- **The app.** The current published v0.1.1 release has no macOS or Linux installers. Build with `npm run dist:mac` or `npm run dist:linux` in `app/`, or use `npm start` after source setup. Future macOS assets use `limpet-<version>-arm64.dmg` (Apple silicon) or `limpet-<version>-x64.dmg` (Intel); Linux uses AppImage. See [packaging instructions](app/README.md#building-an-installer) for signing and platform requirements. The bundled shell integration works inside the app; `install.sh` also makes it available in other terminals.
+- **The app.** Look for your platform in the [latest release assets](https://github.com/samuelwbarber/limpet/releases/latest), or build with `npm run dist:mac` or `npm run dist:linux` in `app/`. Use `npm start` after source setup to run without an installer. macOS assets use `limpet-<version>-arm64.dmg` (Apple silicon) or `limpet-<version>-x64.dmg` (Intel); Linux uses AppImage. See [packaging instructions](app/README.md#building-an-installer) for signing and platform requirements. The bundled shell integration works inside the app; `install.sh` also makes it available in other terminals.
 - **The shell integration** (`shell/limpet.sh`) is one file that zsh and bash
   both source. It adds `xssh` (same flags, `-NoResume`/`--no-resume`,
   `-Raw`/`--raw`), `peek`, `reels`, `wput`, `download`/`upload` (the same

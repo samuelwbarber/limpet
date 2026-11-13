@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag matching app/package.json's version (e.g. v0.1.1) to build the
-# Windows installer and the macOS disk image and publish them, with the
+# Windows installer, macOS disk images and Linux AppImages and publish them, with the
 # latest.yml / latest-mac.yml + .blockmap files the installed apps' auto-updater
 # reads, as one GitHub Release.
 on:
@@ -87,3 +87,41 @@ jobs:
             echo 'Signing without notarization (no APPLE_ID).'
           fi
           npx electron-builder --mac --publish always "${extra[@]}"
+
+  linux:
+    name: Build Linux AppImage (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Tag matches package version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json version v$v"; exit 1; }
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Ensure bundled PTY helpers are executable
+        run: find node_modules/node-pty -name spawn-helper -type f -exec chmod +x {} +
+      - name: Unit tests
+        run: npm test
+      - name: Verify native PTY
+        run: node -e "const p=require('node-pty').spawn('/bin/sh',['-c','exit 0']); p.onExit(e=>process.exit(e.exitCode));"
+      - name: Build and publish AppImage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --${{ matrix.arch }} --publish always

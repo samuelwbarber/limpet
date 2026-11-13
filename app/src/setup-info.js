@@ -13,7 +13,7 @@ function setupInfo({ env = process.env, platform = process.platform, stat = fs.s
   }));
   return {
     platform,
-    tools: ['ssh', 'scp', 'claude', 'codex', 'copilot', 'agy'].map((name) => ({ name, present: present(name) })),
+    tools: ['ssh', 'scp', 'claude', 'codex', 'copilot', 'agy', 'opencode'].map((name) => ({ name, present: present(name) })),
   };
 }
 

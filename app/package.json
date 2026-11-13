@@ -1,13 +1,13 @@
 {
   "name": "limpet",
   "productName": "limpet",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "limpet - a tabbed terminal with resilient SSH, inline images, drag-and-drop upload and any number of coding-agent accounts (Windows, macOS, Linux)",
   "author": "samuelwbarber",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "setup": "npm install --ignore-scripts --no-audit --no-fund && node node_modules/electron/install.js",
+    "setup": "npm install --ignore-scripts --no-audit --no-fund && node node_modules/electron/install.js && node scripts/setup-node-pty.js",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
@@ -58,7 +58,12 @@
     "extraResources": [
       {
         "from": "../shell",
-        "to": "shell"
+        "to": "shell",
+        "filter": [
+          "**/*",
+          "!**/.zsh_history*",
+          "!**/.zcompdump*"
+        ]
       }
     ],
     "npmRebuild": false,
@@ -133,11 +138,7 @@
     "linux": {
       "target": [
         {
-          "target": "AppImage",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
+          "target": "AppImage"
         }
       ],
       "category": "Development",
