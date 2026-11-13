@@ -7,7 +7,13 @@
   const connection = document.createElement('span'); connection.id = 'terminal-connection';
   const notice = document.createElement('span');
   status.append(connection, notice); document.body.append(status);
-  window.LimpetTerminalUI = { announce: (message) => { notice.textContent = message; } };
+  const notices = new Map();
+  function refreshNotice() {
+    for (const id of notices.keys()) if (!tabs.has(id)) notices.delete(id);
+    const message = notices.get(activeId) || '';
+    if (notice.textContent !== message) notice.textContent = message;
+  }
+  window.LimpetTerminalUI = { announce: (message, id = activeId) => { notices.set(id, message); refreshNotice(); } };
   let statusBusy = false;
   async function updateStatus() {
     if (statusBusy || !window.limpet.getSessionStatus || activeId == null) return;
@@ -28,6 +34,7 @@
 
   // Keep semantic state in sync even when sessions are detached or restored.
   const syncTabs = () => {
+    refreshNotice();
     updateStatus();
     for (const [id, tab] of tabs) {
       const selected = id === activeId;

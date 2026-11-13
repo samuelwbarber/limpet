@@ -965,7 +965,7 @@ function showAgentSwitchResult(id, cmd, result) {
   dismiss.textContent = 'Dismiss';
   dismiss.onclick = () => { card.remove(); tab.term.focus(); };
   actions.append(dismiss); card.append(actions); tab.pane.append(card);
-  window.LimpetTerminalUI?.announce(message.textContent);
+  window.LimpetTerminalUI?.announce(message.textContent, id);
 }
 
 async function pickAccount(id, cmd, menu) {
