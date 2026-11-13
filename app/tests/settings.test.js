@@ -302,7 +302,7 @@ test('on macOS the defaults are the command-key shortcuts; elsewhere they are un
   assert.deepEqual({ ...mac, keybindings: win.keybindings }, win);
   assert.deepEqual(settings.defaults('linux'), win);
   assert.deepEqual(settings.defaults('win32').keybindings, {
-    newTab: 'Ctrl+Shift+T', closeTab: 'Ctrl+Shift+W', nextTab: 'Ctrl+Tab', prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,',
+    newTab: 'Ctrl+Shift+T', closeTab: 'Ctrl+Shift+W', nextTab: 'Ctrl+Tab', prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,', findOutput: 'Ctrl+Shift+F',
   });
   // The schema the page is built from carries that platform's default.
   const kb = settings.schemaMetadata('darwin').find((s) => s.id === 'keybindings');
