@@ -7,12 +7,34 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild (for example v0.1.2)
+        required: true
+        type: string
+      platform:
+        description: Platforms to rebuild
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+          - linux
+
+# Manual recovery uses this workflow from main but builds the immutable tag's
+# product sources. Never move the tag to repair release infrastructure.
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
 
 jobs:
   windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
     name: Build and publish installer
     runs-on: windows-latest
     defaults:
@@ -20,6 +42,8 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22 # Electron 44's npm package needs >= 22.12
@@ -29,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME != package.json version v$v" }
+          if ("v$v" -ne $env:RELEASE_TAG) { throw "tag $env:RELEASE_TAG != package.json version v$v" }
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Unit tests
@@ -40,9 +64,18 @@ jobs:
           # Optional code signing; unsigned when these secrets aren't set.
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npx electron-builder --win --publish always
+        shell: pwsh
+        run: |
+          # An empty CSC link is interpreted as a certificate path by the builder.
+          foreach ($name in @('WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD')) {
+            if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) {
+              Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+            }
+          }
+          npx electron-builder --win --publish always
 
   macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
     name: Build and publish macOS app
     runs-on: macos-latest
     defaults:
@@ -50,6 +83,8 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -58,7 +93,7 @@ jobs:
       - name: Tag matches package version
         run: |
           v=$(node -p "require('./package.json').version")
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json version v$v"; exit 1; }
+          [ "v$v" = "$RELEASE_TAG" ] || { echo "tag $RELEASE_TAG != package.json version v$v"; exit 1; }
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: node-pty's spawn helper must be executable (it is packaged as is)
@@ -76,6 +111,10 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Empty secrets must be absent, not empty certificate paths.
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then unset "$name"; fi
+          done
           extra=()
           if [ -z "${CSC_LINK:-}" ]; then
             echo 'No signing certificate: building unsigned.'
@@ -89,6 +128,7 @@ jobs:
           npx electron-builder --mac --publish always "${extra[@]}"
 
   linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
     name: Build Linux AppImage (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -104,6 +144,8 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -112,7 +154,7 @@ jobs:
       - name: Tag matches package version
         run: |
           v=$(node -p "require('./package.json').version")
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package.json version v$v"; exit 1; }
+          [ "v$v" = "$RELEASE_TAG" ] || { echo "tag $RELEASE_TAG != package.json version v$v"; exit 1; }
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
       - name: Ensure bundled PTY helpers are executable
