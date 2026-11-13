@@ -151,10 +151,26 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   page.on('pageerror', (e) => pageErrors.push(e.message));
   check('prompt appears', !!(await waitFor(async () => p.promptRe.test(await terminalText(page)), 30000)));
 
-  // Capture the launch line instead of starting an agent.
-  await electronApp.evaluate((_, echoCmd) => {
-    global.__limpetClaudeLaunch = (cmd, opts = {}) => `${echoCmd} "SWAPPED_${cmd}_${opts.resume || (opts.prompt ? 'PROMPT' : 'FRESH')}"`;
-  }, p.echo('').trim());
+  // The fake launch command writes a witness from the tab's actual shell.
+  // Main-process command generation alone cannot pass this test, and ConPTY
+  // repaint/scrollback cannot corrupt the execution evidence.
+  const launchWitness = path.join(home, 'executed-launches.txt');
+  fs.writeFileSync(launchWitness, '');
+  const launchRecords = () => fs.readFileSync(launchWitness, 'utf8').split(/\r?\n/).filter(Boolean);
+  let launchRecordStart = 0;
+  const newLaunchRecords = () => launchRecords().slice(launchRecordStart);
+  await electronApp.evaluate((_, { echoCmd, isWin, witness }) => {
+    const quote = isWin
+      ? (text) => "'" + String(text).replace(/'/g, "''") + "'"
+      : (text) => "'" + String(text).replace(/'/g, "'\\''") + "'";
+    global.__limpetClaudeLaunch = (cmd, opts = {}) => {
+      const marker = `SWAPPED_${cmd}_${opts.resume || (opts.prompt ? 'PROMPT' : 'FRESH')}`;
+      const record = isWin
+        ? `[IO.File]::AppendAllText(${quote(witness)}, ${quote(marker)} + [Environment]::NewLine)`
+        : `printf '%s\\n' ${quote(marker)} >> ${quote(witness)}`;
+      return `${record}; ${echoCmd} ${quote(marker)}`;
+    };
+  }, { echoCmd: p.echo('').trim(), isWin: p.isWin, witness: launchWitness });
   const userData = await electronApp.evaluate(({ app }) => app.getPath('userData'));
 
   // Stand in for an agent: a nested process under the tab's shell that prints
@@ -186,18 +202,17 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     check(reason, false);
     const outcome = await page.locator('.term-pane.active .agent-switch-result .text').allTextContents();
     if (outcome.length) console.log(`  handoff result: ${JSON.stringify(outcome)}`);
+    console.log(`  executed launches since move: ${JSON.stringify(newLaunchRecords())}`);
     await trace(page);
     await p.closeApp(electronApp);
     throw new Error(`Account scenario stopped: ${reason}`);
   };
-  let outputBeforeMove = [];
   const swapTo = async (cmd) => {
     const sourcePid = pid;
     const menu = await openMenu();
     if (!(await menuSettled(menu))) await abortScenario(`move to ${cmd}: account detection did not settle`);
-    // Keep a count of existing exact output lines. A repeated marker from an
-    // earlier move must never satisfy this move's assertion.
-    outputBeforeMove = (await terminalText(page)).split('\n').map((line) => line.trim());
+    // Only records appended by this move count, even for repeated markers.
+    launchRecordStart = launchRecords().length;
     await menu.locator(`.item[data-cmd="${cmd}"]`).click();
     if (!(await waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 30000))) {
       await abortScenario(`move to ${cmd}: account picker did not finish`);
@@ -209,10 +224,9 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
     }
     return true;
   };
-  const sawLaunchOutput = async (needle) => {
-    const before = outputBeforeMove.filter((line) => line === needle).length;
-    if (!(await waitFor(async () => (await terminalText(page)).split('\n').filter((line) => line.trim() === needle).length > before, 15000))) {
-      await abortScenario(`expected launch output was missing: ${needle}`);
+  const sawExecutedLaunch = async (needle) => {
+    if (!(await waitFor(() => newLaunchRecords().includes(needle), 15000))) {
+      await abortScenario(`expected shell-executed launch was missing: ${needle}`);
     }
     return true;
   };
@@ -260,7 +274,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('claude2 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
   check('claude2 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('claude2 -> claude3: the same session resumes in the same shell', !!(await sawLaunchOutput(`SWAPPED_claude3_${sid}`))); await trace(page);
+  check('claude2 -> claude3: the same session resumes in the same shell', !!(await sawExecutedLaunch(`SWAPPED_claude3_${sid}`))); await trace(page);
 
   // ---- claude1 -> claude3: resume by id ----
   pid = await claudeStandIn(sid);
@@ -270,7 +284,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('claude1 -> claude3: menu closes once the move is done', !!(await swapTo('claude3')));
   check('claude1 -> claude3: the running agent was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('claude1 -> claude3: the same session resumes in the same shell', !!(await sawLaunchOutput(`SWAPPED_claude3_${sid}`))); await trace(page);
+  check('claude1 -> claude3: the same session resumes in the same shell', !!(await sawExecutedLaunch(`SWAPPED_claude3_${sid}`))); await trace(page);
 
   // ---- claude1 -> codex1: native import (stubbed), aimed at codex1's home ----
   await electronApp.evaluate(() => {
@@ -278,14 +292,14 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   });
   pid = await claudeStandIn(sid);
   check('claude1 -> codex1: move completes', !!(await swapTo('codex1')));
-  check('claude1 -> codex1: the imported thread is resumed under codex1', !!(await sawLaunchOutput('SWAPPED_codex1_01a00000-0000-7000-8000-00000000abcd'))); await trace(page);
+  check('claude1 -> codex1: the imported thread is resumed under codex1', !!(await sawExecutedLaunch('SWAPPED_codex1_01a00000-0000-7000-8000-00000000abcd'))); await trace(page);
   check('claude1 -> codex1: the importer was pointed at ~/.codex-1', (await electronApp.evaluate(() => global.__limpetImportedInto)) === codexHome(1));
 
   // ---- claude1 -> codex: importer fails, so a handoff file and prompt ----
   await electronApp.evaluate(() => { global.__limpetCodexImport = async () => { throw new Error('importer unavailable'); }; });
   pid = await claudeStandIn(sid);
   check('claude1 -> codex (fallback): move completes', !!(await swapTo('codex')));
-  check('claude1 -> codex (fallback): codex starts with a continue prompt', !!(await sawLaunchOutput('SWAPPED_codex_PROMPT')));  const handoffs = fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('claude1-to-codex')) : [];
+  check('claude1 -> codex (fallback): codex starts with a continue prompt', !!(await sawExecutedLaunch('SWAPPED_codex_PROMPT')));  const handoffs = fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('claude1-to-codex')) : [];
   check('claude1 -> codex (fallback): a handoff file was written', handoffs.length >= 1); await trace(page);
   if (handoffs.length) {
     const md = fs.readFileSync(path.join(userData, 'handoff', handoffs[handoffs.length - 1]), 'utf8');
@@ -312,7 +326,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('codex -> claude1: move completes', !!(await swapTo('claude1')));
   check('codex -> claude1: the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  const swapped = await waitFor(async () => { const m = /SWAPPED_claude1_([0-9a-f-]{36})/.exec(await terminalText(page)); return m ? m[1] : null; }, 15000);
+  const swapped = await waitFor(() => { const m = /^SWAPPED_claude1_([0-9a-f-]{36})$/m.exec(newLaunchRecords().join('\n')); return m ? m[1] : null; }, 15000);
   check('codex -> claude1: a new Claude session is resumed', !!swapped && UUID.test(swapped)); await trace(page);
   if (swapped) {
     const file = path.join(projectDir, `${swapped}.jsonl`);
@@ -338,7 +352,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // Exercise the viewport regression: the new command must be observed even
   // when the user has scrolled to earlier output while the account menu closes.
   await page.evaluate(() => tabs.get(activeId).term.scrollToTop());
-  check('codex -> codex1: the same thread is resumed under codex1', !!(await sawLaunchOutput(`SWAPPED_codex1_${thread2}`))); await trace(page);
+  check('codex -> codex1: the same thread is resumed under codex1', !!(await sawExecutedLaunch(`SWAPPED_codex1_${thread2}`))); await trace(page);
   await page.evaluate(() => tabs.get(activeId).term.scrollToBottom());
   const copied = path.join(codexHome(1), 'sessions', '2026', '09', '04', rolloutName(thread2));
   check('codex -> codex1: the rollout was copied into ~/.codex-1 at the same dated path', fs.existsSync(copied) && fs.readFileSync(copied, 'utf8') === fs.readFileSync(path.join(codexDir, 'sessions', '2026', '09', '04', rolloutName(thread2)), 'utf8'));
@@ -362,7 +376,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('codex1 -> codex (shared): move completes', !!(await swapTo('codex')));
   check('codex1 -> codex (shared): the stand-in codex was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await sawLaunchOutput(`SWAPPED_codex_${thread3}`))); await trace(page);
+  check('codex1 -> codex (shared): the same thread is resumed under codex', !!(await sawExecutedLaunch(`SWAPPED_codex_${thread3}`))); await trace(page);
   check('codex1 -> codex (shared): nothing was copied', fs.readdirSync(path.join(codexDir, 'sessions'), { recursive: true }).filter((n) => String(n).includes(thread3)).length === 1 &&
     fs.lstatSync(path.join(codexHome(1), 'sessions')).isSymbolicLink());
 
@@ -380,8 +394,8 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await sleep(1500);
   writeRollout(codexDir, otherThread); // written later, as a busy chat elsewhere would be
   check('two chats: move completes', !!(await swapTo('codex')));
-  check('two chats: the tab\'s own thread is resumed, not the busier one', !!(await sawLaunchOutput(`SWAPPED_codex_${mineThread}`)) &&
-    !(await terminalText(page)).includes(`SWAPPED_codex_${otherThread}`));
+  check('two chats: the tab\'s own thread is resumed, not the busier one', !!(await sawExecutedLaunch(`SWAPPED_codex_${mineThread}`)) &&
+    !newLaunchRecords().includes(`SWAPPED_codex_${otherThread}`));
   try { other.kill(); } catch (_) { /* gone */ }
   fs.unlinkSync(launchNote);
 
@@ -406,12 +420,12 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('copilot1 -> copilot: move completes', !!(await swapTo('copilot')));
   check('copilot1 -> copilot: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('copilot1 -> copilot: the same chat is resumed', !!(await sawLaunchOutput(`SWAPPED_copilot_${copilotChat}`))); await trace(page);
+  check('copilot1 -> copilot: the same chat is resumed', !!(await sawExecutedLaunch(`SWAPPED_copilot_${copilotChat}`))); await trace(page);
   fs.unlinkSync(launchNote);
   for (const n of fs.readdirSync(chatDir)) if (n.startsWith('inuse.')) fs.unlinkSync(path.join(chatDir, n));
   pid = await standIn(standInExe('copilot'), '', chatDir);
   check('copilot -> claude1: move completes', !!(await swapTo('claude1')));
-  const fromCopilot = await waitFor(async () => { const m = /SWAPPED_claude1_([0-9a-f-]{36})/.exec((await terminalText(page)).split(`SWAPPED_copilot_${copilotChat}`).pop()); return m ? m[1] : null; }, 15000);
+  const fromCopilot = await waitFor(() => { const m = /^SWAPPED_claude1_([0-9a-f-]{36})$/m.exec(newLaunchRecords().join('\n')); return m ? m[1] : null; }, 15000);
   const carried = fromCopilot && path.join(projectDir, `${fromCopilot}.jsonl`);
   check('copilot -> claude1: the chat becomes a Claude transcript', !!carried && fs.existsSync(carried) &&
     fs.readFileSync(carried, 'utf8').includes('COPILOT_ASK tidy the readme') && fs.readFileSync(carried, 'utf8').includes('COPILOT_REPLY tidied'));
@@ -436,11 +450,11 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await page.keyboard.press('Escape');
   check('agy -> agy1: move completes', !!(await swapTo('agy1')));
   check('agy -> agy1: the stand-in was stopped', !!(await waitFor(() => pidGone(pid), 10000)));
-  check('agy -> agy1: the same conversation is resumed', !!(await sawLaunchOutput(`SWAPPED_agy1_${conv}`))); await trace(page);
+  check('agy -> agy1: the same conversation is resumed', !!(await sawExecutedLaunch(`SWAPPED_agy1_${conv}`))); await trace(page);
   pid = await standIn(standInExe('agy'), path.join(agyRoot, 'conversations', `${conv}.db`));
   check('agy -> codex: move completes', !!(await swapTo('codex')));
   const agyHandoffs = await waitFor(() => (fs.existsSync(path.join(userData, 'handoff')) ? fs.readdirSync(path.join(userData, 'handoff')).filter((n) => n.includes('agy-to-codex')) : []).find(Boolean), 15000);
-  check('agy -> codex: codex starts with a continue prompt from a handoff file', !!(await sawLaunchOutput('SWAPPED_codex_PROMPT')) && !!agyHandoffs &&
+  check('agy -> codex: codex starts with a continue prompt from a handoff file', !!(await sawExecutedLaunch('SWAPPED_codex_PROMPT')) && !!agyHandoffs &&
     fs.readFileSync(path.join(userData, 'handoff', agyHandoffs), 'utf8').includes('AGY_ASK make it faster'));
   if (agyHandoffs) fs.unlinkSync(path.join(userData, 'handoff', agyHandoffs));
 
@@ -507,9 +521,9 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // ---- picking an agent with nothing running starts it fresh ----
   menu = await openMenu();
   await menuSettled(menu);
-  outputBeforeMove = (await terminalText(page)).split('\n').map((line) => line.trim());
+  launchRecordStart = launchRecords().length;
   await menu.locator('.item[data-cmd="claude"]').click();
-  check('an account picked in an idle tab is started there', !!(await sawLaunchOutput('SWAPPED_claude_FRESH')));
+  check('an account picked in an idle tab is started there', !!(await sawExecutedLaunch('SWAPPED_claude_FRESH')));
 
   const disclosures = await electronApp.evaluate(() => global.__providerDisclosures);
   check('cross-provider moves disclose the transfer before continuing', disclosures.length > 0 && disclosures.every((d) => d.defaultId === d.buttons.indexOf('Cancel') && d.cancelId === d.buttons.indexOf('Cancel') && d.buttons.includes('Move conversation')));
