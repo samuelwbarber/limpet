@@ -13,7 +13,7 @@
     const message = notices.get(activeId) || '';
     if (notice.textContent !== message) notice.textContent = message;
   }
-  window.LimpetTerminalUI = { announce: (message, id = activeId) => { notices.set(id, message); refreshNotice(); } };
+  window.LimpetTerminalUI = { openSearch, announce: (message, id = activeId) => { notices.set(id, message); refreshNotice(); } };
   let statusBusy = false;
   async function updateStatus() {
     if (statusBusy || !window.limpet.getSessionStatus || activeId == null) return;
@@ -22,7 +22,7 @@
       const state = await window.limpet.getSessionStatus(id);
       if (id !== activeId || !state) return;
       const remote = state.remote;
-      const label = state.exited ? 'Session exited' : remote ? `SSH destination: ${typeof remote === 'string' ? remote : remote.host || remote.hostname || 'remote'}${state.remoteCwd ? ` - ${state.remoteCwd}` : ''}` : 'Local shell';
+      const label = state.exited ? 'Session exited' : remote ? `SSH destination: ${remote.target || 'unknown'}${state.remoteCwd?.cwd ? ` - ${state.remoteCwd.cwd}` : ''}${state.remoteCwd?.depth ? ` (${state.remoteCwd.depth} further hop(s))` : ''}` : 'Local shell';
       if (connection.textContent !== label) connection.textContent = label;
       connection.title = remote ? 'Reported SSH destination; this is not a connection heartbeat or a guarantee of session protection.' : 'Shell running on this computer';
     } catch { if (id === activeId && connection.textContent !== 'Session status unavailable') connection.textContent = 'Session status unavailable'; }
@@ -89,7 +89,7 @@
   document.getElementById('find-output').onclick = openSearch;
   document.addEventListener('keydown', (e) => {
     if (window.LimpetSettings.isOpen() || document.querySelector('dialog[open]')) return;
-    if ((e.ctrlKey && e.shiftKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); e.stopPropagation(); openSearch(); }
+    if (window.LimpetSettings.actionFor(e) === 'findOutput') { e.preventDefault(); e.stopPropagation(); openSearch(); }
     else if (e.key === 'Escape' && !bar.hidden) { e.preventDefault(); e.stopPropagation(); dismiss(); }
     else if (e.key === 'Escape' && document.querySelector('.account-menu')) requestAnimationFrame(() => accounts.focus());
   }, true);

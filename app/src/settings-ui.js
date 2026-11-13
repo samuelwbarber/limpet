@@ -82,6 +82,7 @@
     else if (action === 'nextTab') cycleTabs(1);
     else if (action === 'prevTab') cycleTabs(-1);
     else if (action === 'openSettings') toggle();
+    else if (action === 'findOutput') window.LimpetTerminalUI?.openSearch();
     else return false;
     return true;
   }
@@ -353,7 +354,7 @@
 
   // Focus outside a terminal (the tab bar, say): the shortcut still opens it.
   document.addEventListener('keydown', (e) => {
-    if (e.defaultPrevented || panel) return;
+    if (e.defaultPrevented || panel || document.querySelector('dialog[open]')) return;
     if (actionFor(e) === 'openSettings') { e.preventDefault(); open(); }
   });
 

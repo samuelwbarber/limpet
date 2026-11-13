@@ -23,6 +23,17 @@ const platform = require('./platform');
     assert.equal(await page.locator('#terminal-search .result').textContent(), 'No matches');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#terminal-search').isVisible(), false);
+    await page.evaluate(() => window.limpet.setSettings({ keybindings: { findOutput: 'Ctrl+Alt+F' } }));
+    await page.keyboard.press('Control+Alt+F');
+    assert.equal(await page.locator('#terminal-search').isVisible(), true);
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => window.limpet.setSettings({ keybindings: { findOutput: window.limpet.platform === 'darwin' ? 'Cmd+F' : 'Ctrl+Shift+F' } }));
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('term:status');
+      ipcMain.handle('term:status', () => ({ remote: { target: 'user@gpu-box', port: '2222' }, remoteCwd: { cwd: '/workspace/project', depth: 1 }, exited: false }));
+    });
+    await page.waitForFunction(() => document.getElementById('terminal-connection').textContent.includes('user@gpu-box - /workspace/project (1 further hop(s))'));
+    await app.evaluate(({ ipcMain }) => { ipcMain.removeHandler('term:status'); ipcMain.handle('term:status', () => ({ remote: null, remoteCwd: null, exited: false })); });
     await page.evaluate(() => { const dialog = document.createElement('dialog'); dialog.id = 'test-modal'; dialog.textContent = 'Modal'; document.body.append(dialog); dialog.showModal(); });
     await page.keyboard.press('Control+Shift+F');
     assert.equal(await page.locator('#terminal-search').isVisible(), false);

@@ -38,7 +38,7 @@ test('defaults are what limpet did before the settings page', () => {
   });
   assert.deepEqual(d.keybindings, {
     newTab: 'Ctrl+Shift+T', closeTab: 'Ctrl+Shift+W', nextTab: 'Ctrl+Tab',
-    prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,',
+    prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,', findOutput: 'Ctrl+Shift+F',
   });
   assert.equal(d.agents.failoverMode, 'offer');
   assert.equal(d.agents.failoverSameProvider, true);
@@ -295,7 +295,7 @@ test('the Mac command key is the Cmd modifier, canonical order Ctrl, Cmd, Alt, S
 test('on macOS the defaults are the command-key shortcuts; elsewhere they are unchanged', () => {
   const mac = settings.defaults('darwin');
   assert.deepEqual(mac.keybindings, {
-    newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,',
+    newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,', findOutput: 'Cmd+F',
   });
   // Only the shortcuts differ.
   const win = settings.defaults('win32');

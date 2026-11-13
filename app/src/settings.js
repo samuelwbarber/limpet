@@ -142,6 +142,7 @@ const SECTIONS = [
       nextTab: { label: 'Next tab', type: 'keybinding', default: 'Ctrl+Tab', validate: keybinding },
       prevTab: { label: 'Previous tab', type: 'keybinding', default: 'Ctrl+Shift+Tab', validate: keybinding },
       openSettings: { label: 'Open settings', type: 'keybinding', default: 'Ctrl+,', validate: keybinding },
+      findOutput: { label: 'Find in terminal output', type: 'keybinding', default: 'Ctrl+Shift+F', validate: keybinding },
     },
   },
   {
@@ -160,7 +161,7 @@ const SECTION = Object.fromEntries(SECTIONS.map((s) => [s.id, s]));
 // Cmd+W, Cmd+Shift+] / [, Cmd+,). Everything else is the same everywhere.
 const PLATFORM_DEFAULTS = {
   darwin: {
-    keybindings: { newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,' },
+    keybindings: { newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,', findOutput: 'Cmd+F' },
   },
 };
 
