@@ -115,6 +115,17 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
       LIMPET_LOCAL_AI_DIR: localAi, LIMPET_BACKDROP_SETUP: fakeSetup,
     }),
   });
+  // Only the provider disclosure is accepted here; no real agents or transcripts
+  // are used. Unexpected dialogs fail rather than accidentally authorizing work.
+  await electronApp.evaluate(({ dialog }) => {
+    global.__providerDisclosures = [];
+    dialog.showMessageBox = async (...args) => {
+      const options = args[args.length - 1];
+      if (options.title !== 'Move conversation to another provider?') throw new Error(`Unexpected dialog in account test: ${options.title}`);
+      global.__providerDisclosures.push(options);
+      return { response: 1 };
+    };
+  });
   const page = await electronApp.firstWindow();
   electronApp.process().stderr.on('data', (d) => process.stderr.write(`[main] ${d}`));
   const pageErrors = [];
@@ -175,9 +186,9 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   check('a plan with only a weekly window shows a dash for the 5-hour one', (await itemText(menu, 'codex', '.usage')) === '5h – · wk 0%');
   check('an exhausted limit reads as low', (await menu.locator('.item[data-cmd="codex"] .usage.low').count()) === 1);
   check('a tight 5-hour limit reads as mid', (await itemText(menu, 'codex1', '.usage')) === '5h 25% · wk 90%' && (await menu.locator('.item[data-cmd="codex1"] .usage.mid').count()) === 1);
-  check('an account whose usage could not be read says so', (await itemText(menu, 'claude3', '.usage')) === 'usage n/a' && /expired/.test(await menu.locator('.item[data-cmd="claude3"] .usage').getAttribute('title')));
-  check('an account with no usage fixture is left blank, not broken', (await itemText(menu, 'claude', '.usage')) === 'usage n/a');
-  check('footer names the accounts to sign in to next', (await menu.locator('.more').textContent()) === 'Sign in to more: claude2, claude4, codex2, codex3');
+  check('an account whose usage could not be read says so', (await itemText(menu, 'claude3', '.usage')) === 'Sign in required' && /expired/.test(await menu.locator('.item[data-cmd="claude3"] .usage').getAttribute('title')));
+  check('an account with no usage fixture reports usage unavailable', (await itemText(menu, 'claude', '.usage')) === 'Usage unavailable');
+  check('footer names the accounts to sign in to next', (await menu.locator('.more').textContent()).endsWith('Sign in to more: claude2, claude4, codex2, codex3'));
   check('menu reports no session in the tab', !!(await menuSettled(menu)) && /No agent session/.test(await menu.locator('.head').textContent()));
   await page.keyboard.press('Escape');
   check('Escape closes the menu', !!(await waitFor(() => menu.count().then((n) => n === 0), 3000)));
@@ -445,6 +456,8 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await menu.locator('.item[data-cmd="claude"]').click();
   check('an account picked in an idle tab is started there', !!(await seenOnScreen('SWAPPED_claude_FRESH')));
 
+  const disclosures = await electronApp.evaluate(() => global.__providerDisclosures);
+  check('cross-provider moves disclose the transfer before continuing', disclosures.length > 0 && disclosures.every((d) => d.defaultId === 0 && d.cancelId === 0 && d.buttons[1] === 'Move conversation'));
   check('no renderer page errors', pageErrors.length === 0);
   if (pageErrors.length) console.log('  page errors:', pageErrors.join(' | '));
   await p.closeApp(electronApp);
