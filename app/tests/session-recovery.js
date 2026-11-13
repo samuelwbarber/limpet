@@ -31,7 +31,12 @@ const p = require('./platform');
     await page.waitForFunction(() => terminalSnapshot(tabs.get(activeId).term).includes('project with spaces'));
     const saved = JSON.parse(fs.readFileSync(path.join(profile, 'workspace.json'), 'utf8'));
     assert.equal(saved.tabs.length, 2);
-    assert.equal(saved.tabs[1].cwd, restoredDir);
+    // Windows shell prompts expand 8.3 temp paths (RUNNER~1) to long names.
+    const canonicalPath = (value) => {
+      const resolved = fs.realpathSync.native(value);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    assert.equal(canonicalPath(saved.tabs[1].cwd), canonicalPath(restoredDir));
     assert.deepEqual(errors, []);
     await p.closeApp(app);
     app = null;
