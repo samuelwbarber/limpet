@@ -30,6 +30,13 @@ async function switchAgent(sess, cmd, deps) {
     let line = deps.launch(cmd, prepared.launch);
     if (!sess.proc || sess.exited) return { ok: false, reason: 'no shell' };
     if (current) {
+      // Importing can take a minute. The user may have exited the source and
+      // started another program while preparation awaited filesystem/CLI work.
+      const latest = await deps.detect(sess);
+      if (!latest || latest.pid !== current.pid || latest.cmd !== current.cmd || latest.sessionId !== current.sessionId) {
+        throw new Error('The running conversation changed while preparing the handoff. Retry the move.');
+      }
+      if (!sess.proc || sess.exited) throw new Error('The shell closed while preparing the handoff.');
       if (!(await deps.stop(sess, current.pid))) throw new Error(`Could not stop ${current.cmd}; it may still be running.`);
       stopped = true;
       await deps.pause();

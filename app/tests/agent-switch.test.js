@@ -134,6 +134,26 @@ test('verification reports timeout, wrong conversations, and handoff process det
   assert.match((await verifyLaunch(f.sess, target, {}, { ...base, detect: async () => null })).error, /shell exited/);
 });
 
+test('a source that exits or changes during async preparation is never stopped or written into', async () => {
+  for (const replacement of [null, { cmd: 'claude1', kind: 'claude', pid: 99, sessionId: 'saved' },
+    { cmd: 'claude1', kind: 'claude', pid: 12, sessionId: 'new-conversation' }]) {
+    let running = { cmd: 'claude1', kind: 'claude', pid: 12, sessionId: 'saved' };
+    const f = fixture({
+      detect: async () => running,
+      prepare: async () => {
+        await new Promise((resolve) => setImmediate(resolve));
+        running = replacement;
+        return { launch: { resume: 'imported' }, how: 'import' };
+      },
+    });
+    const result = await switchAgent(f.sess, 'codex1', f.deps);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /changed while preparing/);
+    assert.equal(f.calls.some(([name]) => name === 'stop' || name === 'write'), false);
+    assert.equal(f.sess.switching, false);
+  }
+});
+
 test('a freshly imported rollout selected heuristically cannot prove readiness', async () => {
   const f = fixture();
   const target = { cmd: 'codex1' };
