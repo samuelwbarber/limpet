@@ -185,14 +185,18 @@ async function type(page, text) {
   await page.locator('.term-pane.active .xterm-helper-textarea').focus();
   await page.keyboard.press(p.openSettingsKey);
   check(`${p.openSettingsKey} opens the settings page`, !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 1), 5000)));
-  await page.locator('.settings-nav button[aria-controls="settings-section-keybindings"]').click();
-  check('settings section navigation focuses its first control', await page.evaluate(() => document.activeElement.id === 'setting-keybindings-newTab'));
-  check('settings section navigation scrolls its control into view', await page.evaluate(() => {
-    const input = document.activeElement.getBoundingClientRect();
-    const viewport = document.querySelector('.settings-body').getBoundingClientRect();
-    return input.top >= viewport.top && input.bottom <= viewport.bottom;
-  }));
-  await page.locator('.settings-nav button[aria-controls="settings-section-terminal"]').click();
+  if (p.isMac) {
+    await page.locator('.settings-nav button[aria-controls="settings-section-keybindings"]').click();
+    check('settings section navigation focuses its first control', await page.evaluate(() => document.activeElement.id === 'setting-keybindings-newTab'));
+    check('settings section navigation scrolls its control into view', await page.evaluate(() => {
+      const input = document.activeElement.getBoundingClientRect();
+      const viewport = document.querySelector('.settings-body').getBoundingClientRect();
+      return input.top >= viewport.top && input.bottom <= viewport.bottom;
+    }));
+    await page.locator('.settings-nav button[aria-controls="settings-section-terminal"]').click();
+  } else {
+    check('other platforms keep the existing settings layout', await page.locator('.settings-nav').count() === 0 && await page.locator('.settings-status').textContent() === '');
+  }
   const fontSize = () => page.evaluate(() => tabs.get(activeId).term.options.fontSize);
   const sizeBefore = await fontSize();
   await page.locator('#setting-terminal-fontSize').fill(String(sizeBefore + 4));
@@ -202,7 +206,7 @@ async function type(page, text) {
   await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
   check('an out-of-range font size is refused with a reason', !!(await waitFor(async () => /between 8 and 32/.test(await page.locator('#setting-terminal-fontSize-error').textContent()), 5000)) &&
     (await fontSize()) === sizeBefore + 4);
-  check('save status explains validation errors', /highlighted/.test(await page.locator('.settings-status').textContent()));
+  if (p.isMac) check('save status explains validation errors', /highlighted/.test(await page.locator('.settings-status').textContent()));
   await page.locator('.settings-section:has(#setting-terminal-fontSize) .settings-reset').click();
   check('reset puts the default font size back', !!(await waitFor(async () => (await fontSize()) === 14, 5000)));
   await page.keyboard.press('Escape');

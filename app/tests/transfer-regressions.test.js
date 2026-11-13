@@ -15,6 +15,7 @@ const contents = new Map();
 const appEvents = new Map();
 let quitCalls = 0;
 let showDialog = async () => ({ response: 0 });
+const testPlatform = { ...require('../src/platform'), isMac: false };
 const electron = {
   app: { whenReady: () => new Promise(() => {}), getPath: () => home, on: (name, fn) => appEvents.set(name, fn), quit: () => { quitCalls++; } },
   BrowserWindow: { fromWebContents: () => null, getFocusedWindow: () => null, getAllWindows: () => [] },
@@ -27,6 +28,7 @@ function loadMain() {
   const load = Module._load;
   Module._load = function (name, ...args) {
     if (name === 'electron') return electron;
+    if (name === './platform') return testPlatform;
     if (name.includes('node-pty')) throw new Error('No PTY in regression tests');
     return load.call(this, name, ...args);
   };
@@ -105,15 +107,24 @@ test('a late transfer result cannot recreate a card after its tab is closed', as
   } finally { rc.runScp = saved; main.sessions.clear(); }
 });
 
-test('only running jobs trigger a close warning after the shell exits', async () => {
+test('only running jobs warn on Windows/Linux; Mac closes transfers without a warning', async () => {
   let dialogs = 0;
   showDialog = async () => { dialogs++; return { response: 0 }; };
   const sess = { exited: true, transfers: new Map([['a', { state: 'done' }], ['b', { state: 'failed' }], ['c', { state: 'cancelled' }]]) };
-  assert.equal(await main.confirmSessionClose(null, [sess]), true);
-  assert.equal(dialogs, 0);
-  sess.transfers.set('d', { state: 'running' });
-  assert.equal(await main.confirmSessionClose(null, [sess]), false);
-  assert.equal(dialogs, 1);
+  try {
+    for (const platform of ['win32', 'linux', 'darwin']) {
+      testPlatform.isMac = platform === 'darwin';
+      testPlatform.isWindows = platform === 'win32';
+      testPlatform.isLinux = platform === 'linux';
+      dialogs = 0;
+      sess.transfers.delete('d');
+      assert.equal(await main.confirmSessionClose(null, [sess]), true, platform);
+      assert.equal(dialogs, 0, platform);
+      sess.transfers.set('d', { state: 'running' });
+      assert.equal(await main.confirmSessionClose(null, [sess]), testPlatform.isMac, platform);
+      assert.equal(dialogs, testPlatform.isMac ? 0 : 1, platform);
+    }
+  } finally { testPlatform.isMac = false; }
 });
 
 test('cancellation stays pending until scp closes, even when close reports success', async () => {

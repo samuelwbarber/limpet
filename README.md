@@ -125,7 +125,8 @@ terminal output with **Ctrl+Shift+F** (or **Cmd+F** on macOS), move between
 matches, or jump to the bottom. Tabs scroll when there are too many to fit;
 keyboard users can navigate tabs and account choices with arrow keys.
 
-Closing live sessions asks first. When a shell exits, its output and exit code
+On macOS, closing a tab or window and quitting the app takes effect immediately.
+Windows and Linux ask before closing live sessions. When a shell exits, its output and exit code
 stay visible with **Restart shell**, **Copy output** and **Close** controls.
 On the next launch, Limpet offers to restore saved tab labels and local
 working directories. This starts fresh shells: it does not restore running

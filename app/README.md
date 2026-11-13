@@ -233,8 +233,9 @@ plain typing is predicted; Enter/Tab/arrows/escapes/pastes clear predictions.
 
 ## Session recovery and agent moves
 
-A stopped shell keeps its output, exit status and restart controls. Closing a
-live tab or window asks first. On startup, saved tab labels and local directories
+A stopped shell keeps its output, exit status and restart controls. On macOS,
+closing tabs or windows and quitting the app takes effect immediately. Windows
+and Linux ask before closing live sessions. On startup, saved tab labels and local directories
 can be restored into fresh shells; commands, remote connections and output are
 not replayed. Workspace metadata is kept in `userData/workspace.json`.
 

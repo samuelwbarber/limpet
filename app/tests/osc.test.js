@@ -16,6 +16,7 @@ const { createTopicProfile } = require('../src/backdrop');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-osc-'));
 const dialogCalls = [];
 let dialogResponse = 1;
+const testPlatform = { ...require('../src/platform'), isMac: false };
 function loadMain() {
   const savedHome = os.homedir;
   os.homedir = () => home; // Downloads lands in the temp home
@@ -28,6 +29,7 @@ function loadMain() {
   const load = Module._load;
   Module._load = function (req, ...rest) {
     if (req === 'electron') return electron;
+    if (req === './platform') return testPlatform;
     if (req.includes('node-pty')) throw new Error('not in tests');
     return load.call(this, req, ...rest);
   };
@@ -271,10 +273,21 @@ test('exits preserve session and exit reason until deliberate close, aborting tr
   assert.ok(!sessions.has(s.id));
 });
 
-test('closing stopped sessions needs no dialog; live shells require confirmation', async () => {
-  const count = dialogCalls.length;
-  assert.equal(await confirmSessionClose(null, [{ exited: true }]), true);
-  assert.equal(dialogCalls.length, count);
-  assert.equal(await confirmSessionClose(null, [{ exited: false }]), true);
-  assert.equal(dialogCalls.length, count + 1);
+test('Mac closes immediately; Windows/Linux confirm live shells and skip stopped sessions', async () => {
+  try {
+    for (const platform of ['win32', 'linux', 'darwin']) {
+      testPlatform.isMac = platform === 'darwin';
+      testPlatform.isWindows = platform === 'win32';
+      testPlatform.isLinux = platform === 'linux';
+      const count = dialogCalls.length;
+      assert.equal(await confirmSessionClose(null, [{ exited: true }]), true, platform);
+      assert.equal(dialogCalls.length, count, platform);
+      dialogResponse = 0;
+      assert.equal(await confirmSessionClose(null, [{ exited: false }]), testPlatform.isMac, platform);
+      assert.equal(dialogCalls.length, count + (testPlatform.isMac ? 0 : 1), platform);
+      dialogResponse = 1;
+      assert.equal(await confirmSessionClose(null, [{ exited: false }]), true, platform);
+      assert.equal(dialogCalls.length, count + (testPlatform.isMac ? 0 : 2), platform);
+    }
+  } finally { testPlatform.isMac = false; dialogResponse = 1; }
 });

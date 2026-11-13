@@ -12,9 +12,18 @@ const p = require('./platform');
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.waitForFunction(() => typeof tabs !== 'undefined' && tabs.size === 1);
-    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 0 }); });
-    await page.locator('.tab .close').click();
-    assert.equal(await page.locator('.tab').count(), 1, 'cancel preserves tab');
+    await app.evaluate(({ dialog }) => { globalThis.closeDialogs = 0; dialog.showMessageBox = async () => { globalThis.closeDialogs++; return { response: 0 }; }; });
+    if (p.isMac) {
+      await page.evaluate(() => newTab());
+      await page.waitForFunction(() => tabs.size === 2);
+      await page.locator('.tab.active .close').click();
+      await page.waitForFunction(() => tabs.size === 1);
+      assert.equal(await app.evaluate(() => globalThis.closeDialogs), 0, 'Mac live tab closes without confirmation');
+    } else {
+      await page.locator('.tab .close').click();
+      assert.equal(await page.locator('.tab').count(), 1, 'cancel preserves tab');
+      assert.equal(await app.evaluate(() => globalThis.closeDialogs), 1, 'other platforms retain the close confirmation');
+    }
     await page.evaluate(() => window.limpet.sendInput(activeId, 'exit 7\r'));
     await page.getByText('Shell stopped (code 7). Output is kept above.', { exact: true }).waitFor({ timeout: 30000 });
     assert.equal(await page.locator('.tab').count(), 1, 'failed exit preserves tab');
@@ -40,7 +49,13 @@ const p = require('./platform');
     };
     assert.equal(canonicalPath(saved.tabs[1].cwd), canonicalPath(restoredDir));
     assert.deepEqual(errors, []);
-    await p.closeApp(app);
+    if (p.isMac) {
+      // The dialog stub refuses every close. A successful Quit therefore proves
+      // that live sessions no longer trigger a confirmation on macOS.
+      const closed = app.waitForEvent('close');
+      await app.evaluate(({ app }) => { setTimeout(() => app.quit(), 0); });
+      await closed;
+    } else await p.closeApp(app);
     app = null;
     // A test-only entrypoint answers the restore prompt before the first IPC.
     const entry = path.join(p.testHome, 'restore-entry.cjs');
@@ -51,8 +66,16 @@ const p = require('./platform');
     await restored.evaluate(() => window.limpet.sendInput(activeId, 'pwd\r'));
     await restored.waitForFunction(() => terminalSnapshot(tabs.get(activeId).term).includes('project with spaces'));
     assert.equal(await restored.locator('.session-exit').count(), 0);
+    if (p.isMac) {
+      await app.evaluate(({ dialog }) => { globalThis.closeDialogs = 0; dialog.showMessageBox = async () => { globalThis.closeDialogs++; return { response: 0 }; }; });
+      const closed = restored.waitForEvent('close');
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+      await closed;
+      assert.equal(await app.evaluate(() => globalThis.closeDialogs), 0, 'Mac live window closes without confirmation');
+      assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 0);
+    }
     console.log('PASS saved tab directories restored into fresh local shells');
-    console.log('PASS cancellation, retained exit status, restart and terminal input');
+    console.log(`PASS ${p.isMac ? 'immediate tab/window/quit' : 'close cancellation'}, retained exit status, restart and terminal input`);
   } finally {
     if (app) await p.closeApp(app);
     p.cleanup();

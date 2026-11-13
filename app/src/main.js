@@ -1329,6 +1329,8 @@ function openExternalUrl(rawUrl) {
 }
 
 async function confirmSessionClose(browserWin, owned) {
+  // Mac closes (tabs, windows and Quit) are immediate, including live shells.
+  if (platform.isMac) return true;
   const live = owned.filter((sess) => !sess.exited || [...(sess.transfers?.values() || [])].some((job) => job.state === 'running'));
   if (!live.length) return true;
   const { response } = await dialog.showMessageBox(browserWin, {

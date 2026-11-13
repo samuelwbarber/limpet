@@ -161,7 +161,7 @@
     const status = panel.querySelector('.settings-status');
     const invalid = Array.from(fields.values()).some((f) => f.error.textContent);
     status.classList.toggle('has-error', !!saveMessage || invalid);
-    status.textContent = saveMessage || (invalid ? 'Check the highlighted settings' : saving ? 'Saving…' : pendingCommits.size ? 'Waiting to save…' : 'Changes save automatically');
+    status.textContent = saveMessage || (IS_MAC ? (invalid ? 'Check the highlighted settings' : saving ? 'Saving…' : pendingCommits.size ? 'Waiting to save…' : 'Changes save automatically') : '');
   }
 
   async function save(sectionId, partial) {
@@ -344,7 +344,7 @@
     const head = el('div', 'settings-head');
     const title = el('h1', '', 'Settings');
     title.id = 'settings-title';
-    const where = el('span', 'settings-status', 'Changes save automatically');
+    const where = el('span', 'settings-status', IS_MAC ? 'Changes save automatically' : '');
     where.setAttribute('role', 'status');
     const close = el('button', 'settings-close', '×');
     close.type = 'button';
@@ -353,11 +353,12 @@
     close.addEventListener('click', () => closePanel());
     head.append(title, where, close);
     const body = el('div', 'settings-body');
-    const navigation = el('nav', 'settings-nav');
-    navigation.setAttribute('aria-label', 'Settings sections');
+    const navigation = IS_MAC ? el('nav', 'settings-nav') : null;
+    navigation?.setAttribute('aria-label', 'Settings sections');
     for (const section of state.schema || []) {
       const box = buildSection(section);
       body.append(box);
+      if (!navigation) continue;
       const jump = el('button', '', section.label);
       jump.type = 'button';
       jump.setAttribute('aria-controls', box.id);
@@ -367,7 +368,9 @@
       });
       navigation.append(jump);
     }
-    dialog.append(head, navigation, body);
+    dialog.append(head);
+    if (navigation) dialog.append(navigation);
+    dialog.append(body);
     overlay.append(dialog);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closePanel(); });
     overlay.addEventListener('keydown', (e) => {
