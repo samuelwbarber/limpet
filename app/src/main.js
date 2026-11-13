@@ -534,31 +534,55 @@ function fmtBytes(n) {
 }
 
 function startDownload(sess, name, kind) {
-  endDownload(sess); // drop any half-received one first
+  endDownload(sess);
   try {
     const dir = downloadsDir();
-    const base = path.basename(name);
-    const safe = /^\.*$/.test(base) ? 'download' : base; // '', '.', '..'
-    if (kind === 'dir') {
-      // Unpack into a folder of its own, never over what's already in
-      // Downloads: the tar's top-level folder is stripped and its contents land
-      // in "<name>" (or "<name> (1)"...), which we create fresh.
-      const dest = uniqueDest(dir, safe);
-      fs.mkdirSync(dest);
-      const proc = spawn('tar', ['-xf', '-', '--strip-components=1', '-C', dest], { windowsHide: true });
-      const dl = { kind, name: path.basename(dest), dest, bytes: 0, proc, failed: false };
-      proc.on('error', () => { dl.failed = true; unpause(sess, dl); sendData(sess, `\r\n\x1b[31m[limpet] download failed: tar not available\x1b[0m\r\n`); });
-      proc.stdin.on('error', () => { /* closed early */ });
-      sess.dl = dl;
+    // Strip both platforms' separators and Windows device/alternate-stream names.
+    const base = path.win32.basename(path.posix.basename(name)).replace(/[<>:"|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '');
+    const safe = !base || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(base) ? 'download' : base;
+    let dest, fd;
+    for (;;) {
+      dest = uniqueDest(dir, safe);
+      try {
+        if (kind === 'dir') fs.mkdirSync(dest);
+        else fd = fs.openSync(dest, 'wx'); // reserve synchronously across tabs
+        break;
+      } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    }
+    const dl = { kind: kind === 'dir' ? 'dir' : 'file', name: path.basename(dest), dest, bytes: 0, failed: false };
+    sess.dl = dl;
+    const fail = (message) => {
+      if (dl.failed || dl.cancelled) return;
+      dl.failed = true;
+      unpause(sess, dl);
+      sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${message}\x1b[0m\r\n`);
+      if (dl.closed) { try { fs.rmSync(dl.dest, { recursive: true, force: true }); } catch (_) {} }
+    };
+    const closed = () => {
+      dl.closed = true;
+      unpause(sess, dl);
+      if (dl.failed || dl.cancelled) { try { fs.rmSync(dl.dest, { recursive: true, force: true }); } catch (_) {} }
+    };
+    if (dl.kind === 'dir') {
+      dl.proc = spawn('tar', ['-xf', '-', '--strip-components=1', '-C', dest], { windowsHide: true });
+      dl.proc.stdout.resume();
+      dl.proc.stderr.resume(); // never let diagnostics fill the pipe and stall extraction
+      dl.proc.on('error', (e) => fail(e.message));
+      dl.proc.stdin.on('error', (e) => fail(e.message));
+      dl.proc.on('close', (code) => {
+        if (!dl.cancelled) {
+          if (code !== 0 || !dl.finished) fail(`tar exited ${code === null ? 'without an exit code' : code}${!dl.finished ? ' before the download finished' : ''}`);
+          else if (!dl.failed) sendData(sess, `\r\n\x1b[32m[limpet] extracted ${dl.name} (${fmtBytes(dl.bytes)}) to Downloads\x1b[0m\r\n`);
+        }
+        closed();
+      });
     } else {
-      const dest = uniqueDest(dir, safe);
-      const dl = { kind: 'file', name: path.basename(dest), dest, bytes: 0, failed: false };
-      dl.ws = fs.createWriteStream(dest);
-      dl.ws.on('error', (e) => { dl.failed = true; unpause(sess, dl); sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`); });
-      sess.dl = dl;
+      dl.ws = fs.createWriteStream(dest, { fd });
+      dl.ws.on('error', (e) => fail(e.message));
+      dl.ws.on('close', closed);
     }
   } catch (e) {
-    sess.dl = null;
+    endDownload(sess);
     sendData(sess, `\r\n\x1b[31m[limpet] download failed: ${e.message}\x1b[0m\r\n`);
   }
 }
@@ -592,15 +616,16 @@ function finishDownload(sess) {
   if (!dl) return;
   if (dl.failed) { endDownload(sess); return; }
   sess.dl = null;
-  const done = (verb) => sendData(sess, `\r\n\x1b[32m[limpet] ${verb} ${dl.name} (${fmtBytes(dl.bytes)}) to Downloads\x1b[0m\r\n`);
+  dl.finished = true;
+  // The finish marker can share a chunk with the final write: there may be no
+  // drain event after end(), so release PTY backpressure explicitly.
+  unpause(sess, dl);
   if (dl.ws) {
-    dl.ws.end(() => done('saved'));
-  } else if (dl.proc) {
-    dl.proc.on('close', (code) => {
-      if (code === 0 || code == null) done('extracted');
-      else sendData(sess, `\r\n\x1b[31m[limpet] download: tar exited ${code}\x1b[0m\r\n`);
+    dl.ws.end(() => {
+      if (!dl.failed) sendData(sess, `\r\n\x1b[32m[limpet] saved ${dl.name} (${fmtBytes(dl.bytes)}) to Downloads\x1b[0m\r\n`);
     });
-    try { dl.proc.stdin.end(); } catch (_) { /* already closed */ }
+  } else if (dl.proc) {
+    try { dl.proc.stdin.end(); } catch (_) { /* error listener reports it */ }
   }
 }
 
@@ -610,8 +635,10 @@ function endDownload(sess) {
   const dl = sess && sess.dl;
   if (!dl) return;
   sess.dl = null;
+  dl.cancelled = true;
   unpause(sess, dl);
   const cleanup = () => { try { fs.rmSync(dl.dest, { recursive: true, force: true }); } catch (_) { /* ignore */ } };
+  if (dl.closed) { cleanup(); return; }
   try { if (dl.ws) { dl.ws.on('close', cleanup); dl.ws.destroy(); } } catch (_) { /* ignore */ }
   try { if (dl.proc) { dl.proc.on('close', cleanup); dl.proc.kill(); } } catch (_) { /* ignore */ }
 }

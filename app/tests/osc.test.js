@@ -202,6 +202,33 @@ test("xssh/cwd reports need the token, and aim a dropped folder's scp", async ()
   } finally { remoteCopy.io.spawn = saved; dialogResponse = 1; }
 });
 
+test('simultaneous tabs reserve distinct download names before writes open', async () => {
+  const one = mk();
+  const two = mk();
+  const header = `${E}]5379;dl;h;${b64('same.txt')};file;${tok}${B}`;
+  forwardOutput(one, header);
+  forwardOutput(two, header);
+  forwardOutput(one, `${E}]5379;dl;d;${b64('one')}${B}${E}]5379;dl;f${B}`);
+  forwardOutput(two, `${E}]5379;dl;d;${b64('two')}${B}${E}]5379;dl;f${B}`);
+  assert.ok(await waitFor(() => /saved/.test(screen(one)) && /saved/.test(screen(two))));
+  assert.strictEqual(fs.readFileSync(path.join(dl, 'same.txt'), 'utf8'), 'one');
+  assert.strictEqual(fs.readFileSync(path.join(dl, 'same (1).txt'), 'utf8'), 'two');
+});
+
+test('invalid tar reports failure and removes partial output', async () => {
+  const s = mk();
+  forwardOutput(s, `${E}]5379;dl;h;${b64('broken-folder')};dir;${tok}${B}${E}]5379;dl;d;${b64('not a tar archive')}${B}${E}]5379;dl;f${B}`);
+  assert.ok(await waitFor(() => /download failed/.test(screen(s)) && !fs.existsSync(path.join(dl, 'broken-folder'))));
+  assert.doesNotMatch(screen(s), /extracted/);
+});
+
+test('download names cannot address Windows alternate streams', async () => {
+  const s = mk();
+  forwardOutput(s, `${E}]5379;dl;h;${b64('thing.txt:hidden')};file;${tok}${B}${E}]5379;dl;d;${b64('safe')}${B}${E}]5379;dl;f${B}`);
+  assert.ok(await waitFor(() => /saved/.test(screen(s))));
+  assert.strictEqual(fs.readFileSync(path.join(dl, 'thing.txt_hidden'), 'utf8'), 'safe');
+});
+
 test('small drops never type into a live agent; cancellation starts no copy', async () => {
   const file = path.join(home, 'small.txt');
   fs.writeFileSync(file, 'hello');
