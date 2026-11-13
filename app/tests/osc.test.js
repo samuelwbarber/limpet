@@ -15,6 +15,7 @@ const { createTopicProfile } = require('../src/backdrop');
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-osc-'));
 const dialogCalls = [];
+let dialogResponse = 1;
 function loadMain() {
   const savedHome = os.homedir;
   os.homedir = () => home; // Downloads lands in the temp home
@@ -22,7 +23,7 @@ function loadMain() {
     app: { whenReady: () => new Promise(() => {}), getPath: () => path.join(home, 'userData'), on() {}, quit() {} },
     BrowserWindow: { fromWebContents: () => null }, ipcMain: { handle() {}, on() {} }, clipboard: {}, screen: {}, shell: {},
     webContents: { fromId: () => null },
-    dialog: { showMessageBox: async (o) => { dialogCalls.push(o); return { response: 1 }; } },
+    dialog: { showMessageBox: async (o) => { dialogCalls.push(o); return { response: dialogResponse }; } },
   };
   const load = Module._load;
   Module._load = function (req, ...rest) {
@@ -179,6 +180,7 @@ test("xssh/cwd reports need the token, and aim a dropped folder's scp", async ()
     await dropFiles(s, [folder]);
     assert.match(screen(s), /isn't in an xssh session.*wput/);
     // a real xssh session: host + prompt directory -> scp there
+    dialogResponse = 0;
     s = mk();
     forwardOutput(s, `${E}]5379;xssh;${b64('me@box')};2222;${tok}${B}${E}]5379;cwd;${b64('/srv/in')};0;${tok}${B}$ `);
     assert.strictEqual(screen(s), '$ ');
@@ -197,5 +199,19 @@ test("xssh/cwd reports need the token, and aim a dropped folder's scp", async ()
     await dropFiles(s, [folder]);
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(typed.length, 0); // nothing was typed into the shell
-  } finally { remoteCopy.io.spawn = saved; }
+  } finally { remoteCopy.io.spawn = saved; dialogResponse = 1; }
+});
+
+test('small drops never type into a live agent; cancellation starts no copy', async () => {
+  const file = path.join(home, 'small.txt');
+  fs.writeFileSync(file, 'hello');
+  const s = mk();
+  s.remote = { target: 'me@box', port: '' };
+  s.remoteCwd = { cwd: '/workspace', depth: 0 };
+  const before = typed.length;
+  const result = await dropFiles(s, [file]);
+  assert.strictEqual(result.cancelled, true);
+  assert.strictEqual(typed.length, before);
+  assert.match(dialogCalls.at(-1).message, /me@box:\/workspace/);
+  assert.match(dialogCalls.at(-1).detail, /replaced/);
 });

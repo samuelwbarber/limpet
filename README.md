@@ -75,15 +75,18 @@ come along.
 
 ## Drag and drop
 
-Drop a file onto the limpet window while you're in an SSH session and it lands
-in the remote's current directory, reconstructed over the wire via `base64`,
-so it works on any box with coreutils. Folders and files over 20 MB go over
-`scp` instead, to the same directory: inside `xssh` the remote prompt tells
-limpet where it is, and xssh tells it the host. That copy is non-interactive,
-so it needs key or agent auth, and it only reaches the host `xssh` connected
-to (not one you hopped to from there). Otherwise limpet says why and you can
-use `wput <files>`, a client-side `scp` that defaults to your last `xssh` host
-and can prompt for a password.
+Drop files or folders onto an `xssh` tab to copy them to its reported remote
+working directory. Limpet previews the host, directory and filenames before
+sending, and explains that existing names will be replaced. Every size uses a
+separate `scp` process, so dropping a file never types its contents into a
+running command or coding agent.
+
+A transfer card shows the destination and result, with **Cancel**, **Retry** and
+**Dismiss**. Byte progress is not available from this copy process. Cancellation
+can leave partial files remotely; retry confirms the current destination again.
+Copies need key or SSH-agent authentication. Unsupported paths, nested hops,
+and tabs without a known `xssh` destination explain the limitation; use `wput`
+from the client for those cases.
 
 <p align="center"><img src="docs/media/drop.gif" width="840" alt="drag and drop demo: file dropped onto the window arrives in the remote directory" /></p>
 

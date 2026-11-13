@@ -195,19 +195,18 @@ three are adjustable in [Settings](#settings)).
 
 ## Drag-and-drop upload
 
-Drop files onto the window and limpet "pastes" them into the current session: it
-types a `base64 -d` here-doc that reconstructs each file in the shell's current
-directory. So inside an `xssh`/`ssh` session the file lands in your remote cwd,
-with nothing installed on the remote but coreutils. Pasting is for files up to
-20 MB. Folders and bigger files are copied with `scp` (`-r`, `BatchMode=yes`,
-your `~/.ssh/id_ed25519` if present) to `host:<remote cwd>/`, running beside
-the shell with a status line when it starts and ends. That needs an `xssh`
-session in the tab: xssh reports the host and port (`5379;xssh`), and the
-injected helpers report each bash prompt's `$PWD` and hop depth (`5379;cwd`),
-both carrying the app's token. limpet refuses, saying why, when there's no
-xssh connection, the prompt is past an `xssh` hop (scp can't reach it), the
-directory has spaces or shell characters (older scp would mangle them), or
-the helpers run under plain `sh`; `wput` covers those.
+Files and folders of every size are copied over `scp` to the directory last
+reported by the remote prompt in an `xssh` tab. A confirmation previews the
+host, directory, filenames and overwrite behaviour. The destination stays fixed
+for that operation even if the terminal subsequently changes directory.
+
+Copies run outside the live terminal, with a transfer card for status,
+cancellation and retry. Byte progress is unavailable; cancellation may leave a
+partial remote file. Retry rechecks and confirms the current destination.
+Authentication uses SSH keys or an agent. Unknown destinations, nested hops and
+paths unsafe for older scp versions are refused with an explanation; use `wput`
+from the client in those cases. Dropping into a local shell never injects Unix
+transfer commands into PowerShell or a running program.
 
 ## Predictive echo (laggy links)
 

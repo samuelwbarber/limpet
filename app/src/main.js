@@ -758,25 +758,52 @@ function backdropLimits() {
 // prompt, when xssh told us the host and that prompt is on it (see
 // remote-copy.js). Otherwise they're refused with the reason.
 async function dropFiles(sess, paths) {
-  if (!sess || !sess.proc) return { ok: false };
-  const entries = [];
+  if (!sess || !sess.proc || sess.exited) return { ok: false, reason: 'The terminal has exited.' };
+  const say = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
+  const refuse = (reason) => { say(33, reason); return { ok: false, reason }; };
+  if (!Array.isArray(paths) || !paths.length || paths.length > 200 || paths.some((p) => typeof p !== 'string' || !path.isAbsolute(p))) {
+    return refuse('Drop up to 200 local files or folders.');
+  }
+  const plan = remoteCopy.planDrop(sess.remote, sess.remoteCwd);
+  if (!plan.ok) return refuse(`Can't send files: ${plan.reason}. Use wput instead.`);
   for (const p of paths) {
     try {
       const st = fs.statSync(p);
-      entries.push({ path: p, isDir: st.isDirectory(), size: st.size });
-    } catch (_) { entries.push({ path: p, isDir: false, size: 0 }); } // injectFiles reports it
+      if (!st.isFile() && !st.isDirectory()) return refuse(`Not a regular file or folder: ${p}`);
+    } catch (e) { return refuse(`Can't read ${p}: ${e.code || e.message}`); }
   }
-  const { paste, copy } = remoteCopy.splitDrop(entries, MAX_DROP_BYTES);
-  const say = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
-  let copied = null;
-  if (copy.length) {
-    const plan = remoteCopy.planDrop(sess.remote, sess.remoteCwd);
-    const names = copy.map((p) => path.basename(p)).join(', ');
-    if (!plan.ok) say(33, `can't send ${names} (folders and files over ${MAX_DROP_BYTES / 1048576} MB go over scp): ${plan.reason}. Use wput instead.`);
-    else copied = remoteCopy.runScp({ ...plan, paths: copy, key: remoteCopy.defaultKey() }, say);
-  }
-  const pasted = paste.length ? await injectFiles(sess, paste) : { ok: true, sent: [] };
-  return { ...pasted, copying: !!copied }; // scp carries on in the background
+  const destination = `${plan.target}:${plan.dir}`;
+  const wc = sessionWebContents(sess);
+  const win = wc && BrowserWindow.fromWebContents(wc);
+  const opts = {
+    type: 'question', buttons: ['Send files', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+    title: 'Send files', message: `Send ${paths.length} item(s) to ${destination}?`,
+    detail: `${paths.map((p) => path.basename(p)).join('\n')}\n\nExisting files with the same names will be replaced. A cancelled copy may leave partial files. Uses SSH key or agent authentication.`,
+  };
+  const { response } = await (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts));
+  if (response !== 0) return { ok: false, cancelled: true };
+  // The destination is frozen at confirmation. Never silently follow a later cd/hop.
+  if (!sess.proc || sess.exited) return refuse('The terminal exited before the transfer started.');
+  if (!sess.transfers) sess.transfers = new Map();
+  // Bound retained history, but never evict a running operation.
+  for (const [id, old] of sess.transfers) if (sess.transfers.size >= 30 && old.state !== 'running') sess.transfers.delete(id);
+  if (sess.transfers.size >= 30) return refuse('Too many transfers are running. Wait for one to finish.');
+  const id = crypto.randomUUID();
+  const job = { id, paths: [...paths], destination, state: 'running', controller: new AbortController() };
+  sess.transfers.set(id, job);
+  const update = (message) => sendToSession(sess, 'transfer:status', {
+    sessionId: sess.id, id, destination, names: paths.map((p) => path.basename(p)), state: job.state, message,
+  });
+  update('Copying over SSH. Byte progress is unavailable.');
+  remoteCopy.runScp({ ...plan, paths, key: remoteCopy.defaultKey(), signal: job.controller.signal }, (color, msg) => {
+    job.message = msg; say(color, msg);
+  }).then((ok) => {
+    job.state = job.controller.signal.aborted ? 'cancelled' : ok ? 'done' : 'failed';
+    update(job.message);
+  }).catch((e) => {
+    job.state = 'failed'; update(e.message);
+  });
+  return { ok: true, copying: true, id };
 }
 
 function backdropStatus(sess, state, message = '') {
@@ -1356,6 +1383,23 @@ function registerIpc() {
   ipcMain.handle('term:drop-files', (event, { id, paths }) => {
     const sess = ownedSession(event, id);
     return sess ? dropFiles(sess, paths) : { ok: false };
+  });
+  ipcMain.handle('transfer:cancel', (event, { sessionId, id } = {}) => {
+    const job = ownedSession(event, sessionId)?.transfers?.get(id);
+    if (!job || job.state !== 'running') return false;
+    job.controller.abort();
+    return true;
+  });
+  ipcMain.handle('term:status', (event, id) => {
+    const sess = ownedSession(event, id);
+    return sess ? { remote: sess.remote || null, remoteCwd: sess.remoteCwd || null, exited: !!sess.exited } : null;
+  });
+  ipcMain.handle('transfer:retry', (event, { sessionId, id } = {}) => {
+    const sess = ownedSession(event, sessionId);
+    const job = sess?.transfers?.get(id);
+    if (!job || job.state === 'running') return { ok: false };
+    // Re-plan and confirm the current destination, which might have changed.
+    return dropFiles(sess, job.paths);
   });
   ipcMain.handle('claude:accounts', (event, id) => {
     if (!ownedSession(event, id)) return { accounts: [], more: [] };

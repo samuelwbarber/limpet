@@ -84,6 +84,30 @@ function fakeSpawn(behave) {
   return { fn, calls };
 }
 
+test('runScp cancellation kills only its copy process and never reports success', async () => {
+  const saved = rc.io.spawn;
+  const controller = new AbortController();
+  let killed = 0;
+  const lines = [];
+  try {
+    rc.io.spawn = () => {
+      const c = new EventEmitter();
+      c.stderr = new EventEmitter();
+      c.kill = () => { killed++; setImmediate(() => c.emit('close', 0)); };
+      return c;
+    };
+    const result = rc.runScp({ paths: ['/pc/a'], target: 'box', dir: '/srv', signal: controller.signal }, (_, text) => lines.push(text));
+    controller.abort();
+    assert.strictEqual(await result, false);
+    assert.strictEqual(killed, 1);
+    await new Promise(setImmediate);
+    assert.strictEqual(lines.length, 2);
+    assert.match(lines[1], /cancelled.*partial files/);
+    rc.io.spawn = () => { throw new Error('must not spawn'); };
+    assert.strictEqual(await rc.runScp({ paths: ['/pc/a'], target: 'box', dir: '/srv', signal: controller.signal }, () => {}), false);
+  } finally { rc.io.spawn = saved; }
+});
+
 test('runScp: reports progress and success without a real scp', async () => {
   const saved = rc.io.spawn;
   const lines = [];

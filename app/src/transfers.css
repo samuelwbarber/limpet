@@ -1,0 +1,6 @@
+#transfers { position: fixed; right: 12px; top: 48px; z-index: 15; width: min(360px, calc(100vw - 24px)); max-height: 50vh; overflow: auto; pointer-events: none; }
+.transfer-card { pointer-events: auto; margin-bottom: 8px; padding: 12px; background: #181825; color: #cdd6f4; border: 1px solid #585b70; border-radius: 8px; font: 12px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; box-shadow: 0 4px 12px #0006; }
+.transfer-card strong { display: block; }
+.transfer-card p { margin: 8px 0; }
+.transfer-card button { margin-right: 8px; padding: 4px 10px; background: #313244; color: #cdd6f4; border: 1px solid #585b70; border-radius: 4px; cursor: pointer; }
+.transfer-card button:focus-visible { outline: 2px solid #89b4fa; outline-offset: 2px; }

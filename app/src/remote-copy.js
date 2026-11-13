@@ -108,7 +108,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 // Run scp without touching the PTY. say(color, text) prints a status line;
 // resolves true on success. A missing scp (ENOENT) is reported, not thrown.
-function runScp({ paths, target, port, dir, key }, say) {
+function runScp({ paths, target, port, dir, key, signal }, say) {
   const where = `${target}:${dir}`;
   say(36, `copying ${paths.length === 1 ? path.basename(paths[0]) : plural(paths.length, 'item')} to ${where} over scp…`);
   const started = Date.now();
@@ -116,12 +116,19 @@ function runScp({ paths, target, port, dir, key }, say) {
     let child;
     let stderr = '';
     let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      try { if (child) child.kill(); } catch (_) { /* already exited */ }
+      finish(false, 33, `copy to ${where} cancelled; the remote may contain partial files`);
+    };
     const finish = (ok, color, text) => {
       if (settled) return;
       settled = true;
+      if (signal) signal.removeEventListener('abort', cancel);
       say(color, text);
       resolve(ok);
     };
+    if (signal && signal.aborted) { cancel(); return; }
     try {
       child = io.spawn('scp', buildScpArgs({ paths, target, port, dir, key }), { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     } catch (e) {
@@ -136,6 +143,10 @@ function runScp({ paths, target, port, dir, key }, say) {
       if (code === 0) finish(true, 32, `done: ${plural(paths.length, 'item')} in ${where} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
       else finish(false, 31, `copy to ${where} failed: ${describeScpFailure(code, stderr)}`);
     });
+    if (signal) {
+      signal.addEventListener('abort', cancel, { once: true });
+      if (signal.aborted) cancel();
+    }
   });
 }
 

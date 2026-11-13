@@ -17,6 +17,10 @@ contextBridge.exposeInMainWorld('limpet', {
   sendInput: (id, data) => ipcRenderer.send('term:input', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('term:resize', { id, cols, rows }),
   dropFiles: (id, paths) => ipcRenderer.invoke('term:drop-files', { id, paths }),
+  onTransfer: (cb) => ipcRenderer.on('transfer:status', (_e, p) => cb(p)),
+  getSessionStatus: (id) => ipcRenderer.invoke('term:status', id),
+  cancelTransfer: (sessionId, id) => ipcRenderer.invoke('transfer:cancel', { sessionId, id }),
+  retryTransfer: (sessionId, id) => ipcRenderer.invoke('transfer:retry', { sessionId, id }),
   // A dropped File's local path ('' when it isn't backed by a file on disk).
   pathForFile: (file) => webUtils.getPathForFile(file),
   considerBackdrop: (id, snapshot, title) => ipcRenderer.invoke('term:backdrop-candidate', { id, snapshot, title }),
