@@ -5,9 +5,32 @@
 <h1 align="center">limpet</h1>
 
 <p align="center">
-  <b>PowerShell with Linux commands, SSH that reconnects itself,<br/>
-  and a terminal that can show images.</b>
+  <b>A terminal for AI coding agents on macOS, Windows and Linux.</b><br/>
+  Run any number of Claude Code, Codex, GitHub Copilot and OpenCode accounts side by side,<br/>
+  see each subscription's usage, switch account mid-chat, and keep SSH sessions alive.
 </p>
+
+<p align="center">
+  <a href="https://github.com/samuelwbarber/limpet/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/samuelwbarber/limpet?label=download"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-informational">
+  <a href="https://github.com/samuelwbarber/limpet/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/samuelwbarber/limpet?style=social"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/samuelwbarber/limpet/releases/latest"><b>Download for Mac</b></a> (Apple silicon and Intel .dmg) ·
+  <a href="https://github.com/samuelwbarber/limpet/releases/latest"><b>Windows</b></a> (.exe installer) ·
+  <a href="https://github.com/samuelwbarber/limpet/releases/latest"><b>Linux</b></a> (AppImage)
+</p>
+
+limpet is a free, open-source tabbed terminal app (Electron + xterm.js) built
+for people who live in coding agents. Every Claude Code, Codex, Copilot CLI and
+Antigravity login gets its own command (`claude1`, `codex2`, ...), the account
+menu shows each one's 5-hour and weekly limits, and a conversation can move to
+another account or agent when one runs out. Around that: `xssh`, an SSH client
+that reconnects itself after Wi-Fi drops or sleep; `peek` for images inline in
+the terminal; drag-and-drop upload over SSH; and on Windows, PowerShell that
+understands Linux commands. On macOS it looks and behaves like a native app:
+tabs in the title bar, SF Mono, Terminal-style menus and shortcuts.
 
 <p align="center"><i>Named after the mollusc that stays stuck to its rock no matter
 how hard the waves hit, which is basically what xssh does. Type
@@ -288,9 +311,13 @@ An unverified launch stays visibly unverified; it is not reported as a resumed c
 
 ## Install
 
-**Windows:** [Download the installer from the latest release](https://github.com/samuelwbarber/limpet/releases/latest). Choose the `limpet-Setup-<version>.exe` asset, run it, then open **limpet** from the Start Menu. The app includes its shell integration; Git and Node.js are not needed to use the installer.
+All downloads are on the [latest release](https://github.com/samuelwbarber/limpet/releases/latest). Git and Node.js are not needed to use an installer.
 
-Release builds target Windows, macOS and Linux. Check the assets on the latest release for your platform; older releases such as v0.1.1 contain only Windows installers. If an asset is unavailable, use the [source instructions below](#macos-and-linux). Features on the main branch may be newer than the published installer.
+- **macOS:** `limpet-<version>-arm64.dmg` (Apple silicon) or `limpet-<version>-x64.dmg` (Intel). Drag limpet to Applications. The builds aren't notarized yet, so the first time macOS blocks it: open **System Settings → Privacy & Security** and choose **Open Anyway**. From 0.1.3 on, the Mac app updates itself.
+- **Windows:** `limpet-Setup-<version>.exe`. Run it, then open **limpet** from the Start Menu.
+- **Linux:** `limpet-<version>-x86_64.AppImage` or `-arm64.AppImage`. `chmod +x` it and run it.
+
+If an asset is missing for your platform, use the [source instructions below](#macos-and-linux). Features on the main branch may be newer than the published installer.
 
 ### Your first session
 
