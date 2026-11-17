@@ -92,8 +92,21 @@ with their update metadata (`latest.yml`, `latest-mac.yml`, and Linux YAML files
 and the `.blockmap`s, as one GitHub Release: signed if the
 `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` (Windows) and `CSC_LINK`/`CSC_KEY_PASSWORD`
 (macOS, plus `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID` for
-notarization) repo secrets are set. On macOS the updater only applies an update
-to a signed app, so an unsigned build logs the check and leaves it at that.
+notarization) repo secrets are set.
+
+On macOS electron-updater's install path (Squirrel.Mac) only accepts a
+Developer ID signed app, so limpet checks its own signature at startup
+(`codesign -dv`). An unsigned or ad-hoc build uses `src/mac-updater.js`
+instead: it reads `latest-mac.yml`, downloads the zip for its CPU into
+`userData/pending-update`, checks the sha512, unpacks it with `ditto`, and
+asks the same restart question. Once limpet quits, a detached shell script
+swaps the new bundle in where the old one was (logging to `userData/update.log`)
+and, for **Restart now**, opens it again. If limpet can't write to its bundle's
+folder (an `/Applications` owned by another account, a copy run from the disk
+image or translocated by Gatekeeper), it offers the release page instead. The
+first version with this updater has to be installed by hand: older unsigned
+builds only log the check. `LIMPET_UPDATE_FEED=<folder URL>` points the Mac
+updater at another feed, for testing.
 
 ## Tabs, clipboard, and links
 

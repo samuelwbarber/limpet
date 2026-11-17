@@ -5,7 +5,11 @@
 // down we offer a restart; "Later" leaves it to install when limpet quits.
 // Being offline, rate-limited, or having no releases yet is only logged: the
 // user is never asked about anything but a ready update.
-const { app, dialog, BrowserWindow } = require('electron');
+//
+// macOS builds that aren't Developer ID signed (ad-hoc, as the release makes
+// them without signing secrets) go through src/mac-updater.js instead:
+// electron-updater would hand them to Squirrel.Mac, which refuses them.
+const { app, dialog, BrowserWindow, shell, net } = require('electron');
 
 const FIRST_CHECK_MS = 15 * 1000; // let the first window and its shell settle
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
@@ -16,6 +20,15 @@ function start() {
   // `npm start` runs from source: there's no install to update.
   if (started || !app.isPackaged) return;
   started = true;
+  if (process.platform !== 'darwin') { startElectronUpdater(); return; }
+  const macUpdater = require('./mac-updater');
+  macUpdater.runningAppIsDeveloperIdSigned().then((signed) => {
+    if (signed) startElectronUpdater();
+    else macUpdater.start({ app, dialog, BrowserWindow, shell, net });
+  }).catch((e) => console.error('[limpet] auto-update unavailable:', e.message));
+}
+
+function startElectronUpdater() {
 
   let autoUpdater;
   try {
