@@ -155,13 +155,9 @@ function activate(id) {
     t.pane.classList.toggle('active', tid === id);
     t.tabEl.classList.toggle('active', tid === id);
   }
-  document.body.classList.toggle('single-tab', tabs.size === 1);
   // Fit only once the pane is display:block — a hidden terminal measures 0x0.
   requestAnimationFrame(() => { syncSize(); const t = tabs.get(id); if (t) t.term.focus(); });
 }
-
-// One tab left: a Mac drops the tab bar and shows that tab as the title.
-window.addEventListener('limpet:session-removed', () => document.body.classList.toggle('single-tab', tabs.size === 1));
 
 // A web font (macos.css loads SF Mono from the system) must be loaded before
 // a terminal opens with it, or xterm sizes its cells from the fallback font.
@@ -176,17 +172,13 @@ function terminalFontReady() {
   return fontLoad;
 }
 
-// macOS: the title row reads like Terminal.app's, "folder — 80×24", for the
-// front tab, and the window's own title (Window menu, Mission Control) follows.
+// macOS: the window's own title (Window menu, Mission Control) reads like
+// Terminal.app's, "folder — 80×24", for the front tab.
 function updateWindowTitle() {
   if (!IS_MAC) return;
   const t = tabs.get(activeId);
   if (!t) return;
-  const dims = `${t.term.cols}×${t.term.rows}`;
-  if (t.titleEl.dataset.dims !== dims) t.titleEl.dataset.dims = dims;
-  const text = `${t.titleEl.textContent || 'limpet'} — ${dims}`;
-  const row = document.getElementById('window-title');
-  if (row && row.textContent !== text) row.textContent = text;
+  const text = `${t.titleEl.textContent || 'limpet'} — ${t.term.cols}×${t.term.rows}`;
   if (document.title !== text) document.title = text;
 }
 
