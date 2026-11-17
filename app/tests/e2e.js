@@ -199,6 +199,7 @@ async function type(page, text) {
   }
   const fontSize = () => page.evaluate(() => tabs.get(activeId).term.options.fontSize);
   const sizeBefore = await fontSize();
+  const defaultFontSize = await page.evaluate(() => window.LimpetSettings.defaultOf('terminal', 'fontSize'));
   await page.locator('#setting-terminal-fontSize').fill(String(sizeBefore + 4));
   await page.locator('#setting-terminal-fontSize').dispatchEvent('change');
   check('changing the font size updates the terminal', !!(await waitFor(async () => (await fontSize()) === sizeBefore + 4, 5000)));
@@ -208,7 +209,7 @@ async function type(page, text) {
     (await fontSize()) === sizeBefore + 4);
   if (p.isMac) check('save status explains validation errors', /highlighted/.test(await page.locator('.settings-status').textContent()));
   await page.locator('.settings-section:has(#setting-terminal-fontSize) .settings-reset').click();
-  check('reset puts the default font size back', !!(await waitFor(async () => (await fontSize()) === 14, 5000)));
+  check('reset puts the default font size back', !!(await waitFor(async () => (await fontSize()) === defaultFontSize, 5000)));
   await page.keyboard.press('Escape');
   check('Esc closes the settings page', !!(await waitFor(() => page.locator('.settings-overlay').count().then((n) => n === 0), 5000)));
   check('focus goes back to the terminal', await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('xterm-helper-textarea')));
@@ -224,7 +225,7 @@ async function type(page, text) {
   await page.keyboard.press(p.openSettingsKey);
   check('reopening settings shows the saved edit', await page.locator('#setting-terminal-fontSize').inputValue() === '16');
   await page.locator('.settings-section:has(#setting-terminal-fontSize) .settings-reset').click();
-  await waitFor(async () => (await fontSize()) === 14, 5000);
+  await waitFor(async () => (await fontSize()) === defaultFontSize, 5000);
   await page.keyboard.press('Escape');
 
   check('no renderer page errors', pageErrors.length === 0);

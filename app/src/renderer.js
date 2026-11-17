@@ -13,6 +13,7 @@ const tabOrder = () => Array.from(tabs.keys());
 
 async function newTab(existingId = null, initialTitle = 'limpet', cwd = undefined) {
   const id = existingId ?? await window.limpet.createSession({ cwd, title: initialTitle });
+  await terminalFontReady(); // xterm measures its cells once, from the font it opens with
 
   const pane = document.createElement('div');
   pane.className = 'term-pane';
@@ -70,7 +71,7 @@ async function newTab(existingId = null, initialTitle = 'limpet', cwd = undefine
     ...window.LimpetSettings.termOptions(), // font, size, cursor, scrollback (settings-ui.js)
     allowProposedApi: true,
     allowTransparency: true,
-    theme: { background: 'rgba(30,30,46,0.25)', foreground: '#ffffff', cursor: '#f5e0dc', selectionBackground: '#585b70' },
+    theme: termTheme(),
     // OSC 8 hyperlinks (used by agent login flows) must leave Electron and use
     // the OS default browser.
     linkHandler: { activate: (_event, uri) => window.limpet.openExternal(uri) },
@@ -109,7 +110,7 @@ async function newTab(existingId = null, initialTitle = 'limpet', cwd = undefine
   term.onRender(() => { const p = predictor(); if (p) p.reconcile(); });
   // Scrolling invalidates the row-based overlay positions; just drop them.
   term.onScroll(() => { const p = predictor(); if (p) p.flush(); });
-  term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; window.limpet.sessionTitle(id, t); } });
+  term.onTitleChange((t) => { if (t) { titleEl.textContent = t; titleEl.title = t; window.limpet.sessionTitle(id, t); if (id === activeId) updateWindowTitle(); } });
   term.attachCustomKeyEventHandler((e) => handleKeys(e, id, term));
   // Right-click: copy if there's a selection, else paste.
   pane.addEventListener('contextmenu', (e) => {
@@ -154,8 +155,39 @@ function activate(id) {
     t.pane.classList.toggle('active', tid === id);
     t.tabEl.classList.toggle('active', tid === id);
   }
+  document.body.classList.toggle('single-tab', tabs.size === 1);
   // Fit only once the pane is display:block — a hidden terminal measures 0x0.
   requestAnimationFrame(() => { syncSize(); const t = tabs.get(id); if (t) t.term.focus(); });
+}
+
+// One tab left: a Mac drops the tab bar and shows that tab as the title.
+window.addEventListener('limpet:session-removed', () => document.body.classList.toggle('single-tab', tabs.size === 1));
+
+// A web font (macos.css loads SF Mono from the system) must be loaded before
+// a terminal opens with it, or xterm sizes its cells from the fallback font.
+let fontLoad = null;
+function terminalFontReady() {
+  if (!fontLoad) {
+    const family = window.LimpetSettings.get('terminal', 'fontFamily') || '';
+    fontLoad = (document.fonts && /SF Mono/.test(family)
+      ? Promise.all(['', 'bold ', 'italic '].map((w) => document.fonts.load(`${w}12px 'SF Mono'`))) : Promise.resolve())
+      .catch(() => {});
+  }
+  return fontLoad;
+}
+
+// macOS: the title row reads like Terminal.app's, "folder — 80×24", for the
+// front tab, and the window's own title (Window menu, Mission Control) follows.
+function updateWindowTitle() {
+  if (!IS_MAC) return;
+  const t = tabs.get(activeId);
+  if (!t) return;
+  const dims = `${t.term.cols}×${t.term.rows}`;
+  if (t.titleEl.dataset.dims !== dims) t.titleEl.dataset.dims = dims;
+  const text = `${t.titleEl.textContent || 'limpet'} — ${dims}`;
+  const row = document.getElementById('window-title');
+  if (row && row.textContent !== text) row.textContent = text;
+  if (document.title !== text) document.title = text;
 }
 
 // Close from the UI: kill the PTY, then tear down the tab.
@@ -406,6 +438,7 @@ function syncSize() {
   if (t.predict) t.predict.flush();  // reflow moves cells -> drop stale overlay glyphs
   t.fit.fit();
   window.limpet.resize(activeId, t.term.cols, t.term.rows);
+  updateWindowTitle();
 }
 window.addEventListener('resize', syncSize);
 // Status messages and toolbar changes resize the terminal without resizing its window.
@@ -504,6 +537,7 @@ function handleKeys(e, id, term) {
   const k = e.key.toLowerCase();
   if (window.LimpetSettings.runAction(e, id)) return consumeKey(e);
   if (isMacTilingChord(e)) return false;
+  if (macShortcut(e)) return consumeKey(e);
   if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
     if (k === 'c') { copySelection(term); return consumeKey(e); }
     if (k === 'v') { pasteClipboard(id); return consumeKey(e); }
@@ -516,15 +550,72 @@ function handleKeys(e, id, term) {
   return true;
 }
 
+// Terminal.app's fixed command-key shortcuts (macOS only; the rebindable ones
+// live in Settings): Cmd+1..9 pick a tab, Cmd+K clears to start, Cmd+Plus /
+// Cmd+Minus / Cmd+0 change the font size. Returns whether it handled the key.
+function macShortcut(e) {
+  if (!IS_MAC || !e.metaKey || e.ctrlKey || e.altKey || e.type !== 'keydown') return false;
+  const code = e.code || '';
+  if (!e.shiftKey && /^Digit[1-9]$/.test(code)) { selectTab(Number(code.slice(5))); return true; }
+  if (!e.shiftKey && code === 'KeyK') { clearToStart(); return true; }
+  if (code === 'Equal' || e.key === '+') { zoomFont(1); return true; }
+  if (!e.shiftKey && code === 'Minus') { zoomFont(-1); return true; }
+  if (!e.shiftKey && code === 'Digit0') { zoomFont(0); return true; }
+  return false;
+}
+
+function selectTab(n) {
+  const order = tabOrder();
+  if (order[n - 1] !== undefined) activate(order[n - 1]);
+}
+
+// Clear the screen and the scrollback, keeping the line the cursor is on
+// (Terminal's Shell > Clear to Start).
+function clearToStart() {
+  const t = tabs.get(activeId);
+  if (!t) return;
+  if (t.predict) t.predict.flush();
+  t.term.clear();
+}
+
+// Font size steps through the setting, so every window and the next launch
+// keep it; 0 puts the default back.
+function zoomFont(step) {
+  const S = window.LimpetSettings;
+  const current = Number(S.get('terminal', 'fontSize')) || 12;
+  const next = step === 0 ? S.defaultOf('terminal', 'fontSize') : Math.min(32, Math.max(8, current + step));
+  if (next && next !== current) window.limpet.setSettings({ terminal: { fontSize: next } });
+}
+
+// Keys pressed while the terminal does not have focus (the tab bar, say).
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || window.LimpetSettings.isOpen() || document.querySelector('dialog[open]')) return;
+  if (macShortcut(e)) { e.preventDefault(); e.stopPropagation(); }
+});
+
 // The application menu (macOS) picked something.
 if (typeof window.limpet.onMenuAction === 'function') {
   window.limpet.onMenuAction((action) => {
     if (action === 'new-tab') newTab();
+    else if (action === 'close-tab') { if (activeId !== null) closeTab(activeId); }
+    else if (action === 'next-tab') cycleTabs(1);
+    else if (action === 'prev-tab') cycleTabs(-1);
+    else if (action === 'clear') clearToStart();
+    else if (action === 'font-bigger') zoomFont(1);
+    else if (action === 'font-smaller') zoomFont(-1);
+    else if (action === 'font-reset') zoomFont(0);
     else if (action === 'settings') window.LimpetSettings.open();
     else if (action === 'find') window.LimpetTerminalUI?.openSearch();
     else if (action === 'accounts') document.getElementById('accounts-button').click();
     else if (action === 'help') document.getElementById('limpet-help')?.click();
   });
+}
+
+// macOS dims the title bar of a window that isn't the key window.
+if (IS_MAC) {
+  document.body.classList.toggle('window-inactive', !document.hasFocus());
+  window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
+  window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
 }
 
 // macOS hides the title bar while a window is full screen and the close,
@@ -566,7 +657,34 @@ const BACKGROUNDS = [
   { name: 'Plum', color: '#2b1b36' },
   { name: 'Ocean', color: '#0f2a33' },
 ];
+// macOS also offers Terminal's Basic profile: black on white in Light Mode,
+// white on black in Dark Mode, following the system as it changes.
+if (IS_MAC) BACKGROUNDS.push({ name: 'Basic (follows Light or Dark Mode)', color: 'system' });
 const DEFAULT_BACKGROUND = { mode: 'color', color: BACKGROUNDS[0].color };
+const darkMode = window.matchMedia('(prefers-color-scheme: dark)');
+const basicLight = () => IS_MAC && backgroundPref().mode === 'color' && backgroundPref().color === 'system' && !darkMode.matches;
+
+// xterm colours. Windows and Linux keep the original palette. On a Mac the
+// cursor, text and selection follow Terminal.app: a grey block cursor, soft
+// white text and the system's selection blue; Basic in Light Mode also takes
+// Terminal's own ANSI palette, which is made for a white background.
+function termTheme() {
+  if (!IS_MAC) return { background: 'rgba(30,30,46,0.25)', foreground: '#ffffff', cursor: '#f5e0dc', selectionBackground: '#585b70' };
+  if (basicLight()) {
+    return {
+      background: 'rgba(255,255,255,0)', foreground: '#000000', cursor: '#7f7f7f', cursorAccent: '#ffffff',
+      selectionBackground: 'rgba(0,110,255,0.24)', selectionInactiveBackground: 'rgba(0,0,0,0.12)',
+      black: '#000000', red: '#990000', green: '#00a600', yellow: '#999900', blue: '#0000b2', magenta: '#b200b2', cyan: '#00a6b2', white: '#bfbfbf',
+      brightBlack: '#666666', brightRed: '#e50000', brightGreen: '#00d900', brightYellow: '#e5e500', brightBlue: '#0000ff', brightMagenta: '#e500e5', brightCyan: '#00e5e5', brightWhite: '#e5e5e5',
+    };
+  }
+  return {
+    background: backgroundPref().color === 'system' ? 'rgba(0,0,0,0)' : 'rgba(30,30,46,0.25)',
+    foreground: '#e6e6e6', cursor: '#9a9a9a', cursorAccent: '#1e1e1e',
+    selectionBackground: 'rgba(100,150,225,0.42)', selectionInactiveBackground: 'rgba(255,255,255,0.16)',
+  };
+}
+darkMode.addEventListener('change', () => { for (const [id, t] of tabs) applyBackground(t, id); });
 let backgroundCache = null;
 
 function backgroundPref() {
@@ -588,16 +706,19 @@ function setBackground(pref) {
 
 function applyBackground(tab, id) {
   const pref = backgroundPref();
+  if (IS_MAC) tab.term.options.theme = termTheme();
   if (pref.mode === 'color') {
     clearTimeout(tab.backdropTimer);
     tab.backdropTimer = null;
     tab.pane.style.backgroundImage = '';
-    tab.pane.style.backgroundColor = pref.color;
+    tab.pane.style.backgroundColor = pref.color === 'system' ? (basicLight() ? '#ffffff' : '#1e1e1e') : pref.color;
+    tab.pane.classList.toggle('basic-light', basicLight());
     tab.pane.classList.remove('has-backdrop');
     tab.tabEl.classList.remove('generating');
     return;
   }
   tab.pane.style.backgroundColor = '';
+  tab.pane.classList.remove('basic-light');
   if (tab.backdropUrl) {
     tab.pane.style.backgroundImage = `url("${tab.backdropUrl}")`;
     tab.pane.classList.add('has-backdrop');
@@ -919,7 +1040,8 @@ async function showAccountMenu(id, tabEl) {
   for (const b of BACKGROUNDS) {
     const swatch = document.createElement('button');
     swatch.className = 'swatch';
-    swatch.style.backgroundColor = b.color;
+    if (b.color === 'system') swatch.style.background = 'linear-gradient(135deg, #ffffff 50%, #1e1e1e 50%)';
+    else swatch.style.backgroundColor = b.color;
     swatch.title = b.name;
     swatch.setAttribute('aria-label', `${b.name} background`);
     swatch.dataset.color = b.color;

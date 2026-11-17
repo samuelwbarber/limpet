@@ -1,4 +1,4 @@
-﻿/* global tabs, activeId, activate, showAccountMenu, closeAccountMenu, SearchAddon */
+﻿/* global tabs, activeId, activate, showAccountMenu, closeAccountMenu, syncSize, SearchAddon */
 (() => {
   const strip = document.getElementById('tabstrip');
   const accounts = document.getElementById('accounts-button');
@@ -73,6 +73,12 @@
   bar.id = 'terminal-search'; bar.hidden = true; bar.setAttribute('role', 'search');
   bar.innerHTML = '<input type="search" aria-label="Find in terminal output" placeholder="Find in output"><span class="result" role="status"></span><button type="button" class="previous" aria-label="Previous match">Previous</button><button type="submit" aria-label="Next match">Next</button><button type="button" class="bottom">Bottom</button><button type="button" class="dismiss" aria-label="Close search">Close</button>';
   document.getElementById('terms').append(bar);
+  if (isMac) { // Terminal's find bar: chevrons and Done
+    bar.querySelector('.previous').textContent = '‹';
+    bar.querySelector('button[type=submit]').textContent = '›';
+    bar.querySelector('.dismiss').textContent = 'Done';
+    bar.querySelector('input').placeholder = 'Find';
+  }
   const input = bar.querySelector('input');
   const result = bar.querySelector('.result');
   const addons = new WeakMap();
@@ -85,8 +91,17 @@
     const found = back ? addon.findPrevious(input.value) : addon.findNext(input.value);
     result.textContent = found ? 'Match found' : 'No matches';
   }
-  function openSearch() { closeAccountMenu(); bar.hidden = false; input.focus(); input.select(); }
-  function dismiss() { bar.hidden = true; tabs.get(activeId)?.term.focus(); }
+  // On a Mac the find bar sits above the terminal rather than over its top
+  // rows (macos.css moves the panes down while #terms has .searching).
+  const makeRoom = (on) => {
+    if (!isMac) return;
+    const terms = document.getElementById('terms');
+    if (terms.classList.contains('searching') === on) return;
+    terms.classList.toggle('searching', on);
+    requestAnimationFrame(() => syncSize());
+  };
+  function openSearch() { closeAccountMenu(); bar.hidden = false; makeRoom(true); input.focus(); input.select(); }
+  function dismiss() { bar.hidden = true; makeRoom(false); tabs.get(activeId)?.term.focus(); }
   bar.onsubmit = (e) => { e.preventDefault(); search(); };
   bar.querySelector('.previous').onclick = () => search(true);
   bar.querySelector('.dismiss').onclick = dismiss;

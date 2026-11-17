@@ -27,6 +27,12 @@
   }
 
   const get = (section, key) => (state.values[section] || {})[key];
+  // The platform default of a field (the schema carries this platform's).
+  const defaultOf = (section, key) => {
+    const s = (state.schema || []).find((x) => x.id === section);
+    const f = s && s.fields.find((x) => x.key === key);
+    return f ? f.default : undefined;
+  };
 
   function termOptions() {
     const out = {};
@@ -328,7 +334,7 @@
     return box;
   }
 
-  const focusable = () => Array.from(panel.querySelectorAll('button, input, select')).filter((e) => !e.disabled);
+  const focusable = () => Array.from(panel.querySelectorAll('button, input, select')).filter((e) => !e.disabled && !e.closest('[hidden]'));
 
   function open() {
     if (panel) { focusable()[0].focus(); return; }
@@ -353,8 +359,16 @@
     close.addEventListener('click', () => closePanel());
     head.append(title, where, close);
     const body = el('div', 'settings-body');
+    // macOS: the sections are panes, one at a time, picked from a toolbar
+    // row the way a Mac settings window works.
     const navigation = IS_MAC ? el('nav', 'settings-nav') : null;
     navigation?.setAttribute('aria-label', 'Settings sections');
+    const showPane = (box, jump) => {
+      for (const b of body.querySelectorAll('.settings-section')) b.hidden = b !== box;
+      for (const j of navigation.querySelectorAll('button')) j.removeAttribute('aria-current');
+      jump.setAttribute('aria-current', 'page');
+      body.scrollTop = 0;
+    };
     for (const section of state.schema || []) {
       const box = buildSection(section);
       body.append(box);
@@ -363,11 +377,12 @@
       jump.type = 'button';
       jump.setAttribute('aria-controls', box.id);
       jump.addEventListener('click', () => {
+        showPane(box, jump);
         box.querySelector('input, select')?.focus({ preventScroll: true });
-        body.scrollTop = box.offsetTop - 8;
       });
       navigation.append(jump);
     }
+    if (navigation && navigation.firstElementChild) showPane(body.querySelector('.settings-section'), navigation.firstElementChild);
     dialog.append(head);
     if (navigation) dialog.append(navigation);
     dialog.append(body);
@@ -423,7 +438,7 @@
   }
 
   window.LimpetSettings = {
-    get, display, termOptions, actionFor, runAction, makePredictor, selectionChanged, menuItem,
+    get, defaultOf, display, termOptions, actionFor, runAction, makePredictor, selectionChanged, menuItem,
     open, close: closePanel, isOpen: () => !!panel,
   };
 })();

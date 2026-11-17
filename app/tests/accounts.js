@@ -461,7 +461,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   // ---- background picker: standard limpet colour by default, swatches, generative ----
   const paneColor = () => page.evaluate(() => getComputedStyle(document.querySelector('.term-pane.active')).backgroundColor);
   menu = await openMenu();
-  check('menu offers the background swatches', !!(await waitFor(() => menu.locator('.bg .swatch').count().then((n) => n === 7), 5000)));
+  check('menu offers the background swatches', !!(await waitFor(() => menu.locator('.bg .swatch').count().then((n) => n === (p.isMac ? 8 : 7)), 5000)));
   check('the standard limpet colour is selected by default', (await menu.locator('.bg .swatch.selected').getAttribute('data-color')) === '#1e1e2e');
   check('the pane starts on the standard limpet colour', (await paneColor()) === 'rgb(30, 30, 46)');
   await menu.locator('.bg .swatch[data-color="#16294d"]').click();
@@ -512,7 +512,7 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   await sleep(1000);
   check('once installed, picking generative does not ask again', (await setupPrompt.count()) === 0);
   menu = await openMenu();
-  await waitFor(() => menu.locator('.bg .swatch').count().then((n) => n === 7), 5000);
+  await waitFor(() => menu.locator('.bg .swatch').count().then((n) => n === (p.isMac ? 8 : 7)), 5000);
   // Leave the app on its default so a real profile isn't changed by the test.
   await menu.locator('.bg .swatch[data-color="#1e1e2e"]').click();
   await waitFor(() => page.locator('.account-menu').count().then((n) => n === 0), 3000);

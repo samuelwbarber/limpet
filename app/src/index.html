@@ -18,6 +18,7 @@
     }
     /* macOS full screen hides the title bar and its close/minimise/zoom buttons;
        these stand in for them until the window leaves full screen (renderer.js) */
+    #window-title { display: none; }
     #window-controls { display: none; flex: 0 0 auto; align-items: center; gap: 8px; margin: 0 10px 0 6px; }
     body.fullscreen #window-controls { display: flex; }
     #window-controls button {
@@ -70,9 +71,10 @@
       image-rendering: pixelated;
     }
     .term-pane.active { display: block; }
-    /* hide xterm's own scrollbar (the thin bar on the terminal's right edge) */
-    .xterm-viewport::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
-    .xterm-viewport { scrollbar-width: none !important; }
+    /* hide xterm's own scrollbar (the thin bar on the terminal's right edge);
+       a Mac keeps the system's overlay scrollbar (macos.css) */
+    body:not(.macos) .xterm-viewport::-webkit-scrollbar { width: 0 !important; height: 0 !important; }
+    body:not(.macos) .xterm-viewport { scrollbar-width: none !important; }
     #reels {
       flex: 0 0 40%; display: none; height: 100%;
       background: #1e1e2e;
@@ -187,6 +189,8 @@
         <svg viewBox="0 0 12 12" aria-hidden="true"><path class="solid" d="M5.6 2.6v3h-3zM6.4 9.4v-3h3z"/></svg>
       </button>
     </div>
+    <!-- macOS only (macos.css): the window title row of a Terminal.app-style title bar -->
+    <div id="window-title" aria-hidden="true"></div>
     <div id="tabstrip" role="tablist" aria-label="Terminal sessions"></div>
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
     <button id="find-output" class="toolbar-button" title="Find in output (Ctrl+Shift+F)">Find</button>

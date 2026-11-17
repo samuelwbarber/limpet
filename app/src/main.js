@@ -1341,11 +1341,18 @@ async function confirmSessionClose(browserWin, owned) {
   return response === 1;
 }
 
+// Where the native window buttons sit in the page-drawn 32px title row (macOS).
+const MAC_TRAFFIC_LIGHTS = { x: 9, y: 9 };
+
 function createWindow({ sessionId = null, sourceWindow = null, point = null, title = 'limpet' } = {}) {
   const detached = sessionId !== null;
   const bounds = detached ? detachedWindowBounds(sourceWindow, point) : { width: 1000, height: 660 };
+  // macOS: a unified title bar like Terminal.app's. The page draws the title
+  // row and the tab bar (macos.css) under the native close/minimise/zoom
+  // buttons, which are moved down to sit in the middle of that row.
+  const macChrome = platform.isMac ? { titleBarStyle: 'hidden', trafficLightPosition: MAC_TRAFFIC_LIGHTS } : {};
   const browserWin = new BrowserWindow({
-    ...bounds, backgroundColor: '#1e1e2e', title: 'limpet',
+    ...bounds, ...macChrome, backgroundColor: '#1e1e2e', title: 'limpet',
     icon: path.join(__dirname, '..', 'build', 'limpet.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, webviewTag: true },
   });
@@ -1625,7 +1632,16 @@ function registerIpc() {
 }
 
 registerIpc();
-app.whenReady().then(() => { startupWorkspace = workspace.read(workspaceFile()); installAppMenu(); createWindow(); updater.start(); });
+// The Mac menu shows the current shortcuts, so it is rebuilt when they change.
+function refreshAppMenu() {
+  installAppMenu({ keybindings: appSettings().get().keybindings, newWindow: () => createWindow() });
+}
+app.whenReady().then(() => {
+  startupWorkspace = workspace.read(workspaceFile());
+  refreshAppMenu();
+  if (platform.isMac) appSettings().subscribe(refreshAppMenu);
+  createWindow(); updater.start();
+});
 // macOS keeps the app alive with no window (Cmd+Q quits); a dock click opens one.
 onActivate(() => createWindow());
 app.on('before-quit', (event) => {

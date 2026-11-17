@@ -1,19 +1,410 @@
-/* Keep the Mac terminal's chrome quiet; secondary actions live in the menu bar. */
-body.macos { --ui-font: -apple-system, BlinkMacSystemFont, sans-serif; }
-body.macos #tabbar { flex-basis: 36px; padding: 0 8px; gap: 4px; border-bottom: 1px solid #292938; }
-body.macos #tabstrip { flex: 0 1 auto; min-width: 64px; gap: 3px; }
-body.macos .tab { height: 27px; padding: 0 4px 0 12px; font: 12px var(--ui-font); border-radius: 5px; color: #9395a7; }
-body.macos .tab.active { background: #2c2d3d; color: #e1e2eb; box-shadow: inset 0 1px rgba(255,255,255,.035); }
-body.macos .tab .close { width: 22px; height: 22px; padding: 0; font: 15px var(--ui-font); opacity: 0; }
-body.macos .tab.active .close, body.macos .tab:hover .close, body.macos .tab:focus-within .close { opacity: 1; }
-body.macos #newtab { margin-right: auto; width: 28px; height: 28px; padding: 0; font: 19px var(--ui-font); color: #9395a7; }
+/* macOS look: Terminal.app's. Everything here is scoped to body.macos (set by
+   renderer.js on darwin), so Windows and Linux keep their styling.
+
+   The window has a unified title bar (main.js: titleBarStyle 'hidden'): the
+   native close/minimise/zoom buttons float over the first row of #tabbar.
+   - One tab: a single 32px row, "folder — 80×24" beside the buttons (the lone
+     tab element *is* that title, so right-click still opens the tab menu) and
+     a quiet + at the right.
+   - Two or more: the title row, then Terminal's tab bar under it: equal-width
+     tabs in a rounded track, the front one raised, × on hover, + at the end.
+   The chrome follows Light/Dark Mode; the terminal keeps the chosen background.
+   Menus, panels and Settings use the system font and macOS control shapes. */
+
+/* SF Mono, the Mac terminal font. Chromium can't see it by name (it is a
+   hidden system font), so it is loaded from where macOS keeps it: Terminal's
+   own cut first, then the system copy. Only fetched when a terminal asks for
+   'SF Mono' (the Mac default font setting). */
+@font-face {
+  font-family: 'SF Mono'; font-weight: 400; font-style: normal;
+  src: url('file:///System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SFMono-Terminal.ttf'),
+       url('file:///System/Library/Fonts/SFNSMono.ttf');
+}
+@font-face {
+  font-family: 'SF Mono'; font-weight: 700; font-style: normal;
+  src: url('file:///System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SF-Mono-Bold.otf'),
+       url('file:///System/Library/Fonts/SFNSMono.ttf');
+}
+@font-face {
+  font-family: 'SF Mono'; font-weight: 400; font-style: italic;
+  src: url('file:///System/Applications/Utilities/Terminal.app/Contents/Resources/Fonts/SF-Mono-RegularItalic.otf'),
+       url('file:///System/Library/Fonts/SFNSMonoItalic.ttf');
+}
+
+body.macos {
+  --ui-font: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --chrome-bg: #ffffff;
+  --chrome-sep: rgba(0, 0, 0, 0.11);
+  --title-fg: rgba(0, 0, 0, 0.8);
+  --title-fg-off: rgba(0, 0, 0, 0.3);
+  --track: #e8e8e8;
+  --tab-on-bg: #f6f6f6;
+  --tab-on-edge: rgba(0, 0, 0, 0.07);
+  --tab-fg: rgba(0, 0, 0, 0.48);
+  --tab-on-fg: rgba(0, 0, 0, 0.82);
+  --hover: rgba(0, 0, 0, 0.07);
+  --fg: rgba(0, 0, 0, 0.85);
+  --secondary: rgba(0, 0, 0, 0.5);
+  --tertiary: rgba(0, 0, 0, 0.3);
+  --sep: rgba(0, 0, 0, 0.1);
+  --accent: #0a7aff;
+  --on-accent: #ffffff;
+  --menu-bg: rgba(242, 242, 242, 0.86);
+  --menu-edge: rgba(0, 0, 0, 0.14);
+  --panel-bg: rgba(248, 248, 248, 0.94);
+  --window-bg: #f0f0f0;
+  --group-bg: #ffffff;
+  --field-bg: #ffffff;
+  --field-edge: rgba(0, 0, 0, 0.16);
+  --button-bg: #ffffff;
+  --button-edge: rgba(0, 0, 0, 0.14);
+  --switch-off: rgba(0, 0, 0, 0.12);
+  --warn: #b25f00;
+  --bad: #e0352b;
+  --scroll-thumb: rgba(0, 0, 0, 0.35);
+  --shadow: 0 10px 32px rgba(0, 0, 0, 0.2), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  background: var(--chrome-bg);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  body.macos {
+    --chrome-bg: #2b2b2d;
+    --chrome-sep: rgba(0, 0, 0, 0.55);
+    --title-fg: rgba(255, 255, 255, 0.82);
+    --title-fg-off: rgba(255, 255, 255, 0.3);
+    --track: rgba(255, 255, 255, 0.07);
+    --tab-on-bg: rgba(255, 255, 255, 0.15);
+    --tab-on-edge: rgba(255, 255, 255, 0.05);
+    --tab-fg: rgba(255, 255, 255, 0.5);
+    --tab-on-fg: rgba(255, 255, 255, 0.88);
+    --hover: rgba(255, 255, 255, 0.09);
+    --fg: rgba(255, 255, 255, 0.86);
+    --secondary: rgba(255, 255, 255, 0.55);
+    --tertiary: rgba(255, 255, 255, 0.3);
+    --sep: rgba(255, 255, 255, 0.1);
+    --accent: #0a84ff;
+    --menu-bg: rgba(44, 44, 46, 0.86);
+    --menu-edge: rgba(255, 255, 255, 0.13);
+    --panel-bg: rgba(46, 46, 48, 0.95);
+    --window-bg: #1f1f21;
+    --group-bg: rgba(255, 255, 255, 0.045);
+    --field-bg: rgba(255, 255, 255, 0.07);
+    --field-edge: rgba(255, 255, 255, 0.13);
+    --button-bg: rgba(255, 255, 255, 0.14);
+    --button-edge: rgba(255, 255, 255, 0.06);
+    --switch-off: rgba(255, 255, 255, 0.16);
+    --warn: #ff9f0a;
+    --bad: #ff6961;
+    --scroll-thumb: rgba(255, 255, 255, 0.35);
+    --shadow: 0 10px 32px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+    color-scheme: dark;
+  }
+}
+
+/* ---- title bar + tab bar ---- */
+body.macos #tabbar {
+  flex: 0 0 auto; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: 32px auto;
+  align-items: center; gap: 0; padding: 0; background: var(--chrome-bg);
+  border-bottom: 1px solid var(--chrome-sep); -webkit-app-region: drag;
+}
+body.macos #window-controls { grid-row: 1; grid-column: 1; margin: 0 4px 0 12px; -webkit-app-region: no-drag; }
+body.macos #window-title {
+  display: block; grid-row: 1; grid-column: 2 / 4; min-width: 0; padding: 0 16px 0 78px;
+  font: 600 13px/32px var(--ui-font); color: var(--title-fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default;
+}
+body.macos.fullscreen #window-title { padding-left: 6px; }
+body.macos #tabstrip {
+  grid-row: 2; grid-column: 1 / 3; min-width: 64px; height: 28px; margin: 0 6px 7px 8px; padding: 0; gap: 0;
+  background: var(--track); border-radius: 14px;
+  overflow: hidden !important; -webkit-app-region: no-drag;
+}
+body.macos .tab {
+  position: relative; flex: 1 1 0; min-width: 0; max-width: none; height: 28px; box-sizing: border-box;
+  justify-content: center; padding: 0 26px; border-radius: 14px; gap: 0;
+  font: 12px var(--ui-font); color: var(--tab-fg); cursor: default; -webkit-app-region: no-drag;
+}
+body.macos .tab:hover:not(.active) { background: var(--hover); }
+body.macos .tab.active {
+  background: var(--tab-on-bg); color: var(--tab-on-fg);
+  box-shadow: 0 0 0 0.5px var(--tab-on-edge), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+body.macos .tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+body.macos .tab .title { flex: 0 1 auto; text-align: center; }
+body.macos .tab .close {
+  position: absolute; left: 6px; top: 5px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font: 14px/1 var(--ui-font); color: var(--tab-fg); opacity: 0; cursor: default;
+}
+body.macos .tab:hover .close, body.macos .tab .close:focus-visible { opacity: 1; }
+body.macos .tab .close:hover { background: var(--hover); color: var(--tab-on-fg); }
+body.macos #newtab {
+  grid-row: 2; grid-column: 3; width: 28px; height: 28px; margin: 0 8px 7px 0; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--tab-on-bg); box-shadow: 0 0 0 0.5px var(--tab-on-edge), 0 1px 2px rgba(0, 0, 0, 0.06);
+  font: 300 19px/1 var(--ui-font); color: var(--tab-fg); cursor: default; -webkit-app-region: no-drag;
+}
+body.macos #newtab:hover { color: var(--tab-on-fg); }
 body.macos #find-output, body.macos #accounts-button, body.macos #settings-button, body.macos #limpet-help { display: none; }
-body.macos #terminal-status { padding: 4px 10px; color: #9295a8; font: 11px var(--ui-font); border-top: 1px solid #292938; }
+
+/* One tab: no tab bar, the tab is the window title. */
+body.macos.single-tab #window-title { display: none; }
+body.macos.single-tab #tabstrip { grid-row: 1; grid-column: 2; height: 32px; margin: 0 0 0 78px; background: transparent; border-radius: 0; }
+body.macos.fullscreen.single-tab #tabstrip { margin-left: 6px; }
+body.macos.single-tab .tab, body.macos.single-tab .tab.active {
+  flex: 0 1 auto; height: 32px; padding: 0; justify-content: flex-start;
+  background: transparent; box-shadow: none; font: 600 13px var(--ui-font); color: var(--title-fg);
+}
+body.macos.single-tab .tab .title::after { content: " — " attr(data-dims); }
+body.macos.single-tab .tab .title:not([data-dims])::after { content: none; }
+body.macos.single-tab .tab .close { display: none; }
+body.macos.single-tab #newtab {
+  grid-row: 1; width: 26px; height: 24px; margin: 0 8px 0 0; border-radius: 6px;
+  background: transparent; box-shadow: none; color: var(--tab-fg);
+}
+body.macos.single-tab #newtab:hover { background: var(--hover); }
+body.macos.window-inactive #window-title, body.macos.window-inactive .tab,
+body.macos.window-inactive .tab.active, body.macos.window-inactive #newtab { color: var(--title-fg-off); }
+
+/* ---- terminal body ---- */
+body.macos .term-pane { padding: 4px 4px 4px 10px; image-rendering: auto; }
+body.macos .term-pane.has-backdrop { image-rendering: pixelated; }
+body.macos #drop {
+  background: rgba(10, 132, 255, 0.12); border: 3px solid var(--accent); border-radius: 0;
+  color: #ffffff; font: 600 15px var(--ui-font); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- status line under the terminal (only while there is something to say) ---- */
+body.macos #terminal-status {
+  padding: 4px 10px; background: var(--chrome-bg); color: var(--secondary);
+  font: 11px var(--ui-font); border-top: 1px solid var(--chrome-sep);
+}
 body.macos #terminal-status[hidden] { display: none; }
-body.macos #terminal-connection { color: #b2b5c8; }
-body.macos .account-menu, body.macos #terminal-search { font: 12px var(--ui-font); }
-body.macos .account-menu { padding: 6px; }
-body.macos .account-menu .item { padding: 8px 10px; }
-body.macos .account-menu .head, body.macos .account-menu .more { color: #9295a8; }
-body.macos #terminal-search { border-color: #45475a; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.2); }
-body.macos #terminal-search input, body.macos #terminal-search button { font: inherit; border-color: #45475a; border-radius: 4px; padding: 5px 7px; }
+body.macos #terminal-connection { color: var(--fg); }
+
+/* ---- shared control shapes: push buttons and text fields ---- */
+body.macos .failover-banner button, body.macos .setup-prompt button, body.macos .setup-notice button,
+body.macos .session-exit button, body.macos .transfer-card button, body.macos #limpet-start button,
+body.macos #limpet-welcome button, body.macos #terminal-search button, body.macos .settings-panel button {
+  font: 13px var(--ui-font); color: var(--fg); background: var(--button-bg); cursor: default;
+  border: 0; border-radius: 6px; padding: 3px 12px; margin: 0;
+  box-shadow: 0 0 0 0.5px var(--button-edge), 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+}
+body.macos .failover-banner button:active, body.macos .setup-prompt button:active, body.macos .setup-notice button:active,
+body.macos .session-exit button:active, body.macos .transfer-card button:active, body.macos #limpet-start button:active,
+body.macos #limpet-welcome button:active, body.macos #terminal-search button:active, body.macos .settings-panel button:active { filter: brightness(0.92); }
+body.macos .failover-banner button.move, body.macos .setup-prompt button.install,
+body.macos #limpet-start button:first-of-type, body.macos #welcome-close {
+  background: var(--accent); color: var(--on-accent); box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.15);
+}
+body.macos .failover-banner button:hover, body.macos .setup-prompt button:hover, body.macos .setup-notice button:hover,
+body.macos .transfer-card button:hover, body.macos .settings-panel button:hover { background: var(--button-bg); }
+body.macos .failover-banner button.move:hover, body.macos .setup-prompt button.install:hover { background: var(--accent); border-color: transparent; }
+body.macos button:focus-visible, body.macos [role=tab]:focus-visible, body.macos [role=button]:focus-visible, body.macos input:focus-visible,
+body.macos select:focus-visible, body.macos textarea:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 50%, transparent); outline-offset: 0;
+}
+
+/* ---- right-click a tab: the account menu, drawn like an NSMenu ---- */
+body.macos .account-menu {
+  padding: 5px; font: 13px var(--ui-font); color: var(--fg);
+  background: var(--menu-bg); -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+  border: 0; border-radius: 10px; box-shadow: var(--shadow), inset 0 0 0 0.5px var(--menu-edge);
+}
+body.macos .account-menu:focus { outline: none; }
+body.macos .account-menu .head { padding: 3px 10px 4px 24px; color: var(--secondary); font-size: 12px; }
+body.macos .account-menu .item { position: relative; padding: 3px 10px 3px 24px; border-radius: 5px; gap: 14px; cursor: default; }
+body.macos .account-menu .item:hover, body.macos .account-menu .item:focus-visible { background: var(--accent); color: var(--on-accent); outline: none; }
+body.macos .account-menu .item:hover *, body.macos .account-menu .item:focus-visible * { color: var(--on-accent) !important; }
+body.macos .account-menu .item.current, body.macos .account-menu .item.current .who { color: var(--fg); }
+body.macos .account-menu .item.current .name::after { content: none; }
+body.macos .account-menu .item.current::before { content: "✓"; position: absolute; left: 8px; top: 3px; font-size: 12px; }
+body.macos .account-menu .who { color: var(--secondary); }
+body.macos .account-menu .usage, body.macos .account-menu .usage.ok { color: var(--secondary); }
+body.macos .account-menu .usage.mid { color: var(--warn); }
+body.macos .account-menu .usage.low { color: var(--bad); }
+body.macos .account-menu .none { padding: 3px 10px 3px 24px; color: var(--secondary); font-style: normal; }
+body.macos .account-menu .more { padding: 4px 10px 5px 24px; color: var(--secondary); font-size: 11px; }
+body.macos .account-menu .bg { gap: 7px; padding: 6px 10px 5px 24px; margin-top: 5px; border-top: 1px solid var(--sep); }
+body.macos .account-menu .bg .label { color: var(--secondary); margin-right: 3px; }
+body.macos .account-menu .swatch {
+  width: 14px; height: 14px; border: 0; box-shadow: inset 0 0 0 0.5px rgba(127, 127, 127, 0.6); cursor: default;
+}
+body.macos .account-menu .swatch:hover { box-shadow: inset 0 0 0 0.5px rgba(127, 127, 127, 0.6), 0 0 0 2px var(--sep); }
+body.macos .account-menu .swatch.selected { box-shadow: inset 0 0 0 0.5px rgba(127, 127, 127, 0.6), 0 0 0 1.5px var(--menu-bg), 0 0 0 3px var(--accent); }
+body.macos .account-menu .gen {
+  border: 0; border-radius: 5px; padding: 1px 8px; color: var(--fg); background: transparent; cursor: default;
+}
+body.macos .account-menu .gen:hover { background: var(--accent); color: var(--on-accent); }
+body.macos .account-menu .gen.selected { color: var(--fg); border: 0; }
+body.macos .account-menu .gen.selected::before { content: "✓ "; }
+body.macos .account-menu .gen.selected:hover { color: var(--on-accent); }
+body.macos .account-menu .open-settings {
+  margin-top: 5px; padding: 3px 10px 3px 24px; border-top: 0; border-radius: 5px; cursor: default; position: relative;
+}
+body.macos .account-menu .open-settings::before {
+  content: ""; position: absolute; left: 6px; right: 6px; top: -3px; border-top: 1px solid var(--sep);
+}
+body.macos .account-menu .open-settings:hover, body.macos .account-menu .open-settings:focus-visible { background: var(--accent); color: var(--on-accent); }
+body.macos .account-menu .open-settings .keys { color: var(--secondary); }
+body.macos .account-menu .open-settings:hover .keys, body.macos .account-menu .open-settings:focus-visible .keys { color: var(--on-accent); }
+
+/* ---- panels over the terminal: failover offer, switch result, setup, transfers, welcome ---- */
+body.macos .failover-banner, body.macos .setup-notice, body.macos .transfer-card, body.macos #limpet-start {
+  padding: 12px 14px; font: 13px/1.4 var(--ui-font); color: var(--fg);
+  background: var(--panel-bg); -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+  border: 0; border-radius: 12px; box-shadow: var(--shadow);
+}
+body.macos .failover-banner .text, body.macos .setup-notice .text { line-height: 1.4; }
+body.macos .failover-banner .actions, body.macos .setup-notice .actions { margin-top: 10px; }
+body.macos .agent-switch-result p { margin: 8px 0; color: var(--secondary); }
+body.macos .agent-switch-result textarea {
+  font: 12px ui-monospace, Menlo, monospace !important; color: var(--fg) !important; background: var(--field-bg) !important;
+  border: 0 !important; border-radius: 6px; padding: 5px 7px; box-shadow: inset 0 0 0 0.5px var(--field-edge);
+}
+body.macos .setup-notice .head, body.macos .transfer-card strong, body.macos #limpet-start strong { font-weight: 600; }
+body.macos .setup-notice .text, body.macos .transfer-card p { color: var(--secondary); }
+body.macos .setup-notice .bar { height: 4px; background: var(--sep); }
+body.macos .setup-notice .fill { background: var(--accent); }
+body.macos #transfers { top: 76px; }
+body.macos.single-tab #transfers { top: 42px; }
+body.macos #limpet-start p { margin: 4px 0 12px; color: var(--secondary); }
+body.macos #limpet-start button + button { margin-left: 6px; }
+body.macos .setup-overlay { background: rgba(0, 0, 0, 0.22); }
+body.macos .setup-prompt {
+  padding: 18px 20px 16px; font: 13px/1.45 var(--ui-font); color: var(--fg);
+  background: var(--panel-bg); border: 0; border-radius: 12px; box-shadow: var(--shadow);
+}
+body.macos .setup-prompt .title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+body.macos .setup-prompt p { color: var(--secondary); }
+body.macos #limpet-welcome {
+  padding: 22px 24px; font: 13px/1.5 var(--ui-font); color: var(--fg);
+  background: var(--window-bg); border: 0; border-radius: 12px; box-shadow: var(--shadow);
+}
+body.macos #limpet-welcome::backdrop { background: rgba(0, 0, 0, 0.22); }
+body.macos #limpet-welcome h2 { font-size: 15px; font-weight: 600; }
+body.macos #limpet-welcome h3 { font-size: 13px; font-weight: 600; }
+body.macos #limpet-welcome code { font: 12px ui-monospace, Menlo, monospace; color: var(--fg); background: var(--sep); border-radius: 4px; padding: 0 4px; }
+
+/* Shell exited: a bar at the foot of the pane (its layout is inline in renderer.js) */
+body.macos .session-exit {
+  background: var(--chrome-bg) !important; color: var(--fg) !important; padding: 8px 10px !important;
+  font: 12px var(--ui-font); border-top: 1px solid var(--chrome-sep); gap: 8px !important;
+}
+body.macos .session-exit span { flex: 1 1 auto; }
+
+/* ---- Find: Terminal's find bar across the top of the terminal ---- */
+body.macos #terms.searching .term-pane { top: 33px; }
+body.macos #terminal-search {
+  top: 0; left: 0; right: 0; height: 33px; box-sizing: border-box; max-width: none; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 5px 8px;
+  font: 12px var(--ui-font); color: var(--fg); background: var(--chrome-bg);
+  border: 0; border-bottom: 1px solid var(--chrome-sep); border-radius: 0; box-shadow: none;
+}
+body.macos #terminal-search input {
+  flex: 1 1 auto; width: auto; max-width: 420px; min-width: 80px; height: 22px; box-sizing: border-box; padding: 2px 8px;
+  font: 13px var(--ui-font); color: var(--fg); background: var(--field-bg);
+  border: 0; border-radius: 6px; box-shadow: inset 0 0 0 0.5px var(--field-edge);
+}
+body.macos #terminal-search input:focus-visible {
+  outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+body.macos #terminal-search .result { order: 1; margin-right: auto; color: var(--secondary); font-size: 11px; white-space: nowrap; }
+body.macos #terminal-search .previous, body.macos #terminal-search button[type=submit] {
+  order: 2; width: 28px; padding: 1px 0; font-size: 15px; line-height: 18px;
+}
+body.macos #terminal-search .previous { border-radius: 6px 0 0 6px; margin-right: -6px; }
+body.macos #terminal-search button[type=submit] { border-radius: 0 6px 6px 0; }
+body.macos #terminal-search .bottom, body.macos #terminal-search .dismiss { order: 3; padding: 1px 10px; font-size: 12px; }
+
+/* ---- scrollbars: the system's overlay scrollbar (no custom styling on a Mac) ---- */
+
+/* ---- Settings: a macOS settings window — toolbar panes, grouped form rows ---- */
+body.macos .settings-overlay { background: rgba(0, 0, 0, 0.22); }
+body.macos .settings-panel {
+  width: min(600px, calc(100vw - 32px)); max-height: calc(100vh - 40px);
+  font: 13px/1.35 var(--ui-font); color: var(--fg); background: var(--window-bg);
+  border: 0; border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+}
+body.macos .settings-head {
+  position: relative; justify-content: center; padding: 0 12px; height: 32px; border-bottom: 0; background: var(--chrome-bg);
+}
+body.macos .settings-head h1 { font-size: 13px; font-weight: 600; color: var(--title-fg); }
+body.macos .settings-status {
+  position: absolute; left: 14px; top: 0; line-height: 32px; flex: none; max-width: 40%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--tertiary); font-size: 11px;
+}
+body.macos .settings-status.has-error { color: var(--bad); }
+body.macos .settings-panel .settings-close {
+  position: absolute; right: 10px; top: 6px; width: 20px; height: 20px; padding: 0; border-radius: 50%;
+  font: 14px/20px var(--ui-font); color: var(--secondary); background: transparent; box-shadow: none;
+}
+body.macos .settings-panel .settings-close:hover { background: var(--hover); color: var(--fg); }
+body.macos .settings-nav {
+  display: flex; justify-content: center; flex-wrap: wrap; gap: 2px; padding: 2px 12px 10px;
+  background: var(--chrome-bg); border-bottom: 1px solid var(--chrome-sep);
+}
+body.macos .settings-panel .settings-nav button {
+  padding: 3px 10px; border-radius: 6px; font-size: 12px; color: var(--secondary); background: transparent; box-shadow: none;
+}
+body.macos .settings-panel .settings-nav button:hover { background: var(--hover); color: var(--fg); }
+body.macos .settings-panel .settings-nav button[aria-current="page"] { background: var(--hover); color: var(--fg); font-weight: 600; }
+body.macos .settings-body { position: relative; min-height: 0; padding: 4px 20px 20px; }
+body.macos .settings-section { padding-top: 14px; }
+body.macos .settings-section + .settings-section { margin-top: 0; border-top: 0; }
+body.macos .settings-section[hidden] { display: none; }
+body.macos .settings-section-head { margin: 0 4px 6px; }
+body.macos .settings-section h2 { font-size: 13px; font-weight: 600; color: var(--fg); text-transform: none; letter-spacing: 0; }
+body.macos .settings-panel .settings-reset {
+  padding: 0; font-size: 12px; color: var(--accent); background: transparent; box-shadow: none;
+}
+body.macos .settings-panel .settings-reset:hover { background: transparent; text-decoration: underline; }
+/* grouped rows: label left, control right, help under the label */
+body.macos .settings-row {
+  grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; row-gap: 0; align-items: center;
+  padding: 7px 12px; min-height: 22px; background: var(--group-bg);
+}
+body.macos .settings-section-head + .settings-row { border-radius: 10px 10px 0 0; }
+body.macos .settings-row:last-child { border-radius: 0 0 10px 10px; }
+body.macos .settings-section-head + .settings-row:last-child { border-radius: 10px; }
+body.macos .settings-row + .settings-row { box-shadow: inset 0 1px 0 var(--sep); }
+body.macos .settings-section { --group-edge: 0 0 0 0.5px var(--sep); }
+body.macos .settings-row label { grid-column: 1; grid-row: 1; padding-top: 0; color: var(--fg); }
+body.macos .settings-control { display: contents; }
+body.macos .settings-row input, body.macos .settings-row select { grid-column: 2; grid-row: 1; justify-self: end; }
+body.macos .settings-help { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; font-size: 11px; line-height: 1.35; color: var(--secondary); }
+/* a shortcut field says how it works itself (aria-description); no repeated hint per row */
+body.macos .type-keybinding .settings-help { display: none; }
+body.macos .settings-error { grid-column: 1 / -1; grid-row: 3; font-size: 11px; color: var(--bad); }
+body.macos .settings-panel input[type="text"], body.macos .settings-panel input[type="url"],
+body.macos .settings-panel input[type="number"], body.macos .settings-panel select {
+  height: 22px; padding: 1px 7px; font: 13px var(--ui-font); color: var(--fg); background: var(--field-bg);
+  border: 0; border-radius: 6px; box-shadow: inset 0 0 0 0.5px var(--field-edge), 0 0.5px 1px rgba(0, 0, 0, 0.05);
+}
+body.macos .settings-panel input[type="text"], body.macos .settings-panel input[type="url"] { width: 250px; }
+body.macos .settings-panel input[type="number"] { width: 76px; text-align: right; }
+body.macos .settings-panel select {
+  width: auto; min-width: 100px; padding-right: 24px; -webkit-appearance: none; appearance: none; background: var(--button-bg)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='12'%3E%3Cpath d='M1 4.5 4 1.5 7 4.5M1 7.5 4 10.5 7 7.5' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center;
+  box-shadow: 0 0 0 0.5px var(--button-edge), 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+}
+body.macos .settings-panel input.keybinding { width: 130px; text-align: center; font: 13px var(--ui-font); }
+body.macos .settings-panel input.keybinding:focus { background: var(--field-bg); box-shadow: inset 0 0 0 1.5px var(--accent); }
+body.macos .settings-row.invalid input, body.macos .settings-row.invalid select { box-shadow: inset 0 0 0 1px var(--bad); }
+/* booleans are switches, as in System Settings */
+body.macos .settings-panel input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none; position: relative; width: 26px; height: 15px; margin: 0;
+  border-radius: 8px; background: var(--switch-off); transition: background 0.15s; cursor: default;
+}
+body.macos .settings-panel input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 13px; height: 13px; border-radius: 50%;
+  background: #ffffff; box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.3); transition: transform 0.15s;
+}
+body.macos .settings-panel input[type="checkbox"]:checked { background: var(--accent); }
+body.macos .settings-panel input[type="checkbox"]:checked::after { transform: translateX(11px); }
+@media (max-width: 480px) {
+  body.macos .settings-row { grid-template-columns: 1fr; }
+  body.macos .settings-row input, body.macos .settings-row select { grid-column: 1; grid-row: 2; justify-self: start; margin-top: 4px; }
+  body.macos .settings-help { grid-row: 3; }
+  body.macos .settings-error { grid-row: 4; }
+  body.macos .settings-panel input[type="text"], body.macos .settings-panel input[type="url"] { width: 100%; }
+}

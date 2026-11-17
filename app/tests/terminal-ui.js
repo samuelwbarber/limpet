@@ -12,7 +12,7 @@ const platform = require('./platform');
     const page = await app.firstWindow();
     async function clickAction(selector) {
       if (!platform.isMac) return page.click(selector);
-      const labels = { '#find-output': 'Find in Output…', '#accounts-button': 'Accounts…', '#settings-button': 'Settings…', '#limpet-help': 'Getting Started…' };
+      const labels = { '#find-output': 'Find…', '#accounts-button': 'Accounts…', '#settings-button': 'Settings…', '#limpet-help': 'Getting Started…' };
       await app.evaluate(({ Menu }, label) => {
         const find = (menu) => menu.items.map((item) => item.label === label ? item : item.submenu ? find(item.submenu) : null).find(Boolean);
         const item = find(Menu.getApplicationMenu());

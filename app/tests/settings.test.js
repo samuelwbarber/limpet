@@ -292,15 +292,17 @@ test('the Mac command key is the Cmd modifier, canonical order Ctrl, Cmd, Alt, S
   assert.ok(settings.RESERVED.includes('Cmd+C') && settings.RESERVED.includes('Cmd+V'));
 });
 
-test('macOS defaults use command-key shortcuts and Menlo; other platforms are unchanged', () => {
+test('macOS defaults use command-key shortcuts and the Terminal.app font (SF Mono); other platforms are unchanged', () => {
   const mac = settings.defaults('darwin');
   assert.deepEqual(mac.keybindings, {
     newTab: 'Cmd+T', closeTab: 'Cmd+W', nextTab: 'Cmd+Shift+]', prevTab: 'Cmd+Shift+[', openSettings: 'Cmd+,', findOutput: 'Cmd+F',
   });
-  assert.equal(mac.terminal.fontFamily, 'Menlo, Monaco, monospace');
-  // Only the shortcuts and font family differ.
+  assert.equal(mac.terminal.fontFamily, "'SF Mono', Menlo, Monaco, monospace");
+  assert.equal(mac.terminal.fontSize, 12);
+  assert.equal(mac.terminal.lineHeight, 1.1);
+  // Only the shortcuts and the font (family, size, row height) differ.
   const win = settings.defaults('win32');
-  assert.deepEqual({ ...mac, terminal: { ...mac.terminal, fontFamily: win.terminal.fontFamily }, keybindings: win.keybindings }, win);
+  assert.deepEqual({ ...mac, terminal: { ...mac.terminal, fontFamily: win.terminal.fontFamily, fontSize: win.terminal.fontSize, lineHeight: win.terminal.lineHeight }, keybindings: win.keybindings }, win);
   assert.deepEqual(settings.defaults('linux'), win);
   assert.deepEqual(settings.defaults('win32').keybindings, {
     newTab: 'Ctrl+Shift+T', closeTab: 'Ctrl+Shift+W', nextTab: 'Ctrl+Tab', prevTab: 'Ctrl+Shift+Tab', openSettings: 'Ctrl+,', findOutput: 'Ctrl+Shift+F',
@@ -308,11 +310,11 @@ test('macOS defaults use command-key shortcuts and Menlo; other platforms are un
   // The schema the page is built from carries that platform's default.
   const kb = settings.schemaMetadata('darwin').find((s) => s.id === 'keybindings');
   assert.equal(kb.fields.find((f) => f.key === 'newTab').default, 'Cmd+T');
-  assert.equal(settings.schemaMetadata('darwin').find((s) => s.id === 'terminal').fields.find((f) => f.key === 'fontFamily').default, 'Menlo, Monaco, monospace');
+  assert.equal(settings.schemaMetadata('darwin').find((s) => s.id === 'terminal').fields.find((f) => f.key === 'fontFamily').default, "'SF Mono', Menlo, Monaco, monospace");
   assert.equal(settings.schemaMetadata('win32').find((s) => s.id === 'keybindings').fields.find((f) => f.key === 'newTab').default, 'Ctrl+Shift+T');
 });
 
-test('the Mac font default preserves explicitly saved fonts and restores Menlo on reset', () => {
+test('the Mac font default preserves explicitly saved fonts and restores SF Mono on reset', () => {
   const { dir, file } = scratch();
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -323,7 +325,7 @@ test('the Mac font default preserves explicitly saved fonts and restores Menlo o
       assert.equal(store.set({ terminal: { fontSize: 16 } }).ok, true);
       assert.equal(settings.createStore(file, fs, 'darwin').load().terminal.fontFamily, fontFamily);
       assert.equal(store.set({ terminal: { fontFamily: store.defaults().terminal.fontFamily } }).ok, true);
-      assert.equal(settings.createStore(file, fs, 'darwin').load().terminal.fontFamily, 'Menlo, Monaco, monospace');
+      assert.equal(settings.createStore(file, fs, 'darwin').load().terminal.fontFamily, "'SF Mono', Menlo, Monaco, monospace");
       assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).terminal.fontFamily, undefined);
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
