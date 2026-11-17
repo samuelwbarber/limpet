@@ -1071,6 +1071,54 @@ _limpet_note_launch() {
   printf '{"cmd":"%s","pid":%s,"startedAt":%s,"sessionId":"%s"}' "$1" "$$" "$(_limpet_now_ms)" "${2:-}" > "$_LIMPET_NOTE" 2>/dev/null || _LIMPET_NOTE=''
 }
 
+# Claude Code asks "Do you trust the files in this folder?" in every folder it
+# hasn't been told about, and never saves the answer for the home folder. In
+# limpet the answer is always yes. Trust is inherited by subfolders, so each
+# tab marks $HOME trusted for every Claude account once at startup (covering a
+# plain `claude` anywhere under it without shadowing the CLI), and claude1,
+# claude2, ... also mark the folder they start in. An account keeps it in
+# <configDir>/.claude.json, the default ~/.claude in ~/.claude.json. Written
+# only when missing, through a temp file and rename. LIMPET_ASK_TRUST=1 keeps
+# the prompt.
+_limpet_claude_json() {
+  if [ -z "${1:-}" ] || [ "$1" = "$HOME/.claude" ]; then printf '%s\n' "$HOME/.claude.json"; else printf '%s\n' "$1/.claude.json"; fi
+}
+# _limpet_trust_folder <folder> <claude.json>...
+_limpet_trust_folder() {
+  [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
+  [ "${LIMPET_ASK_TRUST:-}" = 1 ] && return 0
+  local py
+  py=$(_limpet_exe python3) || return 0
+  [ -n "$py" ] || return 0
+  "$py" - "$@" >/dev/null 2>&1 <<'PY' || :
+import json, os, sys
+folder = sys.argv[1]
+for cfg in sys.argv[2:]:
+    try:
+        try:
+            with open(cfg) as f: data = json.load(f)
+        except FileNotFoundError:
+            if not os.path.isdir(os.path.dirname(cfg)): continue
+            data = {}
+        entry = data.setdefault('projects', {}).setdefault(folder, {})
+        if entry.get('hasTrustDialogAccepted') is True: continue
+        entry['hasTrustDialogAccepted'] = True
+        tmp = '%s.limpet-%d' % (cfg, os.getpid())
+        with open(tmp, 'w') as f: json.dump(data, f, indent=2)
+        os.chmod(tmp, (os.stat(cfg).st_mode & 0o777) if os.path.exists(cfg) else 0o600)
+        os.replace(tmp, cfg)
+    except Exception:
+        pass
+PY
+}
+_limpet_trust_home() {
+  [ -n "${ZSH_VERSION:-}" ] && emulate -L sh
+  local n cfgs
+  cfgs=("$HOME/.claude.json")
+  for n in $(_limpet_account_numbers claude "$HOME"); do cfgs+=("$HOME/.claude-$n/.claude.json"); done
+  _limpet_trust_folder "$HOME" "${cfgs[@]}"
+}
+
 # Run an agent CLI as one limpet account: claude3 -> CLAUDE_CONFIG_DIR=~/.claude-3,
 # codex2 -> CODEX_HOME=~/.codex-2, copilot1 -> COPILOT_HOME=~/.copilot-1, agy2 ->
 # Antigravity with ~/.agy-2's login swapped in. `--limpet-plan` among the
@@ -1120,7 +1168,7 @@ limpet_invoke_agent() {
   fi
   [ "$kind" != claude ] && _limpet_note_launch "$cmd" "$sessionId"
   case "$kind" in
-    claude) CLAUDE_CONFIG_DIR="$dir" "$exe" "${args[@]}" ;;
+    claude) _limpet_trust_folder "$PWD" "$(_limpet_claude_json "$dir")"; CLAUDE_CONFIG_DIR="$dir" "$exe" "${args[@]}" ;;
     codex) CODEX_HOME="$dir" "$exe" "${args[@]}" ;;
     copilot) COPILOT_HOME="$dir" "$exe" "${args[@]}" ;;
     *) "$exe" "${args[@]}" ;;
@@ -1207,6 +1255,7 @@ fi
 
 # Finish any agyN launch whose shell was closed before it put plain agy's login back.
 _limpet_agy_repair 2>/dev/null || :
+_limpet_trust_home 2>/dev/null || :
 
 # ---------------------------------------------------------------------------
 # Tab-friendly window title: the current folder's name before each prompt.

@@ -183,3 +183,14 @@ test('the generator and app-server commands follow the platform', () => {
     assert.strictEqual(typeof platform.backdrop.unsupported, 'string');
   }
 });
+
+test('a tab does not inherit a Claude Code session\'s markers', () => {
+  const env = { PATH: '/bin', CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ID: 'x', CLAUDE_PID: '9', CLAUDE_EFFORT: 'high', CLAUDE_CONFIG_DIR: '/c' };
+  const out = platform.withoutClaudeSession(env);
+  assert.deepStrictEqual(out, { PATH: '/bin', CLAUDE_CONFIG_DIR: '/c' });
+  if (process.platform !== 'win32') {
+    const spawn = platform.shellSpawn({ shellDir: '/s', token: 't', env: { ...env, SHELL: '/bin/zsh', HOME: '/h' } });
+    assert.ok(!('CLAUDE_CODE_CHILD_SESSION' in spawn.env) && !('CLAUDECODE' in spawn.env));
+    assert.strictEqual(spawn.env.CLAUDE_CONFIG_DIR, '/c');
+  }
+});

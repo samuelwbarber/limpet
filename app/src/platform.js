@@ -46,7 +46,22 @@ let warnedShell = '';
 // without touching their dotfiles: zsh through ZDOTDIR (shell/rc/zsh/.zshrc
 // sources the user's own files, then limpet.sh), bash through --rcfile. Any
 // other shell runs plain; the integration is just absent there.
+// A Claude Code session's own markers (CLAUDECODE, CLAUDE_CODE_*, CLAUDE_PID,
+// CLAUDE_EFFORT) leak into limpet when it was started from a Claude shell. A
+// tab must not pass them on: a Claude started there would take itself for a
+// child session and stop saving its transcript. CLAUDE_CONFIG_DIR is the
+// user's own choice and is kept.
+function isClaudeSessionVar(name) {
+  return name === 'CLAUDECODE' || name === 'CLAUDE_PID' || name === 'CLAUDE_EFFORT' || name.startsWith('CLAUDE_CODE_');
+}
+function withoutClaudeSession(env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) if (!isClaudeSessionVar(k)) out[k] = v;
+  return out;
+}
+
 function shellSpawn({ shellDir, token, env = process.env }) {
+  env = withoutClaudeSession(env);
   const base = { ...env, LIMPET_TOKEN: token };
   if (isWindows) {
     return {
@@ -339,6 +354,7 @@ function fixGuiPath({ env = process.env, mac = isMac, runShell = run, onDone = (
 }
 
 module.exports = {
+  withoutClaudeSession,
   isWindows, isMac, isLinux,
   defaultShell, shellSpawn, fixSpawnHelpers,
   parseEtime, parsePs, listProcesses, parseLsof, fileHolders, killTree,
