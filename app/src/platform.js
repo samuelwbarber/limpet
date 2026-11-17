@@ -252,11 +252,12 @@ const codexAppServerCommand = isWindows
 // Claude Code keeps its OAuth login in the login Keychain as a generic
 // password: service "Claude Code-credentials" for ~/.claude, and
 // "Claude Code-credentials-<h>" when CLAUDE_CONFIG_DIR is set, h being the
-// first 8 hex chars of sha256 of that directory's path (NFC); account
-// "claude-code-user". The password is the same JSON .credentials.json holds.
+// first 8 hex chars of sha256 of that directory's path (NFC). The item's
+// account is the macOS user name ($USER), not a fixed string, so the item is
+// looked up by service alone. The password is the same JSON .credentials.json
+// holds; `security -w` prints it as hex if it holds a non-printable byte.
 
 const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
-const CLAUDE_KEYCHAIN_ACCOUNT = 'claude-code-user';
 
 function claudeKeychainService(configDir, plain) {
   if (plain) return CLAUDE_KEYCHAIN_SERVICE;
@@ -270,18 +271,71 @@ const CRED_TTL_MS = 60 * 1000;
 // The parsed credentials JSON for a config dir from the Keychain, or null.
 // macOS only; elsewhere Claude writes .credentials.json, which accounts.js
 // reads itself.
-function readClaudeCredentials(configDir, { plain = false, now = Date.now(), exec = execFileSync } = {}) {
-  if (!isMac) return null;
+function readClaudeCredentials(configDir, { plain = false, now = Date.now(), exec = execFileSync, mac = isMac } = {}) {
+  if (!mac) return null;
   const service = claudeKeychainService(configDir, plain);
   const hit = credCache.get(service);
   if (hit && now - hit.at < CRED_TTL_MS) return hit.value;
   let value = null;
   try {
-    const out = exec('security', ['find-generic-password', '-a', CLAUDE_KEYCHAIN_ACCOUNT, '-w', '-s', service], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
-    value = JSON.parse(String(out).trim());
+    const out = exec('security', ['find-generic-password', '-w', '-s', service], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    value = parseKeychainJson(out);
   } catch (_) { value = null; }
   credCache.set(service, { at: now, value });
   return value;
+}
+
+// `security find-generic-password -w` output -> the parsed JSON, or null. The
+// tool prints the password as-is, or as hex when it isn't all printable.
+function parseKeychainJson(out) {
+  const text = String(out || '').trim();
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { /* maybe hex */ }
+  if (!/^(?:[0-9a-f]{2})+$/i.test(text)) return null;
+  try { return JSON.parse(Buffer.from(text, 'hex').toString('utf8').replace(/\0+$/, '').trim()); } catch (_) { return null; }
+}
+
+// ---- PATH for an app started from the Dock / Finder -------------------------
+// launchd gives a GUI app PATH=/usr/bin:/bin:/usr/sbin:/sbin, so the agent
+// CLIs (~/.local/bin/claude, ~/.opencode/bin/opencode, /opt/homebrew/bin/...)
+// can't be found by presence checks (setup-info.js) or spawned (codex
+// app-server). The tabs are fine: their login shell builds its own PATH. On
+// macOS the app adds the usual install folders right away, then the login
+// shell's own PATH once that has been asked for. Windows and Linux: untouched.
+
+// `extra` entries appended to `current` (a PATH string), each once, current
+// order kept.
+function mergePath(current, extra) {
+  const out = String(current || '').split(':').filter(Boolean);
+  for (const dir of extra) if (dir && !out.includes(dir)) out.push(dir);
+  return out.join(':');
+}
+
+// Where agent CLIs are usually installed on a Mac, those that exist.
+function commonBinDirs(home = os.homedir(), exists = fs.existsSync) {
+  return [
+    path.join(home, '.local', 'bin'), path.join(home, '.opencode', 'bin'), path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.bun', 'bin'), path.join(home, '.volta', 'bin'), path.join(home, 'bin'),
+    '/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin',
+  ].filter((d) => { try { return exists(d); } catch (_) { return false; } });
+}
+
+const PATH_MARK = '__LIMPET_PATH__';
+// The PATH line out of `<shell> -ilc 'printf ...'` (rc files may print noise).
+function parseShellPath(out) {
+  const m = new RegExp(`${PATH_MARK}([^\\n]*)${PATH_MARK}`).exec(String(out || ''));
+  return m ? m[1].split(':').filter((d) => d.startsWith('/')) : [];
+}
+
+// Fix process.env.PATH for a GUI launch on macOS. Synchronous part: common
+// folders. Then asks the login shell (async, 8 s cap); `onDone` runs after.
+function fixGuiPath({ env = process.env, mac = isMac, runShell = run, onDone = () => {} } = {}) {
+  if (!mac) { onDone(); return Promise.resolve(env.PATH || ''); }
+  env.PATH = mergePath(env.PATH, commonBinDirs());
+  const shell = defaultShell(env);
+  return runShell(shell, ['-ilc', `printf '${PATH_MARK}%s${PATH_MARK}' "$PATH"`], { timeoutMs: 8000, env })
+    .then((out) => { env.PATH = mergePath(env.PATH, parseShellPath(out)); }, () => {})
+    .then(() => { onDone(); return env.PATH; });
 }
 
 module.exports = {
@@ -290,5 +344,6 @@ module.exports = {
   parseEtime, parsePs, listProcesses, parseLsof, fileHolders, killTree,
   psQuote, posixQuote, shellQuote, shellKind,
   backdrop, codexAppServerCommand,
-  CLAUDE_KEYCHAIN_SERVICE, CLAUDE_KEYCHAIN_ACCOUNT, claudeKeychainService, readClaudeCredentials,
+  CLAUDE_KEYCHAIN_SERVICE, claudeKeychainService, readClaudeCredentials, parseKeychainJson,
+  mergePath, commonBinDirs, parseShellPath, fixGuiPath,
 };

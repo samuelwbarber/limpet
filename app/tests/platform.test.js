@@ -63,7 +63,60 @@ test('claudeKeychainService is the plain service for ~/.claude and a hashed one 
   const { createHash } = require('crypto');
   assert.strictEqual(scoped, `Claude Code-credentials-${createHash('sha256').update('/Users/me/.claude-3').digest('hex').slice(0, 8)}`);
   assert.strictEqual(platform.claudeKeychainService('/Users/me/caf\u00e9/.claude-1', false), platform.claudeKeychainService('/Users/me/cafe\u0301/.claude-1', false));
-  assert.strictEqual(platform.CLAUDE_KEYCHAIN_ACCOUNT, 'claude-code-user');
+  // A known pair: Claude Code's item for /Users/me/.claude-1.
+  assert.strictEqual(platform.claudeKeychainService('/Users/me/.claude-1', false), `Claude Code-credentials-${createHash('sha256').update('/Users/me/.claude-1').digest('hex').slice(0, 8)}`);
+});
+
+test('readClaudeCredentials looks the item up by service alone (its account is the macOS user name, not a fixed one)', () => {
+  // A fake Keychain the way Claude Code fills it: account = $USER.
+  const items = new Map([[platform.claudeKeychainService('/Users/me/.claude-4', false), { acct: 'me', pw: JSON.stringify({ claudeAiOauth: { accessToken: 'fake' } }) }]]);
+  const exec = (file, args) => {
+    const svc = args[args.indexOf('-s') + 1];
+    const a = args.includes('-a') ? args[args.indexOf('-a') + 1] : null;
+    const item = items.get(svc);
+    if (!item || (a !== null && a !== item.acct)) throw new Error('The specified item could not be found in the keychain.');
+    return `${item.pw}\n`;
+  };
+  assert.deepStrictEqual(platform.readClaudeCredentials('/Users/me/.claude-4', { exec, mac: true, now: 1e9 }), { claudeAiOauth: { accessToken: 'fake' } });
+  assert.strictEqual(platform.readClaudeCredentials('/Users/me/.claude-5', { exec, mac: true, now: 1e9 }), null);
+  assert.strictEqual(platform.readClaudeCredentials('/Users/me/.claude-4', { exec, mac: false, now: 2e9 }), null, 'never asks off macOS');
+});
+
+test('parseKeychainJson reads plain and hex-printed passwords', () => {
+  const doc = { claudeAiOauth: { accessToken: 'x' } };
+  assert.deepStrictEqual(platform.parseKeychainJson(`${JSON.stringify(doc)}\n`), doc);
+  assert.deepStrictEqual(platform.parseKeychainJson(Buffer.from(`${JSON.stringify(doc)}\0`).toString('hex')), doc);
+  assert.strictEqual(platform.parseKeychainJson(''), null);
+  assert.strictEqual(platform.parseKeychainJson('not json'), null);
+});
+
+test('mergePath appends missing folders once; parseShellPath finds the marked PATH among rc noise', () => {
+  assert.strictEqual(platform.mergePath('/usr/bin:/bin', ['/opt/homebrew/bin', '/usr/bin', '/Users/me/.local/bin']), '/usr/bin:/bin:/opt/homebrew/bin:/Users/me/.local/bin');
+  assert.strictEqual(platform.mergePath('', ['/a']), '/a');
+  assert.deepStrictEqual(platform.parseShellPath('welcome!\n__LIMPET_PATH__/Users/me/.opencode/bin:/usr/bin::relative__LIMPET_PATH__'), ['/Users/me/.opencode/bin', '/usr/bin']);
+  assert.deepStrictEqual(platform.parseShellPath(null), []);
+});
+
+test('commonBinDirs lists the usual agent install folders that exist', () => {
+  const have = new Set(['/Users/me/.local/bin', '/Users/me/.opencode/bin', '/opt/homebrew/bin']);
+  assert.deepStrictEqual(platform.commonBinDirs('/Users/me', (d) => have.has(d)), ['/Users/me/.local/bin', '/Users/me/.opencode/bin', '/opt/homebrew/bin']);
+});
+
+test('fixGuiPath widens a Dock-launched PATH on macOS with the login shell\'s, and leaves other platforms alone', async () => {
+  const env = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', SHELL: '/bin/zsh' };
+  const asked = [];
+  const runShell = async (file, args) => { asked.push([file, args[0]]); return 'motd\n__LIMPET_PATH__/Users/me/.opencode/bin:/usr/bin__LIMPET_PATH__'; };
+  const out = await platform.fixGuiPath({ env, mac: true, runShell });
+  assert.deepStrictEqual(asked, [['/bin/zsh', '-ilc']]);
+  assert.ok(out.startsWith('/usr/bin:/bin:/usr/sbin:/sbin'), 'existing order kept');
+  assert.ok(out.split(':').includes('/Users/me/.opencode/bin'));
+  assert.strictEqual(out.split(':').filter((d) => d === '/usr/bin').length, 1);
+  const other = { PATH: '/usr/bin' };
+  assert.strictEqual(await platform.fixGuiPath({ env: other, mac: false, runShell: () => { throw new Error('must not run'); } }), '/usr/bin');
+  assert.strictEqual(other.PATH, '/usr/bin');
+  // A shell that fails or hangs (run() resolves null) still leaves a usable PATH.
+  const broken = { PATH: '/usr/bin', SHELL: '/bin/zsh' };
+  assert.ok((await platform.fixGuiPath({ env: broken, mac: true, runShell: async () => null })).startsWith('/usr/bin'));
 });
 
 test('readClaudeCredentials asks the Keychain on macOS only, parses the JSON and caches a miss', () => {
@@ -76,7 +129,7 @@ test('readClaudeCredentials asks the Keychain on macOS only, parses the JSON and
     return;
   }
   assert.deepStrictEqual(r, { claudeAiOauth: { accessToken: 'tok' } });
-  assert.deepStrictEqual(calls, [['security', 'find-generic-password', '-a', 'claude-code-user', '-w', '-s', platform.claudeKeychainService('/Users/me/.claude-9', false)]]);
+  assert.deepStrictEqual(calls, [['security', 'find-generic-password', '-w', '-s', platform.claudeKeychainService('/Users/me/.claude-9', false)]]);
   const again = platform.readClaudeCredentials('/Users/me/.claude-9', { plain: false, exec, now: 2 });
   assert.deepStrictEqual(again, r);
   assert.strictEqual(calls.length, 1, 'cached for a minute');
