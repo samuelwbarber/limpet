@@ -118,6 +118,8 @@ function describeAccounts(home, io) {
       // Keychain, which io.claudeCredentials (platform.js) reads.
       loggedIn: io.exists(path.join(configDir, '.credentials.json')) || !!(io.claudeCredentials && io.claudeCredentials(configDir, number === 0)),
       email: oauth && typeof oauth.emailAddress === 'string' ? oauth.emailAddress : '',
+      // The plan's name as Claude Code shows it ("Max", "Pro", ...), if cached.
+      plan: oauth && typeof oauth.planDisplayName === 'string' ? oauth.planDisplayName : '',
     };
   });
 }

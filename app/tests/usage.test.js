@@ -19,10 +19,10 @@ test('parseCodexUsage tells the 5-hour and weekly windows apart by length, which
     primary_window: { used_percent: 40, limit_window_seconds: 18000, reset_at: 1790000000 },
     secondary_window: { used_percent: 5, limit_window_seconds: 604800, reset_at: 1790500000 },
   } });
-  assert.deepStrictEqual(plus, { fiveHour: { left: 60, resetsAt: new Date(1790000000000).toISOString() }, weekly: { left: 95, resetsAt: new Date(1790500000000).toISOString() }, plan: 'plus' });
+  assert.deepStrictEqual(plus, { fiveHour: { left: 60, resetsAt: new Date(1790000000000).toISOString() }, weekly: { left: 95, resetsAt: new Date(1790500000000).toISOString() }, plan: 'Plus' });
   // A plan with a single weekly window and nothing else.
   const lite = parseCodexUsage({ plan_type: 'prolite', rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_at: 1790081311 }, secondary_window: null } });
-  assert.deepStrictEqual(lite, { fiveHour: null, weekly: { left: 0, resetsAt: new Date(1790081311000).toISOString() }, plan: 'prolite' });
+  assert.deepStrictEqual(lite, { fiveHour: null, weekly: { left: 0, resetsAt: new Date(1790081311000).toISOString() }, plan: 'Pro Lite' });
   assert.deepStrictEqual(parseCodexUsage({}), { error: 'unexpected reply' });
 });
 
@@ -49,7 +49,7 @@ test('readUsage sends each account its own stored token and reports expiry witho
   assert.deepStrictEqual(await readUsage(acct('claude', 'claude1', '.claude-1'), io, opts), { fiveHour: { left: 70, resetsAt: null }, weekly: { left: 90, resetsAt: null }, plan: '' });
   assert.deepStrictEqual(await readUsage(acct('claude', 'claude2', '.claude-2'), io, opts), { error: 'sign-in expired; run claude2 to refresh' });
   assert.deepStrictEqual(await readUsage(acct('claude', 'claude3', '.claude-3'), io, opts), { error: 'not signed in' });
-  assert.deepStrictEqual(await readUsage(acct('codex', 'codex', '.codex'), io, opts), { fiveHour: { left: 99, resetsAt: null }, weekly: { left: 98, resetsAt: null }, plan: 'pro' });
+  assert.deepStrictEqual(await readUsage(acct('codex', 'codex', '.codex'), io, opts), { fiveHour: { left: 99, resetsAt: null }, weekly: { left: 98, resetsAt: null }, plan: 'Pro' });
   assert.deepStrictEqual(await readUsage(acct('codex', 'codex1', '.codex-1'), io, opts), { error: 'sign-in expired; run codex1 to refresh' });
   assert.deepStrictEqual(await readUsage(acct('codex', 'codex2', '.codex-2'), io, opts), { error: 'API key: no limits' });
   assert.deepStrictEqual(calls, [
@@ -76,4 +76,16 @@ test('readUsage falls back to the Keychain reader for a Claude account with no .
   assert.deepStrictEqual(calls, [[CLAUDE_USAGE_URL, 'Bearer kc-token']]);
   const none = await readUsage({ kind: 'claude', cmd: 'claude', number: 0, configDir: path.join('/Users', 'me', '.claude') }, io, { fetchImpl });
   assert.deepStrictEqual(none, { error: 'not signed in' });
+});
+
+test('plan labels: Claude Code\'s display name, else subscriptionType + tier; ChatGPT plan types spelled out', () => {
+  const { claudePlanLabel, codexPlanLabel } = require('../src/usage');
+  assert.strictEqual(claudePlanLabel({ subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' }), 'Max 20x');
+  assert.strictEqual(claudePlanLabel({ subscriptionType: 'pro' }), 'Pro');
+  assert.strictEqual(claudePlanLabel({ subscriptionType: 'max' }, 'Max'), 'Max');
+  assert.strictEqual(claudePlanLabel(null), '');
+  assert.strictEqual(codexPlanLabel('prolite'), 'Pro Lite');
+  assert.strictEqual(codexPlanLabel('plus'), 'Plus');
+  assert.strictEqual(codexPlanLabel('some_new_plan'), 'Some New Plan');
+  assert.strictEqual(codexPlanLabel(undefined), '');
 });

@@ -195,7 +195,8 @@ Differences worth knowing:
 - Claude Code on macOS keeps its login in the Keychain: item `Claude
   Code-credentials` for plain `claude`, `Claude Code-credentials-<h>` for
   `claudeN` where `h` is the first 8 hex characters of the SHA-256 of the
-  config directory path, account `claude-code-user`. The app reads
+  config directory path; the item's account is your macOS user name, so
+  the app looks it up by service alone. The app reads
   `.credentials.json` when it exists and the Keychain otherwise.
 - Antigravity: `agyN` moves the `agy` Keychain item (service
   `gemini:antigravity`, or `gemini`/`antigravity`; `LIMPET_AGY_KEYCHAIN_SERVICE`

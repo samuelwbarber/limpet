@@ -50,6 +50,11 @@ try {
   console.error('[limpet] node-pty unavailable, using pipe fallback:', e.message);
 }
 
+// Started from the Dock/Finder on macOS the app gets launchd's bare PATH, so
+// agent CLIs (opencode, codex, ...) wouldn't be found; add the usual install
+// folders and the login shell's PATH (platform.fixGuiPath; no-op elsewhere).
+platform.fixGuiPath().catch(() => {});
+
 // The installer ships shell/ as resources/shell (extraResources in
 // package.json): the PowerShell module on Windows, limpet.sh and the rc files
 // the tab's zsh or bash loads on macOS/Linux (platform.shellSpawn).

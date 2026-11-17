@@ -5,7 +5,8 @@
 // dependencies; unit tested with a fake fetch in tests/usage.test.js.
 //
 //   Claude: GET https://api.anthropic.com/api/oauth/usage with the OAuth access
-//           token from <config dir>/.credentials.json -> five_hour / seven_day,
+//           token from <config dir>/.credentials.json (macOS: the login
+//           Keychain, see platform.readClaudeCredentials) -> five_hour / seven_day,
 //           each { utilization (0-100), resets_at }.
 //   Codex:  GET https://chatgpt.com/backend-api/wham/usage with the ChatGPT
 //           access token from <codex home>/auth.json -> rate_limit.primary_window
@@ -28,11 +29,28 @@ function jwtClaims(token) {
   try { return JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8')); } catch (_) { return null; }
 }
 
-function parseClaudeUsage(doc) {
+function parseClaudeUsage(doc, plan = '') {
   const win = (w) => (w && typeof w.utilization === 'number' ? { left: left(w.utilization), resetsAt: w.resets_at || null } : null);
   if (!doc || typeof doc !== 'object') return { error: 'unexpected reply' };
-  return { fiveHour: win(doc.five_hour), weekly: win(doc.seven_day), plan: '' };
+  return { fiveHour: win(doc.five_hour), weekly: win(doc.seven_day), plan };
 }
+
+const titleCase = (s) => String(s).replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+
+// A Claude plan for people: the name Claude Code shows (oauthAccount's
+// planDisplayName, passed in as `display`), else the stored login's
+// subscriptionType with the multiplier from rateLimitTier ("Max 20x").
+function claudePlanLabel(oauth, display = '') {
+  if (display) return String(display);
+  const type = oauth && typeof oauth.subscriptionType === 'string' ? oauth.subscriptionType : '';
+  if (!type) return '';
+  const x = /_(\d+x)$/.exec(String((oauth && oauth.rateLimitTier) || ''));
+  return `${titleCase(type)}${x ? ` ${x[1]}` : ''}`;
+}
+
+// ChatGPT's plan_type for people: prolite -> Pro Lite, plus -> Plus, ...
+const CODEX_PLANS = { prolite: 'Pro Lite', pro: 'Pro', plus: 'Plus', free: 'Free', team: 'Team', business: 'Business', enterprise: 'Enterprise', edu: 'Edu', go: 'Go' };
+const codexPlanLabel = (type) => (typeof type === 'string' && type ? CODEX_PLANS[type.toLowerCase()] || titleCase(type) : '');
 
 function parseCodexUsage(doc) {
   const rl = doc && doc.rate_limit;
@@ -42,7 +60,7 @@ function parseCodexUsage(doc) {
   return {
     fiveHour: win(windows.find((w) => Number(w.limit_window_seconds) <= SIX_HOURS)),
     weekly: win(windows.find((w) => Number(w.limit_window_seconds) > SIX_HOURS)),
-    plan: typeof doc.plan_type === 'string' ? doc.plan_type : '',
+    plan: codexPlanLabel(doc.plan_type),
   };
 }
 
@@ -84,7 +102,7 @@ async function readUsage(account, io, { fetchImpl = globalThis.fetch, timeoutMs 
   const res = await get(fetchImpl, CLAUDE_USAGE_URL, {
     Authorization: `Bearer ${oauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20',
   }, timeoutMs);
-  return res.error ? res : parseClaudeUsage(res.doc);
+  return res.error ? res : parseClaudeUsage(res.doc, claudePlanLabel(oauth, account.plan));
 }
 
-module.exports = { CLAUDE_USAGE_URL, CODEX_USAGE_URL, parseClaudeUsage, parseCodexUsage, readUsage, jwtClaims };
+module.exports = { CLAUDE_USAGE_URL, CODEX_USAGE_URL, parseClaudeUsage, parseCodexUsage, readUsage, jwtClaims, claudePlanLabel, codexPlanLabel };

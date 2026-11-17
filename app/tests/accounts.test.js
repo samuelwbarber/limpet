@@ -358,3 +358,64 @@ test('OpenCode remains a single optional entry and never offers numbered logins'
   assert.equal(launchCommand('opencode', { prompt: "read 'handoff'" }, 'posix'), "opencode --prompt " + posixQuote("read 'handoff'"));
   assert.throws(() => launchCommand('opencode', { resume: 'ses_bad;command' }));
 });
+
+// A macOS home laid out the way Claude Code and Codex leave it: Claude's
+// logins only in the Keychain (no .credentials.json), plain claude's profile
+// in ~/.claude.json, one Claude dir never signed in, one Codex home without
+// auth.json. Fake addresses and tokens only.
+test('describeAccounts + readUsage on a macOS-style fake home: Keychain-only Claude logins, plan names, a signed-out dir', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const platform = require('../src/platform');
+  const { readUsage } = require('../src/usage');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'limpet-machome-'));
+  try {
+    const write = (rel, doc) => { fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true }); fs.writeFileSync(path.join(home, rel), JSON.stringify(doc)); };
+    const profile = (email) => ({ oauthAccount: { emailAddress: email, planDisplayName: 'Max', organizationType: 'claude_max' } });
+    fs.mkdirSync(path.join(home, '.claude'));
+    write('.claude.json', profile('plain@example.com'));
+    write('.claude-1/.claude.json', profile('one@example.com'));
+    write('.claude-2/.claude.json', { firstStartTime: 'x' });
+    const idToken = `h.${Buffer.from(JSON.stringify({ email: 'codex@example.com' })).toString('base64url')}.s`;
+    write('.codex/auth.json', { tokens: { id_token: idToken, access_token: 'fake', account_id: 'acct' } });
+    fs.mkdirSync(path.join(home, '.codex-1'));
+    fs.writeFileSync(path.join(home, '.codex-1', 'config.toml'), '');
+    // The Keychain: items for ~/.claude (plain) and ~/.claude-1, account = the user name.
+    const creds = { claudeAiOauth: { accessToken: 'fake-at', expiresAt: Date.now() + 3600e3, subscriptionType: 'max', rateLimitTier: 'default_claude_max_20x' } };
+    const items = new Map([[platform.claudeKeychainService(path.join(home, '.claude'), true), creds], [platform.claudeKeychainService(path.join(home, '.claude-1'), false), creds]]);
+    const exec = (file, args) => {
+      if (args.includes('-a') && args[args.indexOf('-a') + 1] !== 'me') throw new Error('not found');
+      const doc = items.get(args[args.indexOf('-s') + 1]);
+      if (!doc) throw new Error('not found');
+      return JSON.stringify(doc);
+    };
+    let t = 1e12;
+    const io = {
+      exists: (p) => fs.existsSync(p),
+      readJson: (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } },
+      listDir: (p) => { try { return fs.readdirSync(p); } catch (_) { return []; } },
+      commandExists: () => false,
+      claudeCredentials: (dir, plain) => platform.readClaudeCredentials(dir, { plain, exec, mac: true, now: (t += 1e6) }),
+    };
+    const rows = describeAccounts(home, io);
+    const view = rows.filter((a) => a.kind === 'claude' || a.kind === 'codex').map((a) => [a.cmd, a.loggedIn, a.email, a.plan || '']);
+    assert.deepStrictEqual(view, [
+      ['claude', true, 'plain@example.com', 'Max'],
+      ['claude1', true, 'one@example.com', 'Max'],
+      ['claude2', false, '', ''],
+      ['codex', true, 'codex@example.com', ''],
+      ['codex1', false, '', ''],
+    ]);
+    assert.deepStrictEqual(signInHints(rows), ['claude2', 'claude3', 'codex1', 'codex2']);
+    const fetchImpl = async (url) => ({ status: 200, ok: true, json: async () => (url.includes('anthropic')
+      ? { five_hour: { utilization: 25, resets_at: null }, seven_day: { utilization: 50, resets_at: null } }
+      : { plan_type: 'prolite', rate_limit: { primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_at: 1 }, secondary_window: null } }) });
+    const u1 = await readUsage(rows.find((a) => a.cmd === 'claude1'), io, { fetchImpl });
+    assert.deepStrictEqual(u1, { fiveHour: { left: 75, resetsAt: null }, weekly: { left: 50, resetsAt: null }, plan: 'Max' });
+    const ux = await readUsage(rows.find((a) => a.cmd === 'codex'), io, { fetchImpl });
+    assert.strictEqual(ux.plan, 'Pro Lite');
+    assert.strictEqual(ux.weekly.left, 0);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
