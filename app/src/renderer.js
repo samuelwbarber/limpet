@@ -612,10 +612,8 @@ if (typeof window.limpet.onMenuAction === 'function') {
 }
 
 // macOS dims the title bar of a window that isn't the key window.
-if (IS_MAC) {
-  document.body.classList.toggle('window-inactive', !document.hasFocus());
-  window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
-  window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
+if (IS_MAC && typeof window.limpet.onWindowKey === 'function') {
+  window.limpet.onWindowKey((key) => document.body.classList.toggle('window-inactive', !key));
 }
 
 // macOS hides the title bar while a window is full screen and the close,

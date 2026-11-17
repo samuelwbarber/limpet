@@ -1419,6 +1419,14 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
   const sendFullScreen = (on) => { if (!browserWin.isDestroyed()) browserWin.webContents.send('window:fullscreen', on); };
   browserWin.on('enter-full-screen', () => sendFullScreen(true));
   browserWin.on('leave-full-screen', () => sendFullScreen(false));
+  // macOS greys the title bar of a window that isn't the key window; the
+  // page-drawn title row follows (the page's own focus events miss app switches).
+  if (platform.isMac) {
+    const sendKey = () => { if (!browserWin.isDestroyed()) browserWin.webContents.send('window:key', browserWin.isFocused()); };
+    browserWin.on('focus', sendKey);
+    browserWin.on('blur', sendKey);
+    browserWin.webContents.on('did-finish-load', sendKey);
+  }
 
   let closeApproved = false;
   let closePending = false;

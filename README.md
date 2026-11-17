@@ -118,8 +118,8 @@ Changes apply live to every tab. Details in [`app/README.md`](app/README.md#sett
 ## Finding your way around
 
 On Windows and Linux, the toolbar exposes **Accounts**, **Find**, **Settings** and **?** help.
-On macOS, the terminal keeps only tabs and **+** visible: use **Shell → Accounts…**
-or **Find in Output…**, **limpet → Settings…**, and **Help → Getting Started…**
+On macOS, the window looks like Terminal.app's (one title bar; the tab bar
+appears once there are two tabs): use **Shell → Accounts…** or **Find…**, **limpet → Settings…**, and **Help → Getting Started…**
 in the menu bar. Right-clicking a tab also opens accounts and settings. Search
 terminal output with **Ctrl+Shift+F** (or **Cmd+F** on macOS), move between
 matches, or jump to the bottom. Tabs scroll when there are too many to fit;

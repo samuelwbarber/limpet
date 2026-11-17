@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('limpet', {
   isFullScreen: () => ipcRenderer.invoke('window:is-fullscreen'),
   onFullScreen: (cb) => ipcRenderer.on('window:fullscreen', (_e, on) => cb(on)),
   windowControl: (action) => ipcRenderer.send('window:control', action),
+  // macOS: whether this window is the key window (its title bar greys when not).
+  onWindowKey: (cb) => ipcRenderer.on('window:key', (_e, on) => cb(on)),
   createSession: (options) => ipcRenderer.invoke('term:create', options),
   restoreWorkspace: () => ipcRenderer.invoke('workspace:restore'),
   sessionTitle: (id, title) => ipcRenderer.send('term:title', { id, title }),
