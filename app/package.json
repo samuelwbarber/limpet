@@ -1,7 +1,7 @@
 {
   "name": "limpet",
   "productName": "limpet",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "limpet - a tabbed terminal with resilient SSH, inline images, drag-and-drop upload and any number of coding-agent accounts (Windows, macOS, Linux)",
   "author": "samuelwbarber",
   "main": "src/main.js",

@@ -83,7 +83,7 @@ function isDeveloperIdSigned(codesignOutput) {
 
 // The .app bundle the running executable sits in: <bundle>/Contents/MacOS/<exe>.
 function bundlePath(execPath = process.execPath) {
-  return path.resolve(execPath, '../../..');
+  return path.posix.resolve(execPath, '../../..');
 }
 
 // The swap, as a /bin/sh script. It waits (up to 10 minutes) for `pid` to exit,
