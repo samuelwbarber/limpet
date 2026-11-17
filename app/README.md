@@ -111,10 +111,10 @@ On macOS the defaults are the Mac ones: `⌘T` new tab, `⌘W` close tab, `⌘�
 never interrupts), `⌘V` pastes; `Ctrl+C` stays the interrupt and
 `Ctrl+Shift+V` still pastes, and Terminal.app's own keys work too: `⌘1`…`⌘9`
 pick a tab, `⌘K` clears to start, `⌘+` / `⌘-` / `⌘0` change the font size. The
-window looks like Terminal's: one title bar, the tab bar only once there are two
-tabs, SF Mono 12. Secondary actions live in the menu bar: **Shell → Find… /
+tabs sit in the title bar beside the window buttons, and the terminal uses
+Terminal's SF Mono 12. Secondary actions live in the menu bar: **Shell → Find… /
 Accounts…**, **limpet → Settings…**, and **Help → Getting Started…**. Right-click
-a tab (or the title, with one tab) for accounts and settings too.
+a tab for accounts and settings too.
 There is no Edit menu, so each shortcut has exactly one path into the terminal.
 The bottom status bar appears only for SSH destinations, exited sessions or
 notices; an idle local shell uses the full terminal area.

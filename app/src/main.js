@@ -1341,15 +1341,15 @@ async function confirmSessionClose(browserWin, owned) {
   return response === 1;
 }
 
-// Where the native window buttons sit in the page-drawn 32px title row (macOS).
-const MAC_TRAFFIC_LIGHTS = { x: 9, y: 9 };
+// Where the native window buttons sit: centred in the 38px tab bar (macOS).
+const MAC_TRAFFIC_LIGHTS = { x: 14, y: 12 };
 
 function createWindow({ sessionId = null, sourceWindow = null, point = null, title = 'limpet' } = {}) {
   const detached = sessionId !== null;
   const bounds = detached ? detachedWindowBounds(sourceWindow, point) : { width: 1000, height: 660 };
-  // macOS: a unified title bar like Terminal.app's. The page draws the title
-  // row and the tab bar (macos.css) under the native close/minimise/zoom
-  // buttons, which are moved down to sit in the middle of that row.
+  // macOS: a unified title bar. The page's tab bar (macos.css) is the title
+  // bar, with the native close/minimise/zoom buttons moved down to sit in the
+  // middle of it.
   const macChrome = platform.isMac ? { titleBarStyle: 'hidden', trafficLightPosition: MAC_TRAFFIC_LIGHTS } : {};
   const browserWin = new BrowserWindow({
     ...bounds, ...macChrome, backgroundColor: '#1e1e2e', title: 'limpet',
@@ -1420,7 +1420,7 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
   browserWin.on('enter-full-screen', () => sendFullScreen(true));
   browserWin.on('leave-full-screen', () => sendFullScreen(false));
   // macOS greys the title bar of a window that isn't the key window; the
-  // page-drawn title row follows (the page's own focus events miss app switches).
+  // page-drawn tab bar follows (the page's own focus events miss app switches).
   if (platform.isMac) {
     const sendKey = () => { if (!browserWin.isDestroyed()) browserWin.webContents.send('window:key', browserWin.isFocused()); };
     browserWin.on('focus', sendKey);
