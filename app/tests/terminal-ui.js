@@ -111,6 +111,8 @@ const platform = require('./platform');
     // test never takes over the screen; close is stubbed to keep the window.
     assert.equal(await page.locator('#window-controls').isVisible(), false);
     if (platform.isMac) {
+      // The green button fills the screen rather than opening a full-screen Space.
+      assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isFullScreenable()), false);
       await app.evaluate(({ BrowserWindow }) => { const win = BrowserWindow.getAllWindows()[0]; win.close = () => { globalThis.limpetTestCloseAsked = true; }; win.emit('enter-full-screen'); });
       await page.waitForFunction(() => document.body.classList.contains('fullscreen'));
       assert.equal(await page.locator('#window-controls button').count(), 3);

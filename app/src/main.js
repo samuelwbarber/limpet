@@ -1355,7 +1355,11 @@ function createWindow({ sessionId = null, sourceWindow = null, point = null, tit
   // macOS: a unified title bar. The page's tab bar (macos.css) is the title
   // bar, with the native close/minimise/zoom buttons moved down to sit in the
   // middle of it.
-  const macChrome = platform.isMac ? { titleBarStyle: 'hidden', trafficLightPosition: MAC_TRAFFIC_LIGHTS } : {};
+  // fullscreenable: false makes the green button (and Window > Zoom) fill the
+  // screen instead of moving the window into its own full-screen Space, where
+  // it vanishes from the desktop and is easy to lose on another monitor.
+  const macChrome = platform.isMac
+    ? { titleBarStyle: 'hidden', trafficLightPosition: MAC_TRAFFIC_LIGHTS, fullscreenable: false } : {};
   const browserWin = new BrowserWindow({
     ...bounds, ...macChrome, backgroundColor: '#1e1e2e', title: 'limpet',
     icon: path.join(__dirname, '..', 'build', 'limpet.ico'),

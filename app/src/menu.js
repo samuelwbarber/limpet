@@ -66,8 +66,6 @@ function installAppMenu({ keybindings = {}, newWindow = null } = {}) {
       item('Default Font Size', 'font-reset', 'Cmd+0'),
       item('Bigger', 'font-bigger', 'Cmd+Plus'),
       item('Smaller', 'font-smaller', 'Cmd+-'),
-      { type: 'separator' },
-      { role: 'togglefullscreen' },
     ] },
     { role: 'window', label: 'Window', submenu: [
       { role: 'minimize' }, { role: 'zoom' }, { type: 'separator' },
