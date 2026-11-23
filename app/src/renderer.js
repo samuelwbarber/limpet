@@ -483,12 +483,23 @@ function copySelection(term) {
   return false;
 }
 function pasteClipboard(id) {
-  window.limpet.clipboardPaste().then((text) => {
-    const tab = tabs.get(id);
+  const tab = tabs.get(id);
+  if (!tab || tab.clipboardPending) return;
+  tab.clipboardPending = true;
+  return window.limpet.clipboardPaste(id).then((result) => {
+    if (tabs.get(id) !== tab) return;
+    if (result.kind === 'error') {
+      window.LimpetTerminalUI?.announce(`Paste failed: ${result.message}`, id);
+      return;
+    }
     // Let xterm normalize newlines and apply bracketed-paste mode. term.paste()
     // emits exactly one onData event, which is the sole path into the PTY.
-    if (tab && text) tab.term.paste(text);
-  }).catch((e) => console.error('[limpet] paste failed:', e));
+    if (result.text) tab.term.paste(result.text);
+    window.LimpetTerminalUI?.announce(result.kind === 'image' ? 'Image pasted. Add your message and press Enter when ready.' : '', id);
+  }).catch((e) => {
+    console.error('[limpet] paste failed:', e);
+    window.LimpetTerminalUI?.announce(`Paste failed: ${e.message}`, id);
+  }).finally(() => { tab.clipboardPending = false; });
 }
 
 function consumeKey(e) {

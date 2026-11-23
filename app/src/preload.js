@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('limpet', {
   cancelBackdropSetup: () => ipcRenderer.invoke('backdrop:cancel'),
   onBackdropSetup: (cb) => ipcRenderer.on('backdrop:setup', (_e, p) => cb(p)),
   clipboardCopy: (text) => ipcRenderer.invoke('clip:write', text),
-  clipboardPaste: () => ipcRenderer.invoke('clip:read'),
+  clipboardPaste: (id) => ipcRenderer.invoke('clip:read', id),
   openExternal: (url) => ipcRenderer.invoke('external:open', url),
   onReels: (cb) => ipcRenderer.on('reels:toggle', (_e, url) => cb(url)),
   claudeAccounts: (id) => ipcRenderer.invoke('claude:accounts', id),

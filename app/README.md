@@ -119,6 +119,23 @@ text and remains the normal interrupt when nothing is selected. Plain web URLs
 and OSC 8 hyperlinks open in the system default browser, including agent login
 links.
 
+Clipboard screenshots and copied images work with the same paste shortcuts
+(`⌘V` on macOS, also `Ctrl+V` / `Ctrl+Shift+V`) or right-click with no selection.
+Limpet saves the image as a PNG and pastes its path into the current input, so
+Codex, Claude Code and other agents that accept image paths can attach/read it.
+An image takes priority when the clipboard also contains text. Add your prompt
+and press Enter yourself; pasting never submits it. The PNG limit is 20 MB.
+
+In an `xssh` session, Limpet asks to upload the image using its normal file
+transfer dialog, then pastes the remote path only after the copy succeeds.
+This needs SSH key/agent authentication and a known remote working directory;
+nested hops, plain `ssh`, WSL and container sessions are unsupported. Failed or
+cancelled transfers insert nothing; paste again to retry. Local images remain
+in `clipboard-images` under Limpet's user-data directory so they can still be
+read after closing a tab or restarting the app. You can delete that directory
+when the images are no longer needed. Remote images remain in the destination
+directory; the local upload copy is removed.
+
 On macOS the defaults are the Mac ones: `⌘T` new tab, `⌘W` close tab, `⌘⇧]` /
 `⌘⇧[` next and previous tab, `⌘,` settings, `⌘C` copies the selection (and
 never interrupts), `⌘V` pastes; `Ctrl+C` stays the interrupt and

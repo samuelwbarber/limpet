@@ -38,7 +38,7 @@
     };
     if (job.state === 'running') button('Cancel', () => window.limpet.cancelTransfer(job.sessionId, job.id));
     else {
-      if (job.state !== 'done') button('Retry…', () => window.limpet.retryTransfer(job.sessionId, job.id));
+      if (job.state !== 'done' && job.retryable !== false) button('Retry…', () => window.limpet.retryTransfer(job.sessionId, job.id));
       button('Dismiss', () => { card.remove(); cards.delete(job.id); });
     }
     card.append(heading, destination, status, actions);

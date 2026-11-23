@@ -20,7 +20,7 @@ const electron = {
   app: { whenReady: () => new Promise(() => {}), getPath: () => home, on: (name, fn) => appEvents.set(name, fn), quit: () => { quitCalls++; } },
   BrowserWindow: { fromWebContents: () => null, getFocusedWindow: () => null, getAllWindows: () => [] },
   ipcMain: { handle: (name, fn) => handlers.set(name, fn), on() {} },
-  clipboard: {}, screen: {}, shell: {},
+  clipboard: {}, nativeImage: {}, screen: {}, shell: {},
   webContents: { fromId: (id) => contents.get(id) },
   dialog: { showMessageBox: (...args) => showDialog(...args) },
 };
@@ -43,10 +43,83 @@ function loadMain() {
   return mod.exports;
 }
 const main = loadMain();
+const clipboardPng = fs.readFileSync(path.join(__dirname, '../../tools/demo/test.png'));
+electron.nativeImage.createFromBuffer = (bytes) => ({ isEmpty: () => false, toPNG: () => bytes });
 const source = path.join(home, 'upload.txt');
 fs.writeFileSync(source, 'test content');
 const session = (id = 1) => ({ id, ownerId: 10, ready: false, uiPending: [], proc: { kill() {} }, remote: { target: 'fixture.invalid', port: '' }, remoteCwd: { cwd: '/fixture', depth: 0 } });
 test.after(() => { os.homedir = originalHome; fs.rmSync(home, { recursive: true, force: true }); });
+
+test('clipboard IPC rejects missing, closed and foreign sessions before reading the clipboard', async () => {
+  let reads = 0;
+  electron.clipboard.read = async () => { reads++; return []; };
+  const sess = session();
+  main.sessions.set(sess.id, sess);
+  try {
+    const read = handlers.get('clip:read');
+    assert.equal((await read({ sender: { id: 999 } }, sess.id)).kind, 'error');
+    assert.equal((await read({ sender: { id: 10 } }, 999)).kind, 'error');
+    sess.exited = true;
+    assert.equal((await read({ sender: { id: 10 } }, sess.id)).kind, 'error');
+    assert.equal(reads, 0);
+  } finally { main.sessions.clear(); }
+});
+
+test('clipboard IPC waits for remote copy, returns its path, and never writes commands into the PTY', async () => {
+  const sess = session();
+  sess.proc.write = () => assert.fail('clipboard upload must not type commands');
+  main.sessions.set(sess.id, sess);
+  electron.clipboard.read = async () => [{ types: ['image/png'], getType: async () => new Blob([clipboardPng]) }];
+  showDialog = async () => ({ response: 0 });
+  const saved = rc.runScp;
+  let finish;
+  let file;
+  rc.runScp = ({ paths }) => { file = paths[0]; return new Promise((resolve) => { finish = resolve; }); };
+  try {
+    let done = false;
+    const pending = handlers.get('clip:read')({ sender: { id: 10 } }, sess.id).then((value) => { done = true; return value; });
+    while (!finish) await new Promise(setImmediate);
+    assert.equal(done, false);
+    assert.deepEqual(fs.readFileSync(file), clipboardPng);
+    finish(true);
+    const result = await pending;
+    assert.equal(result.kind, 'image');
+    assert.equal(result.text, `/fixture/${path.basename(file)}`);
+    assert.equal(fs.existsSync(file), false);
+    const job = [...sess.transfers.values()][0];
+    assert.equal(job.state, 'done');
+    assert.equal(job.retryable, false);
+    assert.deepEqual(await handlers.get('transfer:retry')({ sender: { id: 10 } }, { sessionId: sess.id, id: job.id }), { ok: false });
+  } finally { rc.runScp = saved; main.sessions.clear(); }
+});
+
+test('clipboard IPC refuses a destination change while the upload dialog is open', async () => {
+  const sess = session();
+  main.sessions.set(sess.id, sess);
+  electron.clipboard.read = async () => [{ types: ['image/png'], getType: async () => new Blob([clipboardPng]) }];
+  showDialog = async () => { sess.remote = { target: 'different.invalid', port: '' }; return { response: 0 }; };
+  const saved = rc.runScp;
+  rc.runScp = () => assert.fail('must not copy to a changed destination');
+  try {
+    const result = await handlers.get('clip:read')({ sender: { id: 10 } }, sess.id);
+    assert.equal(result.kind, 'error');
+    assert.match(result.message, /destination changed/);
+  } finally { rc.runScp = saved; main.sessions.clear(); }
+});
+
+test('clipboard IPC discards an image if its session is detached while copying', async () => {
+  const sess = session();
+  main.sessions.set(sess.id, sess);
+  electron.clipboard.read = async () => [{ types: ['image/png'], getType: async () => new Blob([clipboardPng]) }];
+  showDialog = async () => ({ response: 0 });
+  const saved = rc.runScp;
+  rc.runScp = async () => { sess.ownerId = 20; return true; };
+  try {
+    const result = await handlers.get('clip:read')({ sender: { id: 10 } }, sess.id);
+    assert.equal(result.kind, 'error');
+    assert.match(result.message, /session|terminal/i);
+  } finally { rc.runScp = saved; main.sessions.clear(); }
+});
 
 test('application quit resumes after approval and cancellation preserves sessions', async () => {
   const sess = session(99);

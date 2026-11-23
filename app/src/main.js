@@ -6,7 +6,7 @@
 // works inside your SSH session with nothing installed on the remote but
 // coreutils (base64). Real ConPTY via node-pty; pipe fallback if unavailable.
 
-const { app, BrowserWindow, ipcMain, clipboard, dialog, screen, shell, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, nativeImage, dialog, screen, shell, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -21,6 +21,7 @@ const settings = require('./settings');
 const failover = require('./failover');
 const agentSwitch = require('./agent-switch');
 const remoteCopy = require('./remote-copy');
+const clipboardPaste = require('./clipboard-paste');
 const updater = require('./updater');
 const platform = require('./platform');
 const workspace = require('./workspace');
@@ -799,9 +800,9 @@ function backdropLimits() {
 // and files over MAX_DROP_BYTES go over scp to the directory of the remote
 // prompt, when xssh told us the host and that prompt is on it (see
 // remote-copy.js). Otherwise they're refused with the reason.
-async function dropFiles(sess, paths) {
+async function dropFiles(sess, paths, { isCurrent = () => true, quiet = false, retryable = true } = {}) {
   if (!sess || !sess.proc || sess.exited) return { ok: false, reason: 'The terminal has exited.' };
-  const say = (color, msg) => sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`);
+  const say = (color, msg) => { if (!quiet) sendData(sess, `\r\n\x1b[${color}m[limpet] ${msg}\x1b[0m\r\n`); };
   const refuse = (reason) => { say(33, reason); return { ok: false, reason }; };
   if (!Array.isArray(paths) || !paths.length || paths.length > 200 || paths.some((p) => typeof p !== 'string' || !path.isAbsolute(p))) {
     return refuse('Drop up to 200 local files or folders.');
@@ -826,27 +827,30 @@ async function dropFiles(sess, paths) {
   if (response !== 0) return { ok: false, cancelled: true };
   // The destination is frozen at confirmation. Never silently follow a later cd/hop.
   if (!sess.proc || sess.exited) return refuse('The terminal exited before the transfer started.');
+  if (!isCurrent()) return refuse('The terminal destination changed. Paste the image again.');
   if (!sess.transfers) sess.transfers = new Map();
   // Bound retained history, but never evict a running operation.
   for (const [id, old] of sess.transfers) if (sess.transfers.size >= 30 && old.state !== 'running') sess.transfers.delete(id);
   if (sess.transfers.size >= 30) return refuse('Too many transfers are running. Wait for one to finish.');
   const id = crypto.randomUUID();
-  const job = { id, paths: [...paths], destination, state: 'running', controller: new AbortController() };
+  const job = { id, paths: [...paths], destination, state: 'running', controller: new AbortController(), retryable };
   sess.transfers.set(id, job);
   const update = (message) => {
     if (sessions.get(sess.id) !== sess) return; // no late card after a deliberate close
     sendToSession(sess, 'transfer:status', {
-      sessionId: sess.id, id, destination, names: paths.map((p) => path.basename(p)), state: job.state, message,
+      sessionId: sess.id, id, destination, names: paths.map((p) => path.basename(p)), state: job.state, message, retryable,
     });
   };
   update('Copying over SSH. Byte progress is unavailable.');
-  remoteCopy.runScp({ ...plan, paths, key: remoteCopy.defaultKey(), signal: job.controller.signal }, (color, msg) => {
+  job.completion = remoteCopy.runScp({ ...plan, paths, key: remoteCopy.defaultKey(), signal: job.controller.signal }, (color, msg) => {
     job.message = msg; say(color, msg);
   }).then((ok) => {
     job.state = job.controller.signal.aborted ? 'cancelled' : ok ? 'done' : 'failed';
     update(job.message);
+    return job.state === 'done';
   }).catch((e) => {
     job.state = 'failed'; update(e.message);
+    return false;
   });
   return { ok: true, copying: true, id };
 }
@@ -1467,10 +1471,50 @@ function ownedSession(event, id) {
   return sess && sess.ownerId === event.sender.id ? sess : null;
 }
 
+async function readSessionClipboard(event, id) {
+  const sess = ownedSession(event, id);
+  if (!sess || !sess.proc || sess.exited) return { kind: 'error', message: 'The terminal has exited.' };
+  const proc = sess.proc;
+  const remote = sess.remote;
+  const remoteCwd = sess.remoteCwd;
+  const isCurrent = () => ownedSession(event, id) === sess && sess.proc === proc && !sess.exited
+    && sess.remote === remote && sess.remoteCwd === remoteCwd;
+  const ensureCurrent = () => {
+    if (!isCurrent()) throw new Error('The terminal or SSH destination changed. Paste again in the intended session.');
+  };
+  try {
+    const result = await clipboardPaste.preparePaste({
+      clipboard, nativeImage, directory: path.join(app.getPath('userData'), 'clipboard-images'),
+      remote, remoteCwd, ensureCurrent,
+      checkLocal: async () => {
+        // A local filename is meaningless inside plain ssh/WSL/containers.
+        // xssh provides the destination metadata needed for a separate upload.
+        const procs = await platform.listProcesses();
+        const under = accounts.descendants(procs, proc.pid);
+        if (procs.some((p) => under.has(p.pid) && /^(ssh|mosh|wsl|docker|podman)(\.exe)?$/i.test(p.name))) {
+          throw new Error('Image paste needs a local session or an xssh connection. Use xssh for remote image uploads.');
+        }
+      },
+      copyImage: async (file) => {
+        ensureCurrent();
+        const result = await dropFiles(sess, [file], { isCurrent, quiet: true, retryable: false });
+        if (!result.ok) return result;
+        const job = sess.transfers.get(result.id);
+        const ok = await job.completion;
+        return { ok, cancelled: job.state === 'cancelled', reason: `${job.message || 'Image upload failed.'} Paste again to retry.` };
+      },
+    });
+    ensureCurrent();
+    return result;
+  } catch (error) {
+    return { kind: 'error', message: error.message };
+  }
+}
+
 function registerIpc() {
   // Both return Promises from Electron 44 on; handle() waits for them.
   ipcMain.handle('clip:write', (_e, text) => clipboard.writeText(String(text || '')));
-  ipcMain.handle('clip:read', () => clipboard.readText());
+  ipcMain.handle('clip:read', readSessionClipboard);
   ipcMain.handle('external:open', (_e, url) => openExternalUrl(url));
   ipcMain.handle('setup:info', () => require('./setup-info').setupInfo());
 
@@ -1531,6 +1575,7 @@ function registerIpc() {
     flushSessionUi(sess);
     for (const job of sess.transfers?.values() || []) sendToSession(sess, 'transfer:status', {
       sessionId: sess.id, id: job.id, destination: job.destination, names: job.paths.map((p) => path.basename(p)),
+      retryable: job.retryable,
       state: job.state, message: job.message || 'Copying over SSH. Byte progress is unavailable.',
     });
     if (sess.backdropDataUrl) {
@@ -1593,7 +1638,7 @@ function registerIpc() {
   ipcMain.handle('transfer:retry', (event, { sessionId, id } = {}) => {
     const sess = ownedSession(event, sessionId);
     const job = sess?.transfers?.get(id);
-    if (!job || job.state === 'running') return { ok: false };
+    if (!job || job.state === 'running' || job.retryable === false) return { ok: false };
     // Re-plan and confirm the current destination, which might have changed.
     return dropFiles(sess, job.paths);
   });

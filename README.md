@@ -98,6 +98,14 @@ come along.
 
 ## Drag and drop
 
+You can also **paste a clipboard image into an agent session**: copy an image
+or take a screenshot to the clipboard, then press `⌘V` on Mac or `Ctrl+V` /
+`Ctrl+Shift+V` on Windows/Linux. Limpet saves a PNG and pastes its path for
+Codex, Claude Code and other agents that accept image files. Add your message
+and press Enter when ready. With `xssh`, confirm the upload and the remote path
+is inserted after it succeeds. See [clipboard details](app/README.md#tabs-clipboard-and-links)
+for storage and SSH limitations.
+
 Drop files or folders onto an `xssh` tab to copy them to its reported remote
 working directory. Limpet previews the host, directory and filenames before
 sending, and explains that existing names will be replaced. Every size uses a
